@@ -69,10 +69,10 @@ function ProjectsSection({ projects, run }: { projects: Project[]; run: Run }) {
         </div>
       </div>
       <div className="table-wrap">
-        <table>
-          <thead><tr><th>로컬 폴더</th><th>종류</th><th>실행 <span className="muted">({'{port}'} 자리에 포트)</span></th><th>포트 변수</th><th>BE 주소 변수</th><th>PR 전 검사</th><th>헬스체크</th><th><span className="sr-only">삭제</span></th></tr></thead>
+        <table className="projects-table">
+          <thead><tr><th>로컬 폴더</th><th>종류</th><th>명령 <span className="muted">({'{port}'} 자리에 포트)</span></th><th>변수와 헬스체크</th><th>화면 비교 <span className="muted">(FE)</span></th><th><span className="sr-only">저장, 삭제</span></th></tr></thead>
           <tbody>
-            {projects.length === 0 && <tr><td colSpan={8} className="muted">등록된 프로젝트가 없습니다. 아래에 클론 폴더 경로를 넣으세요.</td></tr>}
+            {projects.length === 0 && <tr><td colSpan={6} className="muted">등록된 프로젝트가 없습니다. 아래에 클론 폴더 경로를 넣으세요.</td></tr>}
             {projects.map((p) => <ProjectRow key={p.id} p={p} run={run} />)}
           </tbody>
         </table>
@@ -92,6 +92,7 @@ function ProjectRow({ p, run }: { p: Project; run: Run }) {
   const initial = {
     kind: p.kind, start_cmd: p.start_cmd ?? '', check_cmd: p.check_cmd ?? '', health_path: p.health_path ?? '',
     port_env: p.port_env ?? '', api_env_key: p.api_env_key ?? '',
+    baseline_url: p.baseline_url ?? '', login_path: p.login_path ?? '', setup_cmd: p.setup_cmd ?? '',
   };
   const [draft, setDraft] = useState(initial);
   const dirty = (Object.keys(initial) as (keyof typeof initial)[]).some((k) => draft[k] !== initial[k]);
@@ -108,13 +109,30 @@ function ProjectRow({ p, run }: { p: Project; run: Run }) {
           {KINDS.map((k) => <option key={k.value} value={k.value}>{k.label}</option>)}
         </select>
       </td>
-      <td><input aria-label={`${p.name} 실행 명령`} className="mono wide" value={draft.start_cmd} onChange={(e) => setDraft({ ...draft, start_cmd: e.target.value })} /></td>
-      <td><input aria-label={`${p.name} 포트 변수`} className="mono narrow" placeholder="PORT" value={draft.port_env} onChange={(e) => setDraft({ ...draft, port_env: e.target.value })} /></td>
-      <td><input aria-label={`${p.name} BE 주소 변수`} className="mono narrow" placeholder={p.kind === 'fe' ? 'VITE_API_URL' : ''} value={draft.api_env_key} onChange={(e) => setDraft({ ...draft, api_env_key: e.target.value })} /></td>
-      <td><input aria-label={`${p.name} 검사 명령`} className="mono" value={draft.check_cmd} onChange={(e) => setDraft({ ...draft, check_cmd: e.target.value })} /></td>
-      <td><input aria-label={`${p.name} 헬스체크 경로`} className="mono narrow" value={draft.health_path} onChange={(e) => setDraft({ ...draft, health_path: e.target.value })} /></td>
+      <td>
+        <div className="stacked">
+          <label className="mini"><span>설치</span><input aria-label={`${p.name} 설치 명령`} className="mono" placeholder="uv sync, npm ci" title="새 워크트리에서 처음 실행할 때 한 번 돌립니다" value={draft.setup_cmd} onChange={(e) => setDraft({ ...draft, setup_cmd: e.target.value })} /></label>
+          <label className="mini"><span>실행</span><input aria-label={`${p.name} 실행 명령`} className="mono" value={draft.start_cmd} onChange={(e) => setDraft({ ...draft, start_cmd: e.target.value })} /></label>
+          <label className="mini"><span>PR 전 검사</span><input aria-label={`${p.name} 검사 명령`} className="mono" placeholder="./gradlew build" value={draft.check_cmd} onChange={(e) => setDraft({ ...draft, check_cmd: e.target.value })} /></label>
+        </div>
+      </td>
+      <td>
+        <div className="stacked">
+          <label className="mini"><span>포트 변수</span><input aria-label={`${p.name} 포트 변수`} className="mono" placeholder="PORT" value={draft.port_env} onChange={(e) => setDraft({ ...draft, port_env: e.target.value })} /></label>
+          {p.kind !== 'be' && <label className="mini"><span>BE 주소 변수</span><input aria-label={`${p.name} BE 주소 변수`} className="mono" placeholder="VITE_API_URL" value={draft.api_env_key} onChange={(e) => setDraft({ ...draft, api_env_key: e.target.value })} /></label>}
+          <label className="mini"><span>헬스체크</span><input aria-label={`${p.name} 헬스체크 경로`} className="mono" placeholder="/" value={draft.health_path} onChange={(e) => setDraft({ ...draft, health_path: e.target.value })} /></label>
+        </div>
+      </td>
+      <td>
+        {p.kind === 'be' ? <span className="muted small">BE는 해당 없음</span> : (
+          <div className="stacked">
+            <label className="mini"><span>기준 서버</span><input aria-label={`${p.name} develop 기준 서버 주소`} className="mono" placeholder="http://dev.example.com" value={draft.baseline_url} onChange={(e) => setDraft({ ...draft, baseline_url: e.target.value })} /></label>
+            <label className="mini"><span>로그인 경로</span><input aria-label={`${p.name} 로그인 경로`} className="mono" placeholder="/login (선택)" value={draft.login_path} onChange={(e) => setDraft({ ...draft, login_path: e.target.value })} /></label>
+          </div>
+        )}
+      </td>
       <td className="actions">
-        {dirty && <button onClick={run(() => api.updateProject(p.id, { ...draft, start_cmd: draft.start_cmd || null, check_cmd: draft.check_cmd || null, health_path: draft.health_path || null, port_env: draft.port_env || null, api_env_key: draft.api_env_key || null }), '저장했습니다.')}>저장</button>}
+        {dirty && <button onClick={run(() => api.updateProject(p.id, { ...draft, start_cmd: draft.start_cmd || null, check_cmd: draft.check_cmd || null, health_path: draft.health_path || null, port_env: draft.port_env || null, api_env_key: draft.api_env_key || null, baseline_url: draft.baseline_url.trim() || null, login_path: draft.login_path.trim() || null, setup_cmd: draft.setup_cmd.trim() || null }), '저장했습니다.')}>저장</button>}
         <button className="danger" onClick={() => { if (confirm(`${p.name} 등록을 지울까요? 폴더는 지우지 않습니다.`)) run(() => api.deleteProject(p.id))(); }}>삭제</button>
       </td>
     </tr>
@@ -174,6 +192,8 @@ function PreferencesSection({ settings, setSettings, run }: { settings: Settings
           <label><input type="checkbox" checked={n.onComplete} onChange={(e) => setN({ onComplete: e.target.checked })} /> 프롬프트 작업이 끝났을 때</label>
           <label><input type="checkbox" checked={n.onError} onChange={(e) => setN({ onError: e.target.checked })} /> 작업이 오류로 멈췄을 때</label>
           <label><input type="checkbox" checked={n.onServerFail} onChange={(e) => setN({ onServerFail: e.target.checked })} /> 서버가 예기치 않게 멈췄을 때</label>
+          <label><input type="checkbox" checked={n.onPr} onChange={(e) => setN({ onPr: e.target.checked })} /> PR을 만들었거나 검사가 실패했을 때</label>
+          <label><input type="checkbox" checked={n.onCleanup} onChange={(e) => setN({ onCleanup: e.target.checked })} /> PR이 머지·닫혀 정리할 수 있을 때, 오래 쉰 세션</label>
         </fieldset>
         <fieldset className="checks column">
           <legend>알리는 방법</legend>

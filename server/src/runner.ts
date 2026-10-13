@@ -31,6 +31,8 @@ type Running = {
 
 const MAX_LOG_LINES = 3000;
 const HEALTH_TIMEOUT_MS = 5 * 60 * 1000;
+/** 처음 실행은 의존성 설치까지 하므로 더 기다린다. */
+const SETUP_HEALTH_TIMEOUT_MS = 15 * 60 * 1000;
 const servers = new Map<number, Running>();
 // 서버가 꺼진 뒤에도 마지막 로그와 상태를 볼 수 있게 남겨 둔다.
 const lastRun = new Map<number, { status: ServerStatus; exitCode: number | null; port: number; logs: LogLine[] }>();
@@ -47,6 +49,10 @@ export type ServerView = {
   started_at: number | null;
   can_start: boolean;
   start_cmd: string | null;
+  cwd: string;
+  health_path: string;
+  /** 이 워크트리에서 아직 설치를 안 했으면 실행 전에 돌릴 설치 명령 */
+  setup_pending: string | null;
 };
 
 export function listServers(session: SessionView): ServerView[] {
@@ -68,6 +74,9 @@ export function listServers(session: SessionView): ServerView[] {
       started_at: r?.startedAt ?? null,
       can_start: Boolean(project?.start_cmd),
       start_cmd: project?.start_cmd ?? null,
+      cwd: w.path,
+      health_path: project?.health_path || '/',
+      setup_pending: project?.setup_cmd && !w.setup_done ? project.setup_cmd : null,
     };
   });
 }
@@ -85,9 +94,30 @@ export function getLogs(worktreeId: number): LogLine[] {
   return servers.get(worktreeId)?.logs ?? lastRun.get(worktreeId)?.logs ?? [];
 }
 
-function levelOf(text: string): LogLine['level'] {
-  if (/\b(ERROR|FATAL|SEVERE)\b|Exception\b|\bError:/.test(text)) return 'error';
-  if (/\bWARN(ING)?\b/.test(text)) return 'warn';
+/**
+ * 로그 줄의 수준. Spring·Python 로거는 ERROR/WARN 같은 단어를 찍지만,
+ * npm·Next·Vite·tsc는 기호나 고유 문구로 오류를 알려서 따로 잡는다.
+ */
+const ERROR_PATTERNS = [
+  /\b(ERROR|FATAL|SEVERE|CRITICAL)\b/, // Spring, Python logging, Vite "✘ [ERROR]"
+  /Exception\b|Traceback \(most recent call last\)/, // Java, Python
+  /\b\w*Error:/, // Error:, TypeError:, SyntaxError:, ModuleNotFoundError: ...
+  /^\s*npm (ERR!|error)\b/, // npm 6 / npm 7+
+  /\bELIFECYCLE\b|ERR_PNPM_|^\s*error Command failed/, // npm·pnpm·yarn 스크립트 실패
+  /^\s*⨯/, // Next.js 오류 표시
+  /Failed to compile|Module not found|Can't resolve '|Cannot find module|Unhandled Runtime Error|Build failed|Internal server error/i,
+  /\berror TS\d+|\berror\s{2,}/, // tsc "error TS2322", eslint "  12:3  error  ..."
+];
+const WARN_PATTERNS = [
+  /\bWARN(ING)?\b|\bWarning:/,
+  /^\s*npm WARN|^\s*npm warn\b/,
+  /^\s*⚠/, // Next.js 경고
+  /\bwarning\s{2,}|\bDeprecationWarning\b/, // eslint, Node
+];
+
+export function levelOf(text: string): LogLine['level'] {
+  if (ERROR_PATTERNS.some((re) => re.test(text))) return 'error';
+  if (WARN_PATTERNS.some((re) => re.test(text))) return 'warn';
   return 'info';
 }
 
@@ -159,8 +189,11 @@ async function allocate(kind: string): Promise<number> {
   return findFreePort(kind === 'fe' ? 3401 : 8081, taken);
 }
 
-/** 세션 워크트리의 서버를 띄운다. worktreeIds가 없으면 전부. BE를 먼저 띄워 FE가 BE 주소를 받게 한다. */
-export async function startServers(sessionId: number, worktreeIds?: number[]) {
+/**
+ * 세션 워크트리의 서버를 띄운다. worktreeIds가 없으면 전부. BE를 먼저 띄워 FE가 BE 주소를 받게 한다.
+ * commands에 워크트리 ID별 명령이 있으면 이번 실행에만 프로젝트 실행 명령 대신 쓴다.
+ */
+export async function startServers(sessionId: number, worktreeIds?: number[], commands: Record<number, string> = {}) {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
   const targets = session.worktrees
@@ -171,7 +204,7 @@ export async function startServers(sessionId: number, worktreeIds?: number[]) {
   const missing: { projectId: number; project: string; keys: string[] }[] = [];
   for (const w of targets) {
     const p = getProject(w.project_id)!;
-    if (!p.start_cmd) throw new Error(`${p.name}의 실행 명령이 없습니다. 프로젝트 설정에서 넣어 주세요.`);
+    if (!commands[w.id]?.trim() && !p.start_cmd) throw new Error(`${p.name}의 실행 명령이 없습니다. 프로젝트 설정에서 넣어 주세요.`);
     const auto = ['PORT', ...(p.port_env ? [p.port_env] : []), ...(p.api_env_key ? [p.api_env_key] : [])];
     const keys = missingRequired(sessionId, p.id, auto);
     if (keys.length) missing.push({ projectId: p.id, project: p.name, keys });
@@ -189,7 +222,10 @@ export async function startServers(sessionId: number, worktreeIds?: number[]) {
       const be = session.worktrees.map((x) => servers.get(x.id)).find((r) => r && getProject(r.projectId)?.kind !== 'fe');
       if (be) auto[p.api_env_key] = `http://localhost:${be.port}`;
     }
-    const cmd = p.start_cmd!.replaceAll('{port}', String(port));
+    const startCmd = (commands[w.id]?.trim() || p.start_cmd!).replaceAll('{port}', String(port));
+    // 새 워크트리에는 .venv나 node_modules가 없어 처음 한 번은 설치부터 한다. 설치가 실패하면 서버를 띄우지 않는다.
+    const setup = p.setup_cmd && !w.setup_done ? p.setup_cmd : null;
+    const cmd = setup ? `${setup} && ${startCmd}` : startCmd;
     const child = spawn(cmd, {
       cwd: w.path,
       shell: true,
@@ -205,6 +241,7 @@ export async function startServers(sessionId: number, worktreeIds?: number[]) {
     servers.set(w.id, r);
     lastRun.delete(w.id);
     db.prepare(`INSERT OR REPLACE INTO servers (worktree_id, port, pid, status) VALUES (?, ?, ?, 'starting')`).run(w.id, port, child.pid ?? null);
+    if (setup) pushLine(r, 'sys', `이 워크트리에서 처음 실행해 의존성부터 설치합니다: ${setup}`);
     pushLine(r, 'sys', `$ ${cmd}`);
     pushLine(r, 'sys', `포트 ${port}${Object.keys(auto).length > 1 ? ` · 자동 값 ${Object.entries(auto).map(([k, v]) => `${k}=${v}`).join(', ')}` : ''}`);
     attachStream(r, child.stdout, 'out');
@@ -216,9 +253,10 @@ export async function startServers(sessionId: number, worktreeIds?: number[]) {
       if (r.status !== 'starting' && r.status !== 'unhealthy') return;
       if (await checkHealth(port, healthPath)) {
         pushLine(r, 'sys', `헬스체크 통과 (${healthPath})`);
+        if (setup) db.prepare(`UPDATE worktrees SET setup_done = 1 WHERE id = ?`).run(w.id);
         setStatus(r, 'running');
-      } else if (r.status === 'starting' && Date.now() - r.startedAt > HEALTH_TIMEOUT_MS) {
-        pushLine(r, 'sys', `5분 안에 ${healthPath} 응답이 없습니다. 실행 명령이나 헬스체크 경로를 확인하세요.`);
+      } else if (r.status === 'starting' && Date.now() - r.startedAt > (setup ? SETUP_HEALTH_TIMEOUT_MS : HEALTH_TIMEOUT_MS)) {
+        pushLine(r, 'sys', `${setup ? '15분' : '5분'} 안에 ${healthPath} 응답이 없습니다. 실행 명령이나 헬스체크 경로를 확인하세요.`);
         setStatus(r, 'unhealthy');
       }
     }, 1500);

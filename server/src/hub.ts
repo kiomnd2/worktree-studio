@@ -5,7 +5,10 @@ export type ServerEvent =
   | { type: 'sessions.changed' }
   | { type: 'message'; sessionId: number; message: { id: number; kind: string; payload: unknown; created_at: string } }
   | { type: 'server.updated'; sessionId: number }
-  | { type: 'log'; sessionId: number; worktreeId: number; lines: LogLine[] };
+  | { type: 'log'; sessionId: number; worktreeId: number; lines: LogLine[] }
+  | { type: 'pr.updated'; sessionId: number }
+  | { type: 'screens.updated'; sessionId: number }
+  | { type: 'cleanup.changed' };
 
 export type LogLine = { seq: number; t: number; stream: 'out' | 'err' | 'sys'; level: 'error' | 'warn' | 'info'; text: string };
 

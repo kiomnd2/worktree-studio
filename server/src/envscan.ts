@@ -14,8 +14,13 @@ export type FoundVar = {
   reason?: string;
 };
 
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out', 'target', '.next', '.nuxt', '.gradle', '.idea', '.vscode', 'coverage', 'vendor', '.turbo', '.cache', 'bin', 'obj']);
-const CODE_EXT = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.svelte', '.kt', '.kts', '.java', '.groovy']);
+const SKIP_DIRS = new Set([
+  'node_modules', '.git', 'dist', 'build', 'out', 'target', '.next', '.nuxt', '.gradle', '.idea', '.vscode', 'coverage', 'vendor', '.turbo', '.cache', 'bin', 'obj',
+  '.venv', 'venv', '__pycache__', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.tox', 'site-packages',
+]);
+const CODE_EXT = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.svelte', '.kt', '.kts', '.java', '.groovy', '.py']);
+/** 테스트 코드는 환경변수를 직접 넣어 쓰는 경우가 많아 필요한 값으로 보지 않는다. */
+const PY_TEST = /(^|[\\/])(tests?|conftest\.py$|test_[^\\/]*\.py$)/;
 const CONF_EXT = new Set(['.yml', '.yaml', '.properties']);
 const EXAMPLE_FILE = /^\.env(\.[\w-]+)*\.(example|sample|template|dist)$|^\.env\.(example|sample|template)$/;
 const VITE_BUILTIN = new Set(['MODE', 'DEV', 'PROD', 'SSR', 'BASE_URL']);
@@ -95,7 +100,9 @@ export function scanEnv(dir: string, cloneDir?: string): FoundVar[] {
       for (const m of line.matchAll(/\$\{([A-Z][A-Z0-9_]*)(?::([^}]*))?\}/g)) {
         // 코드 파일에서는 문자열 템플릿과 헷갈리지 않게 @Value 같은 설정 참조 줄만 본다.
         if (!CONF_EXT.has(ext) && !/@Value|getProperty|environment\./.test(line)) continue;
-        add({ key: m[1], value: m[2] ?? '', required: m[2] === undefined, secret: looksSecret(m[1]), source: 'detected', found_in: rel(file, i + 1) });
+        // 셸·compose 문법 ${KEY:-기본값}의 "-"는 기본값에 들어가지 않는다.
+        const def = m[2]?.replace(/^-/, '');
+        add({ key: m[1], value: def ?? '', required: def === undefined, secret: looksSecret(m[1]), source: 'detected', found_in: rel(file, i + 1) });
       }
       if (!CODE_EXT.has(ext)) return;
       for (const m of line.matchAll(/process\.env(?:\.([A-Z_][A-Z0-9_]*)|\[['"]([A-Z_][A-Z0-9_]*)['"]\])/g)) {
@@ -107,6 +114,16 @@ export function scanEnv(dir: string, cloneDir?: string): FoundVar[] {
       }
       for (const m of line.matchAll(/System\.getenv\(\s*"([A-Z_][A-Z0-9_]*)"\s*\)/g)) {
         add({ key: m[1], value: '', required: false, secret: looksSecret(m[1]), source: 'detected', found_in: rel(file, i + 1) });
+      }
+      if (ext === '.py' && !PY_TEST.test(path.relative(dir, file))) {
+        // os.environ["KEY"]는 없으면 KeyError라 필수. 대입문(os.environ["KEY"] = ...)은 읽는 게 아니라 뺀다.
+        for (const m of line.matchAll(/os\.environ\[\s*['"]([A-Z_][A-Z0-9_]*)['"]\s*\](?!\s*=[^=])/g)) {
+          add({ key: m[1], value: '', required: true, secret: looksSecret(m[1]), source: 'detected', found_in: rel(file, i + 1) });
+        }
+        // os.environ.get("KEY", "기본값") / os.getenv("KEY", "기본값")은 기본값이 있으면 선택.
+        for (const m of line.matchAll(/os\.(?:environ\.get|getenv)\(\s*['"]([A-Z_][A-Z0-9_]*)['"](?:\s*,\s*['"]([^'"]*)['"])?/g)) {
+          add({ key: m[1], value: m[2] ?? '', required: false, secret: looksSecret(m[1]), source: 'detected', found_in: rel(file, i + 1) });
+        }
       }
     });
   }
@@ -168,6 +185,8 @@ export async function analyzeEnvWithAI(dir: string, known: string[]): Promise<Fo
     options: {
       cwd: dir,
       tools: ['Read', 'Grep', 'Glob'],
+      // 사용자 플러그인·훅을 불러오지 않는다. 훅이 작업 폴더에 상태 파일(.bkit/ 등)을 만들면 PR 커밋에 섞인다.
+      settingSources: [],
       allowedTools: ['Read', 'Grep', 'Glob'],
       permissionMode: 'dontAsk',
       maxTurns: 40,

@@ -38,7 +38,8 @@ export function setSession(id: number, patch: Partial<Pick<SessionRow, 'status' 
   const keys = Object.keys(patch) as (keyof typeof patch)[];
   if (keys.length === 0) { broadcast({ type: 'session.updated', sessionId: id }); return; }
   const sets = keys.map((k) => `${k} = @${k}`).join(', ');
-  db.prepare(`UPDATE sessions SET ${sets}, updated_at = datetime('now') WHERE id = @id`).run({ ...patch, id });
+  // 손댄 세션은 미활동 알림을 다시 받을 수 있게 한다.
+  db.prepare(`UPDATE sessions SET ${sets}, updated_at = datetime('now'), stale_notified = 0 WHERE id = @id`).run({ ...patch, id });
   broadcast({ type: 'session.updated', sessionId: id });
 }
 

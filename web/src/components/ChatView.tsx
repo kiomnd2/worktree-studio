@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../api';
@@ -35,8 +35,9 @@ function formatDuration(ms: number) {
 export default function ChatView({ session }: { session: Session }) {
   const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const bottom = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
+  // 스크롤이 맨 아래에 붙어 있으면 새 메시지를 따라 내려간다. 위로 올려 보는 중이면 그대로 둔다.
+  const stick = useRef(true);
 
   useEffect(() => {
     api.messages(session.id).then(setMessages).catch((e) => setLoadError(e.message));
@@ -48,12 +49,20 @@ export default function ChatView({ session }: { session: Session }) {
     }
   });
 
+  // 도구 결과나 '작업 중' 표시처럼 메시지 수와 상관없이 높이가 바뀌는 경우도 있어 messages 자체와 상태를 본다.
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [messages, session.status]);
+
+  // 첨부 이미지는 그린 뒤에 늦게 로드돼 높이가 늘어난다. load 이벤트는 버블링되지 않아 캡처로 받는다.
   useEffect(() => {
     const el = scroller.current;
     if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
-    if (nearBottom) bottom.current?.scrollIntoView({ block: 'end' });
-  }, [messages.length]);
+    const onLoad = () => { if (stick.current) el.scrollTop = el.scrollHeight; };
+    el.addEventListener('load', onLoad, true);
+    return () => el.removeEventListener('load', onLoad, true);
+  }, []);
 
   const toolResults = useMemo(() => {
     const map = new Map<string, ToolResult>();
@@ -70,7 +79,11 @@ export default function ChatView({ session }: { session: Session }) {
 
   return (
     <main className="main chat">
-      <div className="stream" ref={scroller}>
+      <div
+        className="stream"
+        ref={scroller}
+        onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }}
+      >
         {loadError && <p className="error-text" role="alert">{loadError}</p>}
         {messages.length === 0 && !loadError && (
           <div className="stream-empty">
@@ -80,7 +93,6 @@ export default function ChatView({ session }: { session: Session }) {
         )}
         {messages.map((m) => <MessageItem key={m.id} message={m} toolResults={toolResults} />)}
         {session.status === 'running' && <div className="working" aria-live="polite"><span className="spinner" aria-hidden="true" />작업 중</div>}
-        <div ref={bottom} />
       </div>
       <PromptInput session={session} />
     </main>

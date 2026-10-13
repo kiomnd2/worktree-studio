@@ -43,6 +43,11 @@ export function useServerEvents(handler: Listener) {
   }, []);
 }
 
+/** 미리보기 캡처 같은 이미지를 프롬프트 첨부에 넣는다. data는 base64. */
+export function attachToPrompt(image: { mediaType: string; data: string; name: string }) {
+  window.dispatchEvent(new CustomEvent('wts:attach-image', { detail: image }));
+}
+
 /** 로그 줄 같은 텍스트를 프롬프트 입력창에 붙인다. */
 export function insertIntoPrompt(text: string) {
   window.dispatchEvent(new CustomEvent('wts:insert-prompt', { detail: text }));

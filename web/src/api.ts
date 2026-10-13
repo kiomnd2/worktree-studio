@@ -1,4 +1,7 @@
-import type { Account, EnvVar, LogLine, MissingEnv, Project, ProjectEnvState, ServerView, Session, Settings, StoredMessage, Workspace } from './types';
+import type {
+  Account, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
+  ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, Workspace,
+} from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public data: Record<string, unknown>) { super(message); }
@@ -51,9 +54,9 @@ export const api = {
   deleteProfile: (profileId: number) => request('DELETE', `/api/env-profiles/${profileId}`),
 
   servers: (id: number) => request<ServerView[]>('GET', `/api/sessions/${id}/servers`),
-  startServers: (id: number, worktreeIds?: number[]) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/start`, { worktreeIds }),
+  startServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/start`, { worktreeIds, commands }),
   stopServers: (id: number, worktreeIds?: number[]) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/stop`, { worktreeIds }),
-  restartServers: (id: number, worktreeIds?: number[]) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/restart`, { worktreeIds }),
+  restartServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/restart`, { worktreeIds, commands }),
   logs: (worktreeId: number) => request<LogLine[]>('GET', `/api/worktrees/${worktreeId}/logs`),
 
   accounts: () => request<{ accounts: Account[]; free: number }>('GET', '/api/accounts'),
@@ -63,6 +66,24 @@ export const api = {
   assignAccount: (sessionId: number) => request('POST', `/api/sessions/${sessionId}/account/assign`),
   releaseAccount: (sessionId: number) => request('POST', `/api/sessions/${sessionId}/account/release`),
   githubStatus: () => request<{ installed: boolean; loggedIn: boolean; account: string | null }>('GET', '/api/github/status'),
+
+  pr: (id: number) => request<{ job: PrJob | null; prs: PullRequest[] }>('GET', `/api/sessions/${id}/pr`),
+  preparePr: (id: number) => request<{ drafts: PrDraft[]; ai_error: string | null }>('POST', `/api/sessions/${id}/pr/prepare`),
+  createPr: (id: number, items: { worktree_id: number; title: string; body: string; commit_message: string }[]) => request<PrJob>('POST', `/api/sessions/${id}/pr`, { items }),
+  closePr: (prId: number) => request('POST', `/api/prs/${prId}/close`),
+
+  screens: (id: number) => request<ScreenState>('GET', `/api/sessions/${id}/screens`),
+  detectScreens: (id: number) => request<{ found: number }>('POST', `/api/sessions/${id}/screens/detect`),
+  addScreen: (id: number, route: string) => request('POST', `/api/sessions/${id}/screens`, { route }),
+  captureScreens: (id: number, ids?: number[]) => request<{ warnings: string[] }>('POST', `/api/sessions/${id}/screens/capture`, { ids }),
+  acceptScreen: (screenId: number, accepted: boolean) => request('PATCH', `/api/screens/${screenId}`, { accepted }),
+  removeScreen: (screenId: number) => request('DELETE', `/api/screens/${screenId}`),
+  askScreen: (screenId: number, note: string) => request('POST', `/api/screens/${screenId}/ask`, { note }),
+  capturePreview: (id: number, url: string) => request<{ data: string; warning: string | null }>('POST', `/api/sessions/${id}/preview/capture`, { url }),
+
+  cleanup: () => request<{ rows: CleanupRow[]; startup: StartupReport | null }>('GET', '/api/cleanup'),
+  clean: (sessionIds: number[], deleteRemote: boolean, force: boolean) => request<CleanResult[]>('POST', '/api/cleanup', { sessionIds, deleteRemote, force }),
+  refreshPrs: () => request<{ changed: number }>('POST', '/api/cleanup/refresh'),
 
   settings: () => request<Settings>('GET', '/api/settings'),
   saveSettings: (s: Settings) => request<Settings>('PUT', '/api/settings', s),

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, missingFrom } from '../api';
-import type { EnvSource, EnvVar, ProjectEnvState, Session } from '../types';
+import type { EnvSource, EnvVar, ProjectEnvState, ServerView, Session } from '../types';
+import StartServersDialog from './StartServersDialog';
 
 const SOURCE: Record<EnvSource | 'session', { label: string; cls: string }> = {
   ai: { label: 'AI 추정', cls: 'ai' },
@@ -39,6 +40,7 @@ export default function EnvPage({ session, message, onBack, onStarted }: Props) 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(message ?? null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [startTargets, setStartTargets] = useState<ServerView[] | null>(null);
 
   function apply(next: ProjectEnvState[]) {
     setStates(next);
@@ -184,12 +186,30 @@ export default function EnvPage({ session, message, onBack, onStarted }: Props) 
             <button disabled={Boolean(busy)} onClick={() => run(async () => { if (await saveAll()) setNotice('저장했습니다.'); }, 'save')}>저장</button>
             <button className="primary" disabled={Boolean(busy)} onClick={() => run(async () => {
               if (!(await saveAll())) return;
+              const targets = (await api.servers(session.id)).filter((s) => s.can_start && (s.status === 'idle' || s.status === 'failed' || s.status === 'stopped'));
+              if (targets.length) { setStartTargets(targets); return; }
               await api.startServers(session.id);
               onStarted();
             }, 'start')}>{busy === 'start' ? '서버 띄우는 중' : '저장하고 서버 실행'}</button>
           </div>
         </div>
       </div>
+      {startTargets && (
+        <StartServersDialog
+          targets={startTargets}
+          onCancel={() => setStartTargets(null)}
+          onConfirm={async (commands) => {
+            try {
+              await api.startServers(session.id, undefined, commands);
+            } catch (e) {
+              const missing = missingFrom(e);
+              if (missing) throw new Error(`아직 비어 있는 필수 값: ${missing.map((m) => `${m.project} ${m.keys.join(', ')}`).join(' / ')}`);
+              throw e;
+            }
+            onStarted();
+          }}
+        />
+      )}
     </main>
   );
 }

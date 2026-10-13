@@ -110,6 +110,42 @@ function addColumn(table: string, column: string, ddl: string) {
 }
 addColumn('projects', 'port_env', 'port_env TEXT');
 addColumn('projects', 'api_env_key', 'api_env_key TEXT');
+// Phase 3: 화면 비교 기준 서버와 로그인 경로
+addColumn('projects', 'baseline_url', 'baseline_url TEXT');
+addColumn('projects', 'login_path', 'login_path TEXT');
+// 새 워크트리에서 처음 실행하기 전에 돌릴 의존성 설치 명령(uv sync, npm ci 등)과 설치를 마쳤는지
+addColumn('projects', 'setup_cmd', 'setup_cmd TEXT');
+addColumn('worktrees', 'setup_done', 'setup_done INTEGER NOT NULL DEFAULT 0');
+addColumn('sessions', 'stale_notified', 'stale_notified INTEGER NOT NULL DEFAULT 0');
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS pull_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  worktree_id INTEGER NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+  number INTEGER NOT NULL,
+  url TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'OPEN',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  checked_at TEXT
+);
+CREATE TABLE IF NOT EXISTS screen_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  route TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  before_file TEXT,
+  after_file TEXT,
+  diff_file TEXT,
+  diff_ratio REAL,
+  boxes TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'pending',
+  error TEXT,
+  captured_at TEXT,
+  UNIQUE (session_id, route)
+);
+`);
 
 // 도구가 비정상 종료됐다면 실행 중으로 남은 세션을 되돌린다.
 db.prepare(`UPDATE sessions SET status = 'idle' WHERE status = 'running'`).run();
@@ -117,13 +153,13 @@ db.prepare(`UPDATE sessions SET status = 'idle' WHERE status = 'running'`).run()
 export type ProjectRow = {
   id: number; name: string; local_path: string; kind: string;
   start_cmd: string | null; check_cmd: string | null; health_path: string | null; created_at: string;
-  port_env: string | null; api_env_key: string | null;
+  port_env: string | null; api_env_key: string | null; baseline_url: string | null; login_path: string | null; setup_cmd: string | null;
 };
 export type SessionRow = {
   id: number; workspace_id: number; ticket: string; summary: string; status: string;
   claude_session_id: string | null; primary_worktree_id: number | null; unread: number; closed: number;
-  created_at: string; updated_at: string;
+  created_at: string; updated_at: string; stale_notified: number;
 };
 export type WorktreeRow = {
-  id: number; session_id: number; project_id: number; path: string; branch: string; base_branch: string;
+  id: number; session_id: number; project_id: number; path: string; branch: string; base_branch: string; setup_done: number;
 };

@@ -1,7 +1,7 @@
 # Worktree Studio
 
 티켓 하나당 git 워크트리 하나를 만들고, 그 안에서 로컬 Claude Code와 대화하며 개발하는 로컬 웹 도구입니다.
-이 버전은 플랜 문서의 **Phase 2**까지 들어 있습니다 (v0.2.0).
+이 버전은 플랜 문서의 **Phase 3**까지 들어 있습니다.
 
 ## 문서
 
@@ -32,9 +32,42 @@
 - 서버 로그: 프로젝트별 탭, WARN 이상 필터, 검색, 오류 줄을 앞뒤 맥락과 함께 프롬프트에 넣는 "Claude에게 보내기"
 - 테스트 계정 풀: 세션 생성 시 자동 배정, 닫으면 반납, 비밀번호 보기·복사
 - Claude에게 매 메시지마다 실행 중인 서버 주소와 배정 계정을 알려 줌
-- gh CLI 로그인 상태 표시 (Phase 3 PR 생성용)
+- gh CLI 로그인 상태 표시
 
-PR 자동화, 영향 화면 전후 비교, 리소스 정리 화면은 Phase 3입니다.
+**Phase 3**
+- 푸시하고 PR 만들기 (상단 바)
+  - 레포별로 바뀐 파일과 커밋을 모으고, Claude가 PR 템플릿(`.github/pull_request_template.md` 등) 형식대로 제목·본문·커밋 메시지를 씀. 보내기 전에 고칠 수 있음
+  - 커밋 → PR 전 검사(프로젝트의 "PR 전 검사" 명령) → 푸시 → `gh pr create`. 모든 레포의 검사가 통과한 뒤에 푸시해서 한쪽만 PR이 올라가지 않음
+  - 검사가 실패하면 멈추고, 출력 끝부분을 프롬프트로 넘길 수 있음
+  - BE·FE PR은 본문 끝에 서로를 관련 PR로 연결. 환경값의 비밀값과 계정 비밀번호는 본문에서 가림
+  - PR을 만들면 서버를 끔(설정), 상단 바에 PR 상태 표시, PR 닫기
+- 영향받는 화면 전후 비교
+  - Claude가 바뀐 파일에서 라우터와 import를 따라 화면 경로를 찾음 (BE API가 바뀌면 그 API를 부르는 화면도). 직접 추가 가능
+  - 기준 서버(설정의 FE 프로젝트 "화면 비교" 주소, 보통 develop 공용 서버)와 세션 FE 서버를 같은 해상도로 찍어 픽셀 비교, 차이 비율과 번호 붙은 차이 상자 표시
+  - 나란히 / 겹쳐 보기 / 차이만, 의도한 변경으로 표시, 전후 이미지로 Claude에게 수정 요청
+  - 로그인 경로를 넣으면 배정 계정으로 로그인한 뒤 찍음 (아이디·비밀번호 입력란이 있는 일반 폼만)
+  - 미리보기 "캡처해서 첨부": 지금 화면을 찍어 프롬프트에 첨부
+  - 촬영은 설치된 Google Chrome을 씀. 없으면 `npx playwright install chromium`
+- 리소스 정리 (사이드바)
+  - 세션별 PR 상태, 서버, 워크트리 용량·미커밋 여부, 계정, 상태(정리 대기 / 보호됨 / 머지 대기 / 작업 중)
+  - 서버 종료 → 워크트리 삭제 → 로컬 브랜치 삭제 → (원격 브랜치 삭제) → 계정 반납 → 스크린샷 삭제 → 세션 보관
+  - 미커밋 변경이 있는 워크트리는 자동으로 지우지 않음. 직접 고르면 확인 후 변경을 버리고 정리
+  - 설정한 간격(기본 10분)으로 `gh pr view`로 PR 상태 확인, 머지·닫히면 알림(설정하면 확인 없이 정리), 오래 쉰 세션 알림
+  - 시작할 때 `git worktree prune`, 닫힌 세션에 묶인 계정 반납
+
+## 지원하는 프로젝트
+
+프로젝트를 등록하면 폴더를 보고 실행·설치·검사 명령과 헬스체크를 채웁니다. 모두 설정에서 고칠 수 있습니다.
+
+| 종류 | 알아보는 기준 | 실행 | 처음 설치 |
+| --- | --- | --- | --- |
+| Spring (Gradle/Maven) | `build.gradle`, `pom.xml` | `./gradlew bootRun` (포트는 `SERVER_PORT`) | 없음 |
+| Node FE (Vite, Next, Nuxt 등) | `package.json` 의존성 | `npm run dev -- --port {port}` 등 | `npm ci` / `pnpm install` / `yarn install` |
+| Python FastAPI·Starlette | `pyproject.toml`, `requirements.txt`, 코드의 `FastAPI(` | `uv run uvicorn 패키지.main:app --port {port}` | `uv sync` / `poetry install` / `pipenv install` / venv+pip |
+| Python Django, Flask | `manage.py`, `Flask(` | `manage.py runserver`, `flask run` | 위와 같음 |
+
+새 워크트리에는 `.venv`나 `node_modules`가 없어서, 워크트리마다 처음 실행할 때 설치 명령을 먼저 돌립니다.
+Python은 `os.environ[...]`(필수), `os.environ.get`·`os.getenv`(선택)로 읽는 환경변수를 찾습니다.
 
 ## 준비물
 

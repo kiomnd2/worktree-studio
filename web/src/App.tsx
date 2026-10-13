@@ -8,9 +8,17 @@ import NewSessionDialog from './components/NewSessionDialog';
 import SettingsPage from './components/SettingsPage';
 import RightPanel from './components/RightPanel';
 import EnvPage from './components/EnvPage';
-import type { ServerView } from './types';
+import PrDialog from './components/PrDialog';
+import ScreensPage from './components/ScreensPage';
+import CleanupPage from './components/CleanupPage';
+import type { PullRequest, ServerView } from './types';
 
-type View = { kind: 'session'; id: number | null } | { kind: 'settings' } | { kind: 'env'; id: number; message?: string };
+type View =
+  | { kind: 'session'; id: number | null }
+  | { kind: 'settings' }
+  | { kind: 'cleanup' }
+  | { kind: 'env'; id: number; message?: string }
+  | { kind: 'screens'; id: number };
 
 function initialView(): View {
   const id = Number(new URLSearchParams(location.search).get('session'));
@@ -21,6 +29,9 @@ export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [view, setView] = useState<View>(initialView);
   const [creating, setCreating] = useState(false);
+  const [prOpen, setPrOpen] = useState(false);
+  const [prs, setPrs] = useState<PullRequest[]>([]);
+  const [cleanupCount, setCleanupCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(() => {
@@ -28,7 +39,7 @@ export default function App() {
   }, []);
   useEffect(reload, [reload]);
 
-  const selectedId = view.kind === 'session' || view.kind === 'env' ? view.id : null;
+  const selectedId = view.kind === 'session' || view.kind === 'env' || view.kind === 'screens' ? view.id : null;
   const [servers, setServers] = useState<ServerView[]>([]);
   const reloadServers = useCallback(() => {
     if (selectedId) api.servers(selectedId).then(setServers).catch(() => setServers([]));
@@ -36,6 +47,17 @@ export default function App() {
   }, [selectedId]);
   useEffect(reloadServers, [reloadServers]);
   const selected = sessions.find((s) => s.id === selectedId) ?? null;
+
+  const reloadPrs = useCallback(() => {
+    if (selectedId) api.pr(selectedId).then((r) => setPrs(r.prs)).catch(() => setPrs([]));
+    else setPrs([]);
+  }, [selectedId]);
+  useEffect(reloadPrs, [reloadPrs]);
+
+  const reloadCleanup = useCallback(() => {
+    api.cleanup().then((r) => setCleanupCount(r.rows.filter((x) => x.state === 'ready').length)).catch(() => {});
+  }, []);
+  useEffect(reloadCleanup, [reloadCleanup]);
 
   useEffect(() => {
     if (view.kind === 'session' && view.id === null && sessions.length > 0) setView({ kind: 'session', id: sessions[0].id });
@@ -62,6 +84,8 @@ export default function App() {
   useServerEvents((e) => {
     if (e.type === 'sessions.changed' || e.type === 'session.updated') reload();
     if (e.type === 'server.updated' && e.sessionId === selectedId) reloadServers();
+    if (e.type === 'pr.updated' && e.sessionId === selectedId) reloadPrs();
+    if (e.type === 'cleanup.changed' || e.type === 'sessions.changed') reloadCleanup();
   });
 
   return (
@@ -73,7 +97,7 @@ export default function App() {
           </svg>
           Worktree Studio
         </div>
-        {selected && view.kind !== 'settings' && (
+        {selected && view.kind !== 'settings' && view.kind !== 'cleanup' && (
           <>
             <div className="topbar-session">
               <strong>{selected.ticket}</strong> <span>{selected.summary}</span>
@@ -88,6 +112,15 @@ export default function App() {
                 </span>
               ))}
               {selected.account && <span className="chip-status">계정 {selected.account.login}</span>}
+              {prs.map((p) => (
+                <a key={p.id} className="chip-status" href={p.url} target="_blank" rel="noreferrer">
+                  <span className={`srv-dot ${p.state === 'OPEN' ? 'running' : p.state === 'MERGED' ? 'merged' : 'idle'}`} aria-hidden="true" />
+                  PR #{p.number} {p.state === 'OPEN' ? '열림' : p.state === 'MERGED' ? '머지됨' : '닫힘'}
+                </a>
+              ))}
+              <button className="small-btn primary" disabled={selected.status === 'running'} title={selected.status === 'running' ? 'Claude 작업이 끝난 뒤에 만들 수 있습니다' : undefined} onClick={() => setPrOpen(true)}>
+                푸시하고 PR 만들기
+              </button>
             </div>
           </>
         )}
@@ -102,12 +135,19 @@ export default function App() {
           sessions={sessions}
           selectedId={selectedId}
           settingsOpen={view.kind === 'settings'}
+          cleanupOpen={view.kind === 'cleanup'}
+          cleanupCount={cleanupCount}
           onSelect={(id) => setView({ kind: 'session', id })}
           onNew={() => setCreating(true)}
           onSettings={() => setView({ kind: 'settings' })}
+          onCleanup={() => setView({ kind: 'cleanup' })}
         />
         {view.kind === 'settings' ? (
           <main className="main scroll"><SettingsPage /></main>
+        ) : view.kind === 'cleanup' ? (
+          <CleanupPage onOpenSession={(id) => setView({ kind: 'session', id })} />
+        ) : view.kind === 'screens' && selected ? (
+          <ScreensPage key={selected.id} session={selected} onBack={() => setView({ kind: 'session', id: selected.id })} />
         ) : view.kind === 'env' && selected ? (
           <EnvPage
             key={`${selected.id}-${view.message ?? ''}`}
@@ -123,6 +163,7 @@ export default function App() {
               key={`panel-${selected.id}`}
               session={selected}
               onOpenEnv={(message) => setView({ kind: 'env', id: selected.id, message })}
+              onOpenScreens={() => setView({ kind: 'screens', id: selected.id })}
               onClosed={() => { setView({ kind: 'session', id: null }); reload(); }}
             />
           </>
@@ -139,6 +180,13 @@ export default function App() {
           </main>
         )}
       </div>
+      {prOpen && selected && (
+        <PrDialog
+          session={selected}
+          onClose={() => setPrOpen(false)}
+          onOpenCleanup={() => { setPrOpen(false); setView({ kind: 'cleanup' }); }}
+        />
+      )}
       {creating && (
         <NewSessionDialog
           onClose={() => setCreating(false)}

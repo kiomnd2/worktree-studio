@@ -42,6 +42,17 @@ export default function PromptInput({ session }: { session: Session }) {
     return () => window.removeEventListener('wts:insert-prompt', onInsert);
   }, []);
 
+  useEffect(() => {
+    const onAttach = (e: Event) => {
+      const { mediaType, data, name } = (e as CustomEvent<{ mediaType: string; data: string; name: string }>).detail;
+      const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+      addFiles([new File([bytes], name, { type: mediaType })]);
+      textarea.current?.focus();
+    };
+    window.addEventListener('wts:attach-image', onAttach);
+    return () => window.removeEventListener('wts:attach-image', onAttach);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function addFiles(files: FileList | File[]) {
     setError(null);
     const next: Attachment[] = [];

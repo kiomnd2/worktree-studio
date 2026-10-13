@@ -43,17 +43,17 @@ export async function addProject(inputPath: string): Promise<ProjectRow> {
   const d = detectProject(root);
   const apiKey = d.kind === 'fe' ? guessApiEnvKey(scanEnv(root)) : null;
   const info = db
-    .prepare(`INSERT INTO projects (name, local_path, kind, start_cmd, check_cmd, health_path, port_env, api_env_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(path.basename(root), root, d.kind, d.startCmd, d.checkCmd, d.healthPath, d.portEnv, apiKey);
+    .prepare(`INSERT INTO projects (name, local_path, kind, start_cmd, check_cmd, health_path, port_env, api_env_key, setup_cmd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(path.basename(root), root, d.kind, d.startCmd, d.checkCmd, d.healthPath, d.portEnv, apiKey, d.setupCmd);
   return getProject(Number(info.lastInsertRowid))!;
 }
 
-export function updateProject(id: number, patch: Partial<Pick<ProjectRow, 'name' | 'kind' | 'start_cmd' | 'check_cmd' | 'health_path' | 'port_env' | 'api_env_key'>>) {
+export function updateProject(id: number, patch: Partial<Pick<ProjectRow, 'name' | 'kind' | 'start_cmd' | 'check_cmd' | 'health_path' | 'port_env' | 'api_env_key' | 'baseline_url' | 'login_path' | 'setup_cmd'>>) {
   const cur = getProject(id);
   if (!cur) throw new Error('프로젝트가 없습니다.');
   const next = { ...cur, ...patch };
-  db.prepare(`UPDATE projects SET name = ?, kind = ?, start_cmd = ?, check_cmd = ?, health_path = ?, port_env = ?, api_env_key = ? WHERE id = ?`)
-    .run(next.name, next.kind, next.start_cmd, next.check_cmd, next.health_path, next.port_env, next.api_env_key, id);
+  db.prepare(`UPDATE projects SET name = ?, kind = ?, start_cmd = ?, check_cmd = ?, health_path = ?, port_env = ?, api_env_key = ?, baseline_url = ?, login_path = ?, setup_cmd = ? WHERE id = ?`)
+    .run(next.name, next.kind, next.start_cmd, next.check_cmd, next.health_path, next.port_env, next.api_env_key, next.baseline_url, next.login_path, next.setup_cmd, id);
   return getProject(id)!;
 }
 

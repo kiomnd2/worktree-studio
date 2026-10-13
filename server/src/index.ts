@@ -26,6 +26,11 @@ import {
 } from './accounts.js';
 import { githubStatus } from './github.js';
 import { getProject as projectById } from './projects.js';
+import { closePr, getPrJob, listPrs, preparePr, startPr } from './pr.js';
+import {
+  SCREEN_DIR, addScreen, capturePreview, captureScreens, cropForPrompt, detectScreens, getScreen, removeScreen, screenState, setScreenStatus,
+} from './screens.js';
+import { cleanSession, listCleanup, refreshPrStates, scheduleCleanupPoll, startupSweep } from './cleanup.js';
 
 const app = Fastify({ logger: { level: 'info' }, bodyLimit: 40 * 1024 * 1024 });
 await app.register(cors, { origin: [/^http:\/\/localhost(:\d+)?$/, /^http:\/\/127\.0\.0\.1(:\d+)?$/] });
@@ -38,6 +43,8 @@ app.setErrorHandler((err: Error & { statusCode?: number; details?: Record<string
 
 const orphans = cleanupOrphans();
 if (orphans) app.log.info(`이전 실행에서 남은 서버 프로세스 ${orphans}개를 정리했습니다.`);
+startupSweep(orphans).catch((e) => app.log.error(e));
+scheduleCleanupPoll();
 
 const idParam = z.object({ id: z.coerce.number().int().positive() });
 
@@ -57,6 +64,9 @@ app.patch('/api/projects/:id', async (req) => {
     health_path: z.string().nullable().optional(),
     port_env: z.string().nullable().optional(),
     api_env_key: z.string().nullable().optional(),
+    baseline_url: z.string().url('기준 서버 주소는 http://로 시작하는 전체 주소로 넣으세요.').nullable().optional(),
+    login_path: z.string().nullable().optional(),
+    setup_cmd: z.string().nullable().optional(),
   }).parse(req.body);
   return describeProject(updateProject(id, patch));
 });
@@ -188,10 +198,15 @@ app.get('/api/sessions/:id/servers', async (req) => {
   if (!s) throw new Error('세션이 없습니다.');
   return listServers(s);
 });
+const startBody = z.object({
+  worktreeIds: z.array(z.number().int()).optional(),
+  commands: z.record(z.string(), z.string()).optional(),
+});
+const commandMap = (c?: Record<string, string>) => Object.fromEntries(Object.entries(c ?? {}).map(([k, v]) => [Number(k), v]));
 app.post('/api/sessions/:id/servers/start', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { worktreeIds } = z.object({ worktreeIds: z.array(z.number().int()).optional() }).parse(req.body ?? {});
-  await startServers(id, worktreeIds);
+  const { worktreeIds, commands } = startBody.parse(req.body ?? {});
+  await startServers(id, worktreeIds, commandMap(commands));
   return listServers(getSession(id)!);
 });
 app.post('/api/sessions/:id/servers/stop', async (req) => {
@@ -202,9 +217,9 @@ app.post('/api/sessions/:id/servers/stop', async (req) => {
 });
 app.post('/api/sessions/:id/servers/restart', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { worktreeIds } = z.object({ worktreeIds: z.array(z.number().int()).optional() }).parse(req.body ?? {});
+  const { worktreeIds, commands } = startBody.parse(req.body ?? {});
   await stopServers(id, worktreeIds);
-  await startServers(id, worktreeIds);
+  await startServers(id, worktreeIds, commandMap(commands));
   return listServers(getSession(id)!);
 });
 app.get('/api/worktrees/:id/logs', async (req) => getLogs(idParam.parse(req.params).id));
@@ -236,6 +251,88 @@ app.post('/api/sessions/:id/account/release', async (req) => {
 
 app.get('/api/github/status', async () => githubStatus());
 
+// 푸시와 PR
+app.get('/api/sessions/:id/pr', async (req) => {
+  const { id } = idParam.parse(req.params);
+  return { job: getPrJob(id), prs: listPrs(id) };
+});
+app.post('/api/sessions/:id/pr/prepare', async (req) => preparePr(idParam.parse(req.params).id));
+app.post('/api/sessions/:id/pr', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const { items } = z.object({
+    items: z.array(z.object({ worktree_id: z.number().int(), title: z.string(), body: z.string(), commit_message: z.string() })),
+  }).parse(req.body);
+  return startPr(id, items);
+});
+app.post('/api/prs/:id/close', async (req) => {
+  await closePr(idParam.parse(req.params).id);
+  return { ok: true };
+});
+
+// 영향 화면 전후 비교
+app.get('/api/sessions/:id/screens', async (req) => screenState(idParam.parse(req.params).id));
+app.post('/api/sessions/:id/screens/detect', async (req) => ({ found: await detectScreens(idParam.parse(req.params).id) }));
+app.post('/api/sessions/:id/screens', async (req) => {
+  const { route } = z.object({ route: z.string() }).parse(req.body);
+  addScreen(idParam.parse(req.params).id, route);
+  return { ok: true };
+});
+app.post('/api/sessions/:id/screens/capture', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const { ids } = z.object({ ids: z.array(z.number().int()).optional() }).parse(req.body ?? {});
+  return captureScreens(id, ids);
+});
+app.patch('/api/screens/:id', async (req) => {
+  const { accepted } = z.object({ accepted: z.boolean() }).parse(req.body);
+  setScreenStatus(idParam.parse(req.params).id, accepted);
+  return { ok: true };
+});
+app.delete('/api/screens/:id', async (req) => {
+  removeScreen(idParam.parse(req.params).id);
+  return { ok: true };
+});
+app.post('/api/screens/:id/ask', async (req) => {
+  const { note } = z.object({ note: z.string().default('') }).parse(req.body ?? {});
+  const check = getScreen(idParam.parse(req.params).id);
+  if (!check?.before_file || !check.after_file) throw new Error('먼저 화면을 찍으세요.');
+  const s = getSession(check.session_id);
+  if (s?.status === 'running') throw new Error('Claude가 작업 중입니다. 끝난 뒤에 보내세요.');
+  const box = check.boxes[0];
+  const text = [
+    `${check.route} 화면을 기준 브랜치(첫 번째 이미지)와 작업 브랜치(두 번째 이미지)로 비교했더니 ${((check.diff_ratio ?? 0) * 100).toFixed(2)}%가 달라졌어.`,
+    box ? `가장 위쪽 차이는 x=${box.x}, y=${box.y} 근처(${box.w}x${box.h})이고, 이미지는 그 주변을 잘라 붙였어.` : '',
+    note.trim() || '의도하지 않은 변경이면 원인을 찾아 고쳐줘. 의도한 변경이면 그렇다고 알려줘.',
+  ].filter(Boolean).join('\n');
+  runPrompt(check.session_id, text, [
+    { mediaType: 'image/png', data: cropForPrompt(check.session_id, check.before_file, box), name: `${check.route} 기준.png` },
+    { mediaType: 'image/png', data: cropForPrompt(check.session_id, check.after_file, box), name: `${check.route} 작업.png` },
+  ]).catch((e) => app.log.error(e));
+  return { ok: true };
+});
+app.get('/api/screens/file/:session/:file', async (req, reply) => {
+  const { session, file } = z.object({ session: z.coerce.number().int(), file: z.string().regex(/^\d+-\d+-(before|after|diff)\.png$/) }).parse(req.params);
+  const full = path.join(SCREEN_DIR, String(session), file);
+  if (!fs.existsSync(full)) return reply.status(404).send();
+  reply.type('image/png');
+  return fs.createReadStream(full);
+});
+app.post('/api/sessions/:id/preview/capture', async (req) => {
+  const { url } = z.object({ url: z.string().url() }).parse(req.body);
+  return capturePreview(idParam.parse(req.params).id, url);
+});
+
+// 리소스 정리
+app.get('/api/cleanup', async () => listCleanup());
+app.post('/api/cleanup', async (req) => {
+  const b = z.object({ sessionIds: z.array(z.number().int()).min(1), deleteRemote: z.boolean().default(false), force: z.boolean().default(false) }).parse(req.body);
+  const results: { session_id: number; steps: { name: string; ok: boolean; detail: string }[]; error: string | null }[] = [];
+  for (const sid of b.sessionIds) {
+    try { results.push({ session_id: sid, steps: await cleanSession(sid, b), error: null }); } catch (e) { results.push({ session_id: sid, steps: [], error: (e as Error).message }); }
+  }
+  return results;
+});
+app.post('/api/cleanup/refresh', async () => ({ changed: await refreshPrStates() }));
+
 // 첨부 이미지
 app.get('/api/uploads/:file', async (req, reply) => {
   const { file } = z.object({ file: z.string().regex(/^[0-9a-f-]+\.(png|jpg|gif|webp)$/) }).parse(req.params);
@@ -254,9 +351,16 @@ app.put('/api/settings', async (req) => {
     notify: z.object({
       onComplete: z.boolean(), onError: z.boolean(), onServerFail: z.boolean().default(true), os: z.boolean(), sound: z.boolean(),
       skipWhenViewing: z.boolean(), minSeconds: z.number().int().min(0).max(3600),
+      onPr: z.boolean().default(true), onCleanup: z.boolean().default(true),
     }),
+    cleanup: z.object({
+      stopServersOnPr: z.boolean(), autoCleanMerged: z.boolean(), deleteRemoteBranch: z.boolean(),
+      pollMinutes: z.number().int().min(1).max(1440), staleDays: z.number().int().min(0).max(365),
+    }).default(getSettings().cleanup),
   }).parse(req.body);
-  return saveSettings(body as Settings);
+  const saved = saveSettings(body as Settings);
+  scheduleCleanupPoll();
+  return saved;
 });
 app.post('/api/notify/test', async () => {
   sendNotification('Worktree Studio', '테스트 알림입니다.');
