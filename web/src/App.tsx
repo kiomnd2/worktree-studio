@@ -6,9 +6,11 @@ import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
 import NewSessionDialog from './components/NewSessionDialog';
 import SettingsPage from './components/SettingsPage';
-import SessionPanel from './components/SessionPanel';
+import RightPanel from './components/RightPanel';
+import EnvPage from './components/EnvPage';
+import type { ServerView } from './types';
 
-type View = { kind: 'session'; id: number | null } | { kind: 'settings' };
+type View = { kind: 'session'; id: number | null } | { kind: 'settings' } | { kind: 'env'; id: number; message?: string };
 
 function initialView(): View {
   const id = Number(new URLSearchParams(location.search).get('session'));
@@ -26,7 +28,13 @@ export default function App() {
   }, []);
   useEffect(reload, [reload]);
 
-  const selectedId = view.kind === 'session' ? view.id : null;
+  const selectedId = view.kind === 'session' || view.kind === 'env' ? view.id : null;
+  const [servers, setServers] = useState<ServerView[]>([]);
+  const reloadServers = useCallback(() => {
+    if (selectedId) api.servers(selectedId).then(setServers).catch(() => setServers([]));
+    else setServers([]);
+  }, [selectedId]);
+  useEffect(reloadServers, [reloadServers]);
   const selected = sessions.find((s) => s.id === selectedId) ?? null;
 
   useEffect(() => {
@@ -53,6 +61,7 @@ export default function App() {
 
   useServerEvents((e) => {
     if (e.type === 'sessions.changed' || e.type === 'session.updated') reload();
+    if (e.type === 'server.updated' && e.sessionId === selectedId) reloadServers();
   });
 
   return (
@@ -64,11 +73,23 @@ export default function App() {
           </svg>
           Worktree Studio
         </div>
-        {selected && view.kind === 'session' && (
-          <div className="topbar-session">
-            <strong>{selected.ticket}</strong> <span>{selected.summary}</span>
-            {selected.worktrees[0] && <code className="branch">{selected.worktrees[0].branch}</code>}
-          </div>
+        {selected && view.kind !== 'settings' && (
+          <>
+            <div className="topbar-session">
+              <strong>{selected.ticket}</strong> <span>{selected.summary}</span>
+              {selected.worktrees[0] && <code className="branch">{selected.worktrees[0].branch}</code>}
+            </div>
+            <div className="topbar-chips">
+              {servers.map((s) => (
+                <span key={s.worktree_id} className="chip-status">
+                  <span className={`srv-dot ${s.status}`} aria-hidden="true" />
+                  {s.project_kind === 'fe' ? 'FE' : s.project_kind === 'be' ? 'BE' : s.project_name}
+                  {s.port && s.url ? ` :${s.port}` : ' 꺼짐'}
+                </span>
+              ))}
+              {selected.account && <span className="chip-status">계정 {selected.account.login}</span>}
+            </div>
+          </>
         )}
       </header>
       {error && (
@@ -87,10 +108,23 @@ export default function App() {
         />
         {view.kind === 'settings' ? (
           <main className="main scroll"><SettingsPage /></main>
+        ) : view.kind === 'env' && selected ? (
+          <EnvPage
+            key={`${selected.id}-${view.message ?? ''}`}
+            session={selected}
+            message={view.message}
+            onBack={() => setView({ kind: 'session', id: selected.id })}
+            onStarted={() => setView({ kind: 'session', id: selected.id })}
+          />
         ) : selected ? (
           <>
             <ChatView key={selected.id} session={selected} />
-            <SessionPanel session={selected} onClosed={() => { setView({ kind: 'session', id: null }); reload(); }} />
+            <RightPanel
+              key={`panel-${selected.id}`}
+              session={selected}
+              onOpenEnv={(message) => setView({ kind: 'env', id: selected.id, message })}
+              onClosed={() => { setView({ kind: 'session', id: null }); reload(); }}
+            />
           </>
         ) : (
           <main className="main empty">

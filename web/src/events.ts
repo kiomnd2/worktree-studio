@@ -42,3 +42,8 @@ export function useServerEvents(handler: Listener) {
     return () => { listeners.delete(l); };
   }, []);
 }
+
+/** 로그 줄 같은 텍스트를 프롬프트 입력창에 붙인다. */
+export function insertIntoPrompt(text: string) {
+  window.dispatchEvent(new CustomEvent('wts:insert-prompt', { detail: text }));
+}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
-import type { PermissionMode, Project, ProjectKind, Settings, Workspace } from '../types';
+import type { Account, PermissionMode, Project, ProjectKind, Settings, Workspace } from '../types';
 
 const KINDS: { value: ProjectKind; label: string }[] = [
   { value: 'be', label: 'BE' }, { value: 'fe', label: 'FE' }, { value: 'full', label: '통합' }, { value: 'unknown', label: '미정' },
@@ -17,15 +17,18 @@ export default function SettingsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [gh, setGh] = useState<{ installed: boolean; loggedIn: boolean; account: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const reload = useCallback(() => {
-    Promise.all([api.projects(), api.workspaces(), api.settings()])
-      .then(([p, w, s]) => { setProjects(p); setWorkspaces(w); setSettings(s); })
+    Promise.all([api.projects(), api.workspaces(), api.settings(), api.accounts()])
+      .then(([p, w, s, a]) => { setProjects(p); setWorkspaces(w); setSettings(s); setAccounts(a.accounts); })
       .catch((e) => setError(e.message));
   }, []);
   useEffect(reload, [reload]);
+  useEffect(() => { api.githubStatus().then(setGh).catch(() => setGh(null)); }, []);
 
   const run = (fn: () => Promise<unknown>, ok?: string) => async () => {
     setError(null); setNotice(null);
@@ -34,11 +37,20 @@ export default function SettingsPage() {
 
   return (
     <div className="settings">
-      <h1>프로젝트와 설정</h1>
+      <div className="page-head">
+        <h1>프로젝트와 설정</h1>
+        {gh && (
+          <span className="chip-status">
+            <span className={`srv-dot ${gh.loggedIn ? 'running' : 'failed'}`} aria-hidden="true" />
+            {!gh.installed ? 'gh CLI가 없습니다 (PR 생성에 필요)' : gh.loggedIn ? `gh 로그인됨${gh.account ? ` (${gh.account})` : ''} · PR 생성에만 사용` : 'gh 로그인 필요: 터미널에서 gh auth login'}
+          </span>
+        )}
+      </div>
       {error && <p className="banner error" role="alert">{error}</p>}
       {notice && <p className="banner ok" role="status">{notice}</p>}
       <ProjectsSection projects={projects} run={run} />
       <WorkspacesSection projects={projects} workspaces={workspaces} run={run} />
+      <AccountsSection accounts={accounts} run={run} />
       {settings && <PreferencesSection settings={settings} setSettings={setSettings} run={run} />}
     </div>
   );
@@ -58,9 +70,9 @@ function ProjectsSection({ projects, run }: { projects: Project[]; run: Run }) {
       </div>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>로컬 폴더</th><th>종류</th><th>실행</th><th>PR 전 검사</th><th>헬스체크</th><th><span className="sr-only">삭제</span></th></tr></thead>
+          <thead><tr><th>로컬 폴더</th><th>종류</th><th>실행 <span className="muted">({'{port}'} 자리에 포트)</span></th><th>포트 변수</th><th>BE 주소 변수</th><th>PR 전 검사</th><th>헬스체크</th><th><span className="sr-only">삭제</span></th></tr></thead>
           <tbody>
-            {projects.length === 0 && <tr><td colSpan={6} className="muted">등록된 프로젝트가 없습니다. 아래에 클론 폴더 경로를 넣으세요.</td></tr>}
+            {projects.length === 0 && <tr><td colSpan={8} className="muted">등록된 프로젝트가 없습니다. 아래에 클론 폴더 경로를 넣으세요.</td></tr>}
             {projects.map((p) => <ProjectRow key={p.id} p={p} run={run} />)}
           </tbody>
         </table>
@@ -77,8 +89,12 @@ function ProjectsSection({ projects, run }: { projects: Project[]; run: Run }) {
 }
 
 function ProjectRow({ p, run }: { p: Project; run: Run }) {
-  const [draft, setDraft] = useState({ kind: p.kind, start_cmd: p.start_cmd ?? '', check_cmd: p.check_cmd ?? '', health_path: p.health_path ?? '' });
-  const dirty = draft.kind !== p.kind || draft.start_cmd !== (p.start_cmd ?? '') || draft.check_cmd !== (p.check_cmd ?? '') || draft.health_path !== (p.health_path ?? '');
+  const initial = {
+    kind: p.kind, start_cmd: p.start_cmd ?? '', check_cmd: p.check_cmd ?? '', health_path: p.health_path ?? '',
+    port_env: p.port_env ?? '', api_env_key: p.api_env_key ?? '',
+  };
+  const [draft, setDraft] = useState(initial);
+  const dirty = (Object.keys(initial) as (keyof typeof initial)[]).some((k) => draft[k] !== initial[k]);
   return (
     <tr>
       <td>
@@ -92,11 +108,13 @@ function ProjectRow({ p, run }: { p: Project; run: Run }) {
           {KINDS.map((k) => <option key={k.value} value={k.value}>{k.label}</option>)}
         </select>
       </td>
-      <td><input aria-label={`${p.name} 실행 명령`} className="mono" value={draft.start_cmd} onChange={(e) => setDraft({ ...draft, start_cmd: e.target.value })} /></td>
+      <td><input aria-label={`${p.name} 실행 명령`} className="mono wide" value={draft.start_cmd} onChange={(e) => setDraft({ ...draft, start_cmd: e.target.value })} /></td>
+      <td><input aria-label={`${p.name} 포트 변수`} className="mono narrow" placeholder="PORT" value={draft.port_env} onChange={(e) => setDraft({ ...draft, port_env: e.target.value })} /></td>
+      <td><input aria-label={`${p.name} BE 주소 변수`} className="mono narrow" placeholder={p.kind === 'fe' ? 'VITE_API_URL' : ''} value={draft.api_env_key} onChange={(e) => setDraft({ ...draft, api_env_key: e.target.value })} /></td>
       <td><input aria-label={`${p.name} 검사 명령`} className="mono" value={draft.check_cmd} onChange={(e) => setDraft({ ...draft, check_cmd: e.target.value })} /></td>
       <td><input aria-label={`${p.name} 헬스체크 경로`} className="mono narrow" value={draft.health_path} onChange={(e) => setDraft({ ...draft, health_path: e.target.value })} /></td>
       <td className="actions">
-        {dirty && <button onClick={run(() => api.updateProject(p.id, { ...draft, start_cmd: draft.start_cmd || null, check_cmd: draft.check_cmd || null, health_path: draft.health_path || null }), '저장했습니다.')}>저장</button>}
+        {dirty && <button onClick={run(() => api.updateProject(p.id, { ...draft, start_cmd: draft.start_cmd || null, check_cmd: draft.check_cmd || null, health_path: draft.health_path || null, port_env: draft.port_env || null, api_env_key: draft.api_env_key || null }), '저장했습니다.')}>저장</button>}
         <button className="danger" onClick={() => { if (confirm(`${p.name} 등록을 지울까요? 폴더는 지우지 않습니다.`)) run(() => api.deleteProject(p.id))(); }}>삭제</button>
       </td>
     </tr>
@@ -155,6 +173,7 @@ function PreferencesSection({ settings, setSettings, run }: { settings: Settings
           <legend>알릴 일</legend>
           <label><input type="checkbox" checked={n.onComplete} onChange={(e) => setN({ onComplete: e.target.checked })} /> 프롬프트 작업이 끝났을 때</label>
           <label><input type="checkbox" checked={n.onError} onChange={(e) => setN({ onError: e.target.checked })} /> 작업이 오류로 멈췄을 때</label>
+          <label><input type="checkbox" checked={n.onServerFail} onChange={(e) => setN({ onServerFail: e.target.checked })} /> 서버가 예기치 않게 멈췄을 때</label>
         </fieldset>
         <fieldset className="checks column">
           <legend>알리는 방법</legend>
@@ -171,6 +190,49 @@ function PreferencesSection({ settings, setSettings, run }: { settings: Settings
         <button className="primary" onClick={run(() => api.saveSettings(settings), '설정을 저장했습니다.')}>설정 저장</button>
         <button onClick={run(() => api.testNotify(), '테스트 알림을 보냈습니다.')}>테스트 알림 보내기</button>
       </div>
+    </section>
+  );
+}
+
+function AccountsSection({ accounts, run }: { accounts: Account[]; run: Run }) {
+  const [login, setLogin] = useState('');
+  const [password, setPassword] = useState('');
+  const [note, setNote] = useState('');
+  const used = accounts.filter((a) => a.session_id).length;
+  return (
+    <section className="card">
+      <div className="card-head">
+        <div>
+          <h2>테스트 계정 풀 <span className="muted small">{accounts.length}개 중 {used}개 사용 중</span></h2>
+          <p className="muted small">세션을 만들면 비어 있는 계정이 하나씩 배정되고, 세션을 닫으면 돌아옵니다. 같은 계정으로 두 곳에 로그인해 세션이 끊기는 일을 막습니다. 비밀번호는 암호화해 저장합니다.</p>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>계정</th><th>메모</th><th>상태</th><th>사용 세션</th><th><span className="sr-only">작업</span></th></tr></thead>
+          <tbody>
+            {accounts.length === 0 && <tr><td colSpan={5} className="muted">등록된 계정이 없습니다.</td></tr>}
+            {accounts.map((a) => (
+              <tr key={a.id}>
+                <td className="mono">{a.login}</td>
+                <td className="muted">{a.note}</td>
+                <td><span className={`pill ${a.session_id ? 'accent' : 'ok'}`}>{a.session_id ? '사용 중' : '대기'}</span></td>
+                <td>{a.ticket ?? <span className="muted">없음</span>}</td>
+                <td className="actions">
+                  {a.session_id && <button onClick={run(() => api.releaseAccount(a.session_id!), '계정을 반납했습니다.')}>반납</button>}
+                  <button className="danger" onClick={() => { if (confirm(`${a.login} 계정을 풀에서 지울까요?`)) run(() => api.deleteAccount(a.id))(); }}>삭제</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <form className="add-row" onSubmit={(e) => { e.preventDefault(); run(async () => { await api.addAccount(login, password, note); setLogin(''); setPassword(''); setNote(''); }, '계정을 추가했습니다.')(); }}>
+        <label className="field"><span>계정</span><input className="mono" autoComplete="off" value={login} placeholder="qa-03@60hz.io" onChange={(e) => setLogin(e.target.value)} /></label>
+        <label className="field"><span>비밀번호</span><input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+        <label className="field grow"><span>메모 <span className="muted">(선택)</span></span><input value={note} placeholder="관리자 권한" onChange={(e) => setNote(e.target.value)} /></label>
+        <button type="submit" className="dark" disabled={!login.trim() || !password}>계정 추가</button>
+      </form>
     </section>
   );
 }

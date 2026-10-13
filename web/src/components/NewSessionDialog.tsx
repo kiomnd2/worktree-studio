@@ -15,9 +15,11 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [freeAccounts, setFreeAccounts] = useState<number | null>(null);
 
   useEffect(() => {
     api.workspaces().then((ws) => { setWorkspaces(ws); if (ws[0]) setWorkspaceId(ws[0].id); }).catch((e) => setError(e.message));
+    api.accounts().then((a) => setFreeAccounts(a.free)).catch(() => setFreeAccounts(null));
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -106,6 +108,12 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
               </div>
               <p className="muted small">워크트리는 각 클론 폴더 옆에 <code>폴더이름-티켓번호</code>로 만들어집니다.</p>
             </fieldset>
+            <p className="muted small">
+              {freeAccounts === null ? '' : freeAccounts > 0
+                ? `테스트 계정은 남은 ${freeAccounts}개 중 하나가 자동으로 배정됩니다.`
+                : '남은 테스트 계정이 없습니다. 계정 없이 세션을 만들고, 나중에 설정에서 추가할 수 있습니다.'}
+              {' '}환경값은 프로젝트의 기본 프로필을 쓰고, 세션 화면의 서버 패널에서 바꿀 수 있습니다.
+            </p>
             <label className="field">
               <span>첫 프롬프트 <span className="muted">(선택)</span></span>
               <textarea rows={3} value={firstPrompt} placeholder="비워 두면 워크트리만 만들고 대기합니다." onChange={(e) => setFirstPrompt(e.target.value)} />

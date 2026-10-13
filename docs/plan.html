@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>워크트리 개발 도구 플랜</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F5F6F8; --sheet:#FFFFFF; --ink:#1B2230; --muted:#5A6576; --rule:#D8DDE4;
+  --accent:#3446C4; --accent-soft:#E7EAFB; --branch:#0D7A68; --branch-soft:#E0F2EE; --warn:#A5531A; --warn-soft:#FBEDE2;
+  --sans:"IBM Plex Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#12161D; --sheet:#1A1F28; --ink:#E6E9EE; --muted:#9AA4B3; --rule:#2E3542;
+    --accent:#8F9BFF; --accent-soft:#252B4A; --branch:#4FC7AF; --branch-soft:#173530; --warn:#F0A46B; --warn-soft:#3A2618;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#12161D; --sheet:#1A1F28; --ink:#E6E9EE; --muted:#9AA4B3; --rule:#2E3542;
+  --accent:#8F9BFF; --accent-soft:#252B4A; --branch:#4FC7AF; --branch-soft:#173530; --warn:#F0A46B; --warn-soft:#3A2618;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:56px 24px 96px;display:grid;grid-template-columns:200px minmax(0,1fr);gap:56px}
+nav{position:sticky;top:calc(env(safe-area-inset-top,0px) + 32px);align-self:start;font-size:14px}
+nav a{display:block;color:var(--muted);text-decoration:none;padding:5px 0 5px 12px;border-left:2px solid var(--rule)}
+nav a:hover,nav a:focus-visible{color:var(--ink);border-left-color:var(--accent);outline:none}
+main{min-width:0}
+header{padding-bottom:40px;border-bottom:1px solid var(--rule);margin-bottom:48px}
+.doc-meta{font-size:14px;color:var(--muted);margin:0 0 20px;display:flex;flex-wrap:wrap;gap:6px 20px}
+.doc-meta span strong{color:var(--ink);font-weight:500}
+h1{font-size:clamp(30px,4.2vw,44px);line-height:1.25;font-weight:600;letter-spacing:-0.02em;margin:0 0 20px;max-width:18em}
+.lede{font-size:18px;color:var(--muted);max-width:38em;margin:0}
+section{margin-bottom:64px}
+h2{font-size:24px;font-weight:600;letter-spacing:-0.01em;margin:0 0 20px;line-height:1.4}
+h3{font-size:17px;font-weight:600;margin:28px 0 8px}
+p{margin:0 0 14px;max-width:42em}
+code{font-family:var(--mono);font-size:0.88em;background:var(--accent-soft);color:var(--ink);padding:1px 6px;border-radius:4px}
+pre{font-family:var(--mono);font-size:13.5px;line-height:1.65;background:var(--sheet);border:1px solid var(--rule);border-radius:6px;padding:16px 18px;overflow-x:auto;margin:12px 0 18px}
+pre code{background:none;padding:0}
+ul{padding-left:20px;margin:0 0 14px;max-width:42em}
+li{margin-bottom:6px}
+.scroll{overflow-x:auto;margin:8px 0 20px}
+table{border-collapse:collapse;width:100%;min-width:620px;font-size:14.5px;line-height:1.6;background:var(--sheet)}
+th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--rule)}
+th{font-weight:500;color:var(--muted);font-size:13.5px;border-bottom:1px solid var(--ink)}
+td:first-child{white-space:nowrap;font-weight:500}
+.tag{display:inline-block;font-size:12.5px;padding:1px 8px;border-radius:999px;font-weight:500;white-space:nowrap}
+.tag.mvp{background:var(--branch-soft);color:var(--branch)}
+.tag.later{background:var(--accent-soft);color:var(--accent)}
+.tag.risk{background:var(--warn-soft);color:var(--warn)}
+.scope{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.scope > div{border-top:3px solid var(--branch);padding-top:14px}
+.scope > div.out{border-top-color:var(--rule)}
+.scope h3{margin-top:0}
+figure{margin:12px 0 24px;background:var(--sheet);border:1px solid var(--rule);border-radius:6px;padding:20px;overflow-x:auto}
+figure svg{display:block;width:100%;min-width:560px;height:auto}
+figcaption{font-size:13.5px;color:var(--muted);margin-top:12px}
+.node rect{fill:var(--sheet);stroke:var(--rule)}
+.node.top rect{fill:var(--accent-soft);stroke:var(--accent)}
+.node.mod rect{fill:var(--branch-soft);stroke:var(--branch)}
+.node text{fill:var(--ink);font-family:var(--sans)}
+.node text.sub{fill:var(--muted)}
+.edge{stroke:var(--muted);stroke-width:1.2;fill:none}
+
+/* roadmap as a git graph */
+.graph{position:relative;margin:24px 0 0;padding-left:44px}
+.graph::before{content:"";position:absolute;left:15px;top:8px;bottom:8px;width:3px;background:var(--branch);border-radius:2px}
+.commit{position:relative;padding:0 0 36px}
+.commit:last-child{padding-bottom:0}
+.commit::before{content:"";position:absolute;left:-37px;top:6px;width:17px;height:17px;border-radius:50%;background:var(--sheet);border:3px solid var(--branch)}
+.commit.head::before{background:var(--branch)}
+.commit .ref{font-family:var(--mono);font-size:13px;color:var(--branch);margin:0 0 2px}
+.commit h3{margin:0 0 6px;font-size:19px}
+.commit .done{font-size:14.5px;color:var(--muted);margin:10px 0 0;padding:10px 14px;background:var(--sheet);border:1px solid var(--rule);border-radius:6px;max-width:42em}
+.commit .done strong{color:var(--ink);font-weight:500}
+
+.flow{counter-reset:step;list-style:none;padding:0;max-width:44em}
+.flow li{counter-increment:step;position:relative;padding:0 0 14px 44px;margin:0}
+.flow li::before{content:counter(step);position:absolute;left:0;top:1px;width:28px;height:28px;border-radius:50%;border:1px solid var(--rule);background:var(--sheet);font-size:13px;font-weight:500;display:grid;place-items:center;color:var(--muted)}
+.flow li strong{font-weight:500}
+.q{border-left:3px solid var(--accent);padding:2px 0 2px 16px;margin:0 0 16px;max-width:42em}
+.q p{margin:0}
+.q .why{color:var(--muted);font-size:14.5px}
+
+@media (max-width:820px){
+  .wrap{grid-template-columns:1fr;gap:0;padding-top:32px}
+  nav{display:none}
+  .scope{grid-template-columns:1fr}
+}
+@media print{nav{display:none}.wrap{grid-template-columns:1fr}body{background:#fff}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav aria-label="목차">
+  <a href="#why">배경과 목표</a>
+  <a href="#scope">범위</a>
+  <a href="#arch">아키텍처</a>
+  <a href="#features">기능 명세</a>
+  <a href="#flow">핵심 흐름</a>
+  <a href="#data">데이터 모델</a>
+  <a href="#roadmap">로드맵</a>
+  <a href="#risks">리스크</a>
+  <a href="#questions">결정 사항</a>
+</nav>
+
+<main>
+<header>
+  <p class="doc-meta"><span><strong>문서</strong> 개발 계획서 v0.3</span><span><strong>작성일</strong> 2026-10-13</span><span><strong>상태</strong> Phase 2 구현 완료 (v0.2.0)</span></p>
+  <h1>프롬프트 하나로 워크트리부터 PR까지 가는 로컬 개발 도구</h1>
+  <p class="lede">지금 터미널에서 손으로 이어 붙이는 작업, 즉 워크트리 생성, 포트를 나눠 서버 띄우기, 화면 확인, PR 작성을 한 화면에서 처리하는 도구를 만든다.</p>
+</header>
+
+<section id="why">
+  <h2>배경과 목표</h2>
+  <p>현재는 Claude Code를 터미널에서 실행하고, 작업마다 워크트리 경로와 포트(예: 3423, 3424)를 머릿속으로 관리한다. 서버가 여러 개 떠 있으면 어느 브랜치가 어느 포트인지 헷갈리고, 같은 테스트 계정으로 두 곳에 로그인하면 세션이 끊기는 문제도 생긴다. PR 본문은 매번 템플릿을 보며 직접 채운다.</p>
+  <h3>목표</h3>
+  <ul>
+    <li>티켓 하나당 세션 하나: 세션을 만들면 워크트리, 브랜치, 포트, 환경값이 함께 묶인다.</li>
+    <li>프롬프트 입력부터 화면 확인까지 창을 바꾸지 않는다.</li>
+    <li>PR은 템플릿에 맞춰 초안이 자동으로 만들어지고, 사람은 검토만 한다.</li>
+  </ul>
+  <h3>성공 기준</h3>
+  <ul>
+    <li>새 티켓 시작부터 로컬에서 화면을 보기까지 1분 안에 끝난다.</li>
+    <li>동시에 3개 이상의 워크트리 서버가 포트 충돌 없이 돈다.</li>
+    <li>PR 템플릿 항목이 빠짐없이 채워진 초안이 나온다.</li>
+  </ul>
+</section>
+
+<section id="scope">
+  <h2>범위</h2>
+  <div class="scope">
+    <div>
+      <h3>이번에 만드는 것</h3>
+      <ul>
+        <li>로컬 Claude Code 세션 연동 (Agent SDK)</li>
+        <li>GitHub 연동 (gh CLI)</li>
+        <li>로컬 클론 폴더 기준 프로젝트 등록과 BE/FE/통합 자동 감지</li>
+        <li>프롬프트 입력창과 대화 스트림</li>
+        <li>기준 브랜치 선택 후 워크트리 생성</li>
+        <li>프로필별 환경값 관리(AI 분석 후 수정·추가), 빈 포트로 서버 실행</li>
+        <li>FE 미리보기, BE 로그 뷰어</li>
+        <li>템플릿 기반 PR 생성</li>
+        <li>테스트 계정 풀 관리</li>
+      </ul>
+    </div>
+    <div class="out">
+      <h3>이번에 안 만드는 것</h3>
+      <ul>
+        <li>원격 서버 배포, 클라우드 호스팅</li>
+        <li>팀 단위 멀티 유저, 권한 관리</li>
+        <li>코드 에디터 기능 (IDE를 대체하지 않음)</li>
+        <li>CI 결과 연동, 리뷰 코멘트 자동 대응</li>
+        <li>DB 마이그레이션 자동 실행</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="arch">
+  <h2>아키텍처</h2>
+  <p>로컬 프로세스를 직접 다뤄야 하므로 Node.js(TypeScript) 오케스트레이터가 중심에 있고, 브라우저 UI는 WebSocket으로 상태를 받는다. <code>localhost</code> 웹앱으로 만든다. 도구를 끌 때 띄워 둔 서버는 오케스트레이터의 종료 훅에서 함께 정리한다.</p>
+  <figure>
+    <svg viewBox="0 0 680 300" role="img" aria-labelledby="archT archD">
+      <title id="archT">시스템 구성도</title>
+      <desc id="archD">웹 UI가 오케스트레이터와 연결되고, 오케스트레이터 아래에 Claude 세션, 워크트리, 서버 러너, GitHub 모듈이 있다.</desc>
+      <g class="node top"><rect x="140" y="20" width="400" height="56" rx="6"/><text x="340" y="44" text-anchor="middle" font-size="15" font-weight="600">웹 UI (React)</text><text class="sub" x="340" y="64" text-anchor="middle" font-size="12.5">프롬프트, 미리보기, 로그</text></g>
+      <path class="edge" d="M340 76 V120"/>
+      <g class="node top"><rect x="140" y="120" width="400" height="56" rx="6"/><text x="340" y="144" text-anchor="middle" font-size="15" font-weight="600">오케스트레이터 (Node)</text><text class="sub" x="340" y="164" text-anchor="middle" font-size="12.5">세션 상태, WebSocket, SQLite</text></g>
+      <path class="edge" d="M340 176 V198 H105 V224 M340 198 H260 V224 M340 198 H420 V224 M340 198 H575 V224 M340 176 V198"/>
+      <g class="node mod"><rect x="40" y="224" width="130" height="56" rx="6"/><text x="105" y="248" text-anchor="middle" font-size="14" font-weight="600">Claude 세션</text><text class="sub" x="105" y="267" text-anchor="middle" font-size="12">Agent SDK</text></g>
+      <g class="node mod"><rect x="195" y="224" width="130" height="56" rx="6"/><text x="260" y="248" text-anchor="middle" font-size="14" font-weight="600">워크트리</text><text class="sub" x="260" y="267" text-anchor="middle" font-size="12">git worktree</text></g>
+      <g class="node mod"><rect x="355" y="224" width="130" height="56" rx="6"/><text x="420" y="248" text-anchor="middle" font-size="14" font-weight="600">서버 러너</text><text class="sub" x="420" y="267" text-anchor="middle" font-size="12">포트, env, 로그</text></g>
+      <g class="node mod"><rect x="510" y="224" width="130" height="56" rx="6"/><text x="575" y="248" text-anchor="middle" font-size="14" font-weight="600">GitHub</text><text class="sub" x="575" y="267" text-anchor="middle" font-size="12">gh CLI, PR</text></g>
+    </svg>
+    <figcaption>네 모듈은 서로 직접 호출하지 않고 오케스트레이터를 통해서만 상태를 주고받는다.</figcaption>
+  </figure>
+  <h3>기술 스택</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>영역</th><th>선택</th><th>이유</th></tr></thead>
+    <tbody>
+      <tr><td>UI</td><td>React + Vite, Tailwind</td><td>스트리밍 메시지와 탭 UI를 빠르게 만들 수 있다.</td></tr>
+      <tr><td>서버</td><td>Node.js + Fastify, ws</td><td>Agent SDK가 TypeScript 기준이고 child_process 제어가 쉽다.</td></tr>
+      <tr><td>Claude</td><td><code>@anthropic-ai/claude-agent-sdk</code></td><td>터미널 출력 파싱 없이 메시지 타입별로 스트림을 받는다.</td></tr>
+      <tr><td>Git / GitHub</td><td>git CLI, gh CLI</td><td>사용자의 기존 인증을 그대로 쓴다. 토큰 저장이 필요 없다.</td></tr>
+      <tr><td>저장소</td><td>SQLite (better-sqlite3)</td><td>로컬 단일 사용자에 충분하고 백업이 파일 하나다.</td></tr>
+      <tr><td>포트</td><td>get-port</td><td>사용 중이지 않은 포트를 안전하게 찾는다.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="features">
+  <h2>기능 명세</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>기능</th><th>동작</th><th>구현 메모</th><th>단계</th></tr></thead>
+    <tbody>
+      <tr><td>1. Claude 연동</td><td>세션마다 워크트리를 작업 디렉터리로 하는 Claude Code 세션을 연다. 대화는 이어서 진행된다.</td><td><code>query()</code>에 <code>cwd</code>=워크트리, <code>resume</code>=세션 ID. CLAUDE.md 적용을 위해 <code>settingSources: ['project']</code>와 <code>claude_code</code> 프리셋을 쓴다. cwd가 바뀌면 resume이 실패하므로 경로를 함께 저장. 권한은 auto 모드로 실행해 확인 없이 진행한다.</td><td><span class="tag mvp">MVP</span></td></tr>
+      <tr><td>2. GitHub 연동</td><td>푸시와 PR 생성에만 쓴다. 프로젝트 목록은 GitHub가 아니라 로컬 폴더 기준이다.</td><td><code>gh auth status</code>로 로그인 확인. 미로그인 시 안내만 하고 직접 로그인은 하지 않는다.</td><td><span class="tag later">2단계</span></td></tr>
+      <tr><td>3. 프로젝트 연동</td><td>로컬에 클론해 둔 폴더를 등록한다. 현재 브랜치, 워크트리, 원격 주소는 폴더의 git 정보에서 읽는다. BE와 FE를 하나의 워크스페이스로 묶을 수 있다.</td><td>vite/next → FE, build.gradle/pom.xml → BE, 둘 다 또는 docker-compose → 통합. 감지 결과는 사용자가 수정 가능. git 저장소가 아닌 폴더는 거부.</td><td><span class="tag mvp">MVP</span></td></tr>
+      <tr><td>4. 프롬프트 창</td><td>대화 스트림과 하단 입력창. 세션별 탭. 이미지 첨부(클립 버튼, 끌어다 놓기, 붙여넣기)와 미리보기 화면 캡처 첨부.</td><td>텍스트는 마크다운, <code>tool_use</code>는 접힘 카드로. 실행 중 중단 버튼, 소요 시간과 비용 표시. 이미지는 base64로 바꿔 streaming input 메시지의 content 블록에 넣고, 보낸 이미지는 대화에 썸네일로 남긴다.</td><td><span class="tag mvp">MVP</span></td></tr>
+      <tr><td>5. 워크트리</td><td>기준 브랜치(기본 develop)를 고르면 새 브랜치로 워크트리를 만든다.</td><td><code>git fetch</code> 후 <code>git worktree add ../{repo}-{티켓} -b {브랜치} origin/{기준}</code>. 브랜치명은 티켓 번호 + 요약으로 제안. 세션 종료 시 삭제 여부 확인.</td><td><span class="tag mvp">MVP</span></td></tr>
+      <tr><td>6. 서버 실행</td><td>AI가 필요한 환경값을 찾아 보여주면, 사용자가 키·값·필수 여부를 고치거나 추가·삭제한 뒤 빈 포트로 서버를 띄운다. 값은 프로필별로 저장한다.</td><td>.env.example, application.yml, 코드 내 참조를 Claude가 분석. 프로젝트마다 프로필 여러 개(local, dev-db 등)를 두고 전환. 항목마다 출처(AI 추정, 프로필, 자동, 직접 추가) 표시. 한 줄 추가와 .env 붙여넣기 지원. 저장은 프로필 덮어쓰기, 새 프로필, 이번 세션만 중 선택. FE의 API 주소는 같은 세션 BE 포트로 자동 연결. DB는 공용이 기본이고, 세션 설정에서 접속 정보를 바꿀 수 있다.</td><td><span class="tag later">2단계</span></td></tr>
+      <tr><td>7. FE 미리보기</td><td>헬스체크 통과 시 오른쪽 패널에 화면을 띄운다.</td><td>iframe 기본, 쿠키 제약 대비 "새 창으로 열기" 제공. 계정 풀에서 세션마다 테스트 계정을 자동 배정해 세션 끊김 방지.</td><td><span class="tag later">2단계</span></td></tr>
+      <tr><td>8. BE 로그</td><td>서버 stdout/stderr를 실시간으로 보여준다.</td><td>spawn 스트림을 WebSocket으로 전달. 레벨 필터, 검색, 에러 줄을 Claude에게 보내는 버튼.</td><td><span class="tag later">2단계</span></td></tr>
+      <tr><td>9. 푸시와 PR</td><td>템플릿을 채워 푸시와 함께 일반 PR을 바로 연다. 리뷰 단계는 없다.</td><td><code>.github/pull_request_template.md</code> + diff + 대화 요약으로 본문 생성. 빌드·테스트 통과 시 <code>git push -u</code> → <code>gh pr create --base {기준}</code>.</td><td><span class="tag later">3단계</span></td></tr>
+      <tr><td>10. 영향 화면 확인</td><td>수정이 여러 화면에 걸치면 영향받는 화면 목록을 만들고, 기준 브랜치와 작업 브랜치 화면을 찍어 전후를 비교한다.</td><td>변경 파일에서 라우터 설정과 import 관계를 따라 경로를 찾고, 상세 경로 ID는 Claude가 테스트 데이터에서 고른다. Playwright로 배정 계정 로그인 후 촬영, 픽셀 비교로 바뀐 영역 표시. 기준 화면은 develop 공용 기준 서버에서 찍는다. 화면별로 의도한 변경 표시 또는 전후 이미지로 Claude에게 수정 요청.</td><td><span class="tag later">3단계</span></td></tr>
+      <tr><td>11. 리소스 정리</td><td>PR을 만들면 서버를 끄고, PR이 머지되거나 닫히면 워크트리, 로컬 브랜치, 계정, 스크린샷을 정리 대기로 올려 한 번에 지운다.</td><td>10분마다 <code>gh pr view</code>로 상태 확인. 미커밋 변경이 있는 워크트리는 보호되어 자동 삭제하지 않는다. 7일 미활동 세션은 알림만. 도구 시작 시 주인 없는 프로세스 종료, <code>git worktree prune</code>, 미연결 계정 반납. 원격 브랜치 삭제는 선택.</td><td><span class="tag later">3단계</span></td></tr>
+      <tr><td>12. 알림</td><td>프롬프트 작업이 끝나거나 오류로 멈추면 알린다. 서버 실패, PR 완료·테스트 실패도 알릴 수 있다. 누르면 해당 세션이 열린다.</td><td>SDK의 <code>result</code> 메시지를 받으면 오케스트레이터가 OS 알림(node-notifier)을 보내 탭을 닫아도 동작. 탭 제목 배지, 사이드바 "작업 완료" 표시. 보고 있는 세션은 생략, 기준 시간(기본 30초)보다 짧은 작업은 생략.</td><td><span class="tag mvp">MVP</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="flow">
+  <h2>핵심 흐름: 티켓 시작부터 PR까지</h2>
+  <ol class="flow">
+    <li><strong>세션 만들기.</strong> 워크스페이스와 기준 브랜치를 고르고 티켓 번호를 입력한다.</li>
+    <li><strong>워크트리 생성.</strong> BE/FE 각각 워크트리와 브랜치가 만들어지고 세션에 기록된다.</li>
+    <li><strong>프롬프트로 개발.</strong> Claude가 워크트리 안에서 코드를 수정한다. 진행 상황이 스트림으로 보인다.</li>
+    <li><strong>서버 실행.</strong> 고른 환경값 프로필을 적용하고, AI가 찾은 항목을 확인하고 고친다. 빠진 값은 직접 넣거나 .env로 붙여넣는다. BE와 FE가 각자 빈 포트로 뜨고, 계정 풀에서 테스트 계정이 배정된다.</li>
+    <li><strong>확인.</strong> 미리보기 패널에서 화면을, 로그 패널에서 BE 로그를 본다. 문제가 있으면 로그나 화면 캡처를 Claude에게 넘긴다.</li>
+    <li><strong>푸시와 PR 생성.</strong> 빌드와 테스트가 통과하면 템플릿대로 본문을 채워 푸시하고 PR을 연다. 링크가 세션에 남고 서버는 꺼진다.</li>
+    <li><strong>정리.</strong> PR이 머지되면 정리 대기에 올라오고, 확인하면 워크트리와 브랜치, 계정을 정리한다.</li>
+  </ol>
+</section>
+
+<section id="data">
+  <h2>데이터 모델</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>테이블</th><th>주요 필드</th><th>설명</th></tr></thead>
+    <tbody>
+      <tr><td>projects</td><td>id, name, local_path, kind(be/fe/full), start_cmd, check_cmd, health_path</td><td>로컬에 클론한 폴더 하나. 브랜치와 원격 주소는 저장하지 않고 git에서 읽음</td></tr>
+      <tr><td>workspaces</td><td>id, name, project_ids[]</td><td>함께 띄우는 BE/FE 묶음</td></tr>
+      <tr><td>sessions</td><td>id, workspace_id, ticket, base_branch, claude_session_id, account_id, env_profile_ids, db_override, status</td><td>티켓 하나에 대응하는 작업 단위</td></tr>
+      <tr><td>worktrees</td><td>id, session_id, project_id, path, branch</td><td>세션이 만든 워크트리</td></tr>
+      <tr><td>servers</td><td>id, worktree_id, port, pid, status, started_at</td><td>실행 중인 서버 프로세스</td></tr>
+      <tr><td>env_profiles</td><td>id, project_id, name, is_default</td><td>프로젝트별 환경값 프로필 (local, dev-db 등)</td></tr>
+      <tr><td>env_vars</td><td>id, profile_id, key, value(암호화), required, source(ai/profile/auto/manual), found_in</td><td>프로필에 속한 변수 한 줄</td></tr>
+      <tr><td>test_accounts</td><td>id, project_id, email, password(암호화), session_id(배정), released_at</td><td>도구가 관리하는 테스트 계정 풀</td></tr>
+      <tr><td>screen_checks</td><td>id, session_id, route, reason, before_asset, after_asset, diff_ratio, status(changed/same/failed/accepted)</td><td>영향받는 화면 하나의 비교 결과</td></tr>
+      <tr><td>pull_requests</td><td>id, session_id, number, url, state</td><td>생성한 PR 기록</td></tr>
+    </tbody>
+  </table></div>
+  <p>환경값은 OS 키체인(keytar)에 키를 두고 값을 암호화해 저장한다. 비밀값은 UI에서 가려서 보여준다.</p>
+</section>
+
+<section id="roadmap">
+  <h2>로드맵</h2>
+  <div class="graph">
+    <div class="commit">
+      <p class="ref">phase-1 · 1~2주 · 구현 완료</p>
+      <h3>워크트리 위에서 Claude와 대화</h3>
+      <p>프로젝트 등록, 워크트리 생성, Agent SDK 세션, 프롬프트 창과 스트림 렌더링, 작업 완료 알림.</p>
+      <p class="done"><strong>완료 기준</strong> 티켓 번호를 넣으면 워크트리가 생기고, 그 안에서 Claude가 코드를 고치는 과정이 화면에 보인다.</p>
+    </div>
+    <div class="commit">
+      <p class="ref">phase-2 · 2주 · 구현 완료</p>
+      <h3>서버 실행과 확인</h3>
+      <p>환경값 분석, 프로필 여러 개 관리와 편집, .env 붙여넣기, 포트 할당, 프로세스 관리, FE 미리보기, BE 로그 뷰어, 테스트 계정 풀, GitHub 인증 확인.</p>
+      <p class="done"><strong>완료 기준</strong> 워크트리 3개를 동시에 띄워도 포트가 겹치지 않고, 각 화면과 로그를 탭으로 오갈 수 있다.</p>
+    </div>
+    <div class="commit">
+      <p class="ref">phase-3 · 1주</p>
+      <h3>PR 자동화</h3>
+      <p>템플릿 파싱, 본문 생성, PR 전 빌드·테스트 게이트, 푸시와 PR 생성, 영향 화면 목록과 전후 스크린샷 비교, 리소스 정리 화면과 자동 정리 규칙.</p>
+      <p class="done"><strong>완료 기준</strong> 버튼 한 번으로 템플릿 항목이 채워진 PR이 develop 대상으로 열린다.</p>
+    </div>
+    <div class="commit head">
+      <p class="ref">phase-4 · 이후</p>
+      <h3>다듬기</h3>
+      <p>세션 기록 검색, 에러 로그 기반 자동 수정 제안, 세션별 DB 설정 프리셋.</p>
+    </div>
+  </div>
+</section>
+
+<section id="risks">
+  <h2>리스크와 대응</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>리스크</th><th>영향</th><th>대응</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag risk">높음</span> 좀비 프로세스</td><td>도구가 죽으면 서버가 포트를 계속 잡고 있다.</td><td>pid를 DB에 기록하고 시작 시 정리. 프로세스 그룹 단위로 종료.</td></tr>
+      <tr><td><span class="tag risk">높음</span> 환경값 오판</td><td>Claude가 필요한 값을 놓치거나 잘못 추정한다.</td><td>AI 추정 항목을 따로 표시하고, 모든 항목을 사용자가 고치거나 지울 수 있다. 실행 실패 로그는 다시 분석에 넣는다.</td></tr>
+      <tr><td><span class="tag risk">중간</span> iframe 로그인</td><td>SameSite 쿠키 때문에 미리보기에서 로그인이 안 될 수 있다.</td><td>새 창 열기 기본 제공. 필요하면 로컬 리버스 프록시로 같은 출처 처리.</td></tr>
+      <tr><td><span class="tag risk">중간</span> 의존성 설치 시간</td><td>워크트리마다 node_modules 설치가 느리다.</td><td>pnpm 사용 시 스토어 공유. Gradle은 공용 캐시 그대로 사용.</td></tr>
+      <tr><td><span class="tag risk">중간</span> 잘못된 PR</td><td>리뷰 단계가 없어 잘못된 변경이 바로 PR로 올라간다.</td><td>PR 전에 빌드와 테스트를 자동 실행하고 실패하면 멈춘다. 만든 PR은 세션 화면에서 바로 닫을 수 있다.</td></tr>
+      <tr><td><span class="tag risk">중간</span> auto 모드 오작동</td><td>Claude가 확인 없이 원치 않는 명령을 실행한다.</td><td>작업 범위를 워크트리 디렉터리로 제한하고, 실행한 명령을 모두 세션 기록에 남긴다.</td></tr>
+      <tr><td><span class="tag risk">중간</span> 공용 DB 충돌</td><td>스키마를 바꾸는 티켓이 다른 세션의 DB를 깨뜨린다.</td><td>세션 설정에서 별도 DB로 바꿀 수 있게 하고, 마이그레이션 파일이 diff에 있으면 경고한다.</td></tr>
+      <tr><td><span class="tag risk">중간</span> 화면 비교 오탐</td><td>데이터나 시간처럼 매번 바뀌는 영역이 차이로 잡힌다. 기준 서버가 오래되면 비교가 틀어진다.</td><td>같은 계정·같은 데이터로 찍고, 날짜 같은 영역은 가림 규칙으로 제외. 기준 서버는 develop이 바뀔 때 자동 갱신.</td></tr>
+      <tr><td><span class="tag risk">낮음</span> 계정 풀 고갈</td><td>동시 세션이 계정 수보다 많아진다.</td><td>세션 종료 시 계정을 반납하고, 남는 계정이 없으면 세션 생성 전에 알린다.</td></tr>
+      <tr><td><span class="tag risk">낮음</span> 비밀값 노출</td><td>환경값이 로그나 PR 본문에 섞인다.</td><td>로그 출력과 PR 본문 생성 전에 저장된 비밀값을 마스킹.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="questions">
+  <h2>결정 사항</h2>
+  <div class="q"><p>형태: localhost 웹앱</p><p class="why">데스크톱 패키징은 하지 않는다. 서버 정리는 오케스트레이터 종료 훅이 맡는다.</p></div>
+  <div class="q"><p>Claude 권한: auto 모드</p><p class="why">파일 수정과 명령 실행을 확인 없이 진행한다. 실행 기록은 세션에 모두 남긴다.</p></div>
+  <div class="q"><p>테스트 계정: 도구가 계정 풀로 관리</p><p class="why">세션 생성 시 자동 배정하고 종료 시 반납한다. 계정 등록 화면이 Phase 2에 들어간다.</p></div>
+  <div class="q"><p>PR: 리뷰 없이 일반 PR로 바로 생성</p><p class="why">Draft를 쓰지 않는다. 대신 빌드·테스트 통과를 PR 생성 조건으로 둔다.</p></div>
+  <div class="q"><p>DB: 공용이 기본, 사용자가 세션별로 설정</p><p class="why">세션 설정에서 DB 접속 정보를 덮어쓸 수 있다.</p></div>
+  <div class="q"><p>환경값: 프로필 여러 개, AI 분석 결과는 모두 편집 가능</p><p class="why">키, 값, 필수 여부를 고치고 지울 수 있다. 직접 추가와 .env 붙여넣기를 지원한다.</p></div>
+  <div class="q"><p>프로젝트: 로컬 클론 폴더 기준</p><p class="why">GitHub 레포 목록에서 고르지 않는다. GitHub는 푸시와 PR에만 쓴다.</p></div>
+</section>
+</main>
+</div>
+</body>
+</html>

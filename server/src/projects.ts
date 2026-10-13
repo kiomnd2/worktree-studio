@@ -4,6 +4,7 @@ import { db, type ProjectRow } from './db.js';
 import { expandHome } from './config.js';
 import { currentBranch, isGitRepo, originUrl, repoRoot, worktreeCount } from './git.js';
 import { detectProject } from './detect.js';
+import { guessApiEnvKey, scanEnv } from './envscan.js';
 
 export type ProjectView = ProjectRow & {
   current_branch: string | null;
@@ -40,18 +41,19 @@ export async function addProject(inputPath: string): Promise<ProjectRow> {
   const exists = db.prepare(`SELECT id FROM projects WHERE local_path = ?`).get(root);
   if (exists) throw new Error('이미 등록된 폴더입니다.');
   const d = detectProject(root);
+  const apiKey = d.kind === 'fe' ? guessApiEnvKey(scanEnv(root)) : null;
   const info = db
-    .prepare(`INSERT INTO projects (name, local_path, kind, start_cmd, check_cmd, health_path) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(path.basename(root), root, d.kind, d.startCmd, d.checkCmd, d.healthPath);
+    .prepare(`INSERT INTO projects (name, local_path, kind, start_cmd, check_cmd, health_path, port_env, api_env_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(path.basename(root), root, d.kind, d.startCmd, d.checkCmd, d.healthPath, d.portEnv, apiKey);
   return getProject(Number(info.lastInsertRowid))!;
 }
 
-export function updateProject(id: number, patch: Partial<Pick<ProjectRow, 'name' | 'kind' | 'start_cmd' | 'check_cmd' | 'health_path'>>) {
+export function updateProject(id: number, patch: Partial<Pick<ProjectRow, 'name' | 'kind' | 'start_cmd' | 'check_cmd' | 'health_path' | 'port_env' | 'api_env_key'>>) {
   const cur = getProject(id);
   if (!cur) throw new Error('프로젝트가 없습니다.');
   const next = { ...cur, ...patch };
-  db.prepare(`UPDATE projects SET name = ?, kind = ?, start_cmd = ?, check_cmd = ?, health_path = ? WHERE id = ?`)
-    .run(next.name, next.kind, next.start_cmd, next.check_cmd, next.health_path, id);
+  db.prepare(`UPDATE projects SET name = ?, kind = ?, start_cmd = ?, check_cmd = ?, health_path = ?, port_env = ?, api_env_key = ? WHERE id = ?`)
+    .run(next.name, next.kind, next.start_cmd, next.check_cmd, next.health_path, next.port_env, next.api_env_key, id);
   return getProject(id)!;
 }
 

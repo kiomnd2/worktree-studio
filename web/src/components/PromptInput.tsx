@@ -27,9 +27,20 @@ export default function PromptInput({ session }: { session: Session }) {
   const [sending, setSending] = useState(false);
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const textarea = useRef<HTMLTextAreaElement>(null);
   const running = session.status === 'running';
 
   useEffect(() => () => attachments.forEach((a) => URL.revokeObjectURL(a.preview)), []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const onInsert = (e: Event) => {
+      const add = (e as CustomEvent<string>).detail;
+      setText((prev) => (prev.trim() ? `${prev.replace(/\s+$/, '')}\n\n${add}` : add));
+      textarea.current?.focus();
+    };
+    window.addEventListener('wts:insert-prompt', onInsert);
+    return () => window.removeEventListener('wts:insert-prompt', onInsert);
+  }, []);
 
   async function addFiles(files: FileList | File[]) {
     setError(null);
@@ -98,6 +109,7 @@ export default function PromptInput({ session }: { session: Session }) {
       <label htmlFor="prompt-text" className="sr-only">프롬프트</label>
       <textarea
         id="prompt-text"
+        ref={textarea}
         rows={3}
         value={text}
         placeholder="이 워크트리에서 할 일을 적어주세요. 이미지는 끌어다 놓거나 붙여넣을 수 있습니다. (Enter 보내기, Shift+Enter 줄바꿈)"

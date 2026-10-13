@@ -3,7 +3,11 @@ import type { WebSocket } from 'ws';
 export type ServerEvent =
   | { type: 'session.updated'; sessionId: number }
   | { type: 'sessions.changed' }
-  | { type: 'message'; sessionId: number; message: { id: number; kind: string; payload: unknown; created_at: string } };
+  | { type: 'message'; sessionId: number; message: { id: number; kind: string; payload: unknown; created_at: string } }
+  | { type: 'server.updated'; sessionId: number }
+  | { type: 'log'; sessionId: number; worktreeId: number; lines: LogLine[] };
+
+export type LogLine = { seq: number; t: number; stream: 'out' | 'err' | 'sys'; level: 'error' | 'warn' | 'info'; text: string };
 
 type Client = { socket: WebSocket; viewing: number | null; visible: boolean };
 const clients = new Set<Client>();

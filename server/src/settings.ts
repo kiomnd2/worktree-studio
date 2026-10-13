@@ -6,6 +6,7 @@ export type Settings = {
   notify: {
     onComplete: boolean;
     onError: boolean;
+    onServerFail: boolean;
     os: boolean;
     sound: boolean;
     skipWhenViewing: boolean;
@@ -15,7 +16,7 @@ export type Settings = {
 
 const DEFAULTS: Settings = {
   permissionMode: 'auto',
-  notify: { onComplete: true, onError: true, os: true, sound: false, skipWhenViewing: true, minSeconds: 30 },
+  notify: { onComplete: true, onError: true, onServerFail: true, os: true, sound: false, skipWhenViewing: true, minSeconds: 30 },
 };
 
 export function getSettings(): Settings {

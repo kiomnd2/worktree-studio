@@ -7,6 +7,7 @@ import { broadcast } from './hub.js';
 
 export type SessionView = SessionRow & {
   workspace_name: string;
+  account: { id: number; login: string } | null;
   worktrees: (WorktreeRow & { project_name: string; project_kind: string })[];
 };
 
@@ -14,13 +15,17 @@ export function listSessions(includeClosed = false): SessionView[] {
   const rows = db.prepare(`
     SELECT s.*, w.name AS workspace_name FROM sessions s JOIN workspaces w ON w.id = s.workspace_id
     ${includeClosed ? '' : 'WHERE s.closed = 0'} ORDER BY s.updated_at DESC`).all() as (SessionRow & { workspace_name: string })[];
-  return rows.map((r) => ({ ...r, worktrees: worktreesOf(r.id) }));
+  return rows.map((r) => ({ ...r, account: accountView(r.id), worktrees: worktreesOf(r.id) }));
 }
 
 export function getSession(id: number): SessionView | undefined {
   const r = db.prepare(`SELECT s.*, w.name AS workspace_name FROM sessions s JOIN workspaces w ON w.id = s.workspace_id WHERE s.id = ?`)
     .get(id) as (SessionRow & { workspace_name: string }) | undefined;
-  return r ? { ...r, worktrees: worktreesOf(r.id) } : undefined;
+  return r ? { ...r, account: accountView(r.id), worktrees: worktreesOf(r.id) } : undefined;
+}
+
+function accountView(sessionId: number) {
+  return (db.prepare(`SELECT id, login FROM test_accounts WHERE session_id = ?`).get(sessionId) as { id: number; login: string } | undefined) ?? null;
 }
 
 function worktreesOf(sessionId: number) {
@@ -31,7 +36,7 @@ function worktreesOf(sessionId: number) {
 
 export function setSession(id: number, patch: Partial<Pick<SessionRow, 'status' | 'claude_session_id' | 'unread' | 'closed'>>) {
   const keys = Object.keys(patch) as (keyof typeof patch)[];
-  if (keys.length === 0) return;
+  if (keys.length === 0) { broadcast({ type: 'session.updated', sessionId: id }); return; }
   const sets = keys.map((k) => `${k} = @${k}`).join(', ');
   db.prepare(`UPDATE sessions SET ${sets}, updated_at = datetime('now') WHERE id = @id`).run({ ...patch, id });
   broadcast({ type: 'session.updated', sessionId: id });

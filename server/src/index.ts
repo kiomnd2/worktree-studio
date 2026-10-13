@@ -17,15 +17,27 @@ import { closeSession, createSession, getSession, listMessages, listSessions, se
 import { runPrompt, stopPrompt } from './claude.js';
 import { getSettings, saveSettings, type Settings } from './settings.js';
 import { sendNotification } from './notify.js';
+import { cleanupOrphans, getLogs, listServers, startServers, stopAll, stopServers } from './runner.js';
+import { sessionEnvState } from './envapi.js';
+import { deleteProfile, saveSessionEnv, selectProfile, type EnvVar } from './envstore.js';
+import { analyzeEnvWithAI, parseDotenv, scanEnv } from './envscan.js';
+import {
+  accountPassword, addAccount, assignAccount, deleteAccount, freeAccountCount, listAccounts, releaseAccount, updateAccount,
+} from './accounts.js';
+import { githubStatus } from './github.js';
+import { getProject as projectById } from './projects.js';
 
 const app = Fastify({ logger: { level: 'info' }, bodyLimit: 40 * 1024 * 1024 });
 await app.register(cors, { origin: [/^http:\/\/localhost(:\d+)?$/, /^http:\/\/127\.0\.0\.1(:\d+)?$/] });
 await app.register(websocket);
 
-app.setErrorHandler((err: Error & { statusCode?: number }, _req, reply) => {
+app.setErrorHandler((err: Error & { statusCode?: number; details?: Record<string, unknown> }, _req, reply) => {
   const status = err instanceof z.ZodError ? 400 : err.statusCode && err.statusCode < 500 ? err.statusCode : 400;
-  reply.status(status).send({ error: err instanceof z.ZodError ? '입력값을 확인하세요.' : err.message });
+  reply.status(status).send({ error: err instanceof z.ZodError ? '입력값을 확인하세요.' : err.message, ...(err.details ?? {}) });
 });
+
+const orphans = cleanupOrphans();
+if (orphans) app.log.info(`이전 실행에서 남은 서버 프로세스 ${orphans}개를 정리했습니다.`);
 
 const idParam = z.object({ id: z.coerce.number().int().positive() });
 
@@ -43,6 +55,8 @@ app.patch('/api/projects/:id', async (req) => {
     start_cmd: z.string().nullable().optional(),
     check_cmd: z.string().nullable().optional(),
     health_path: z.string().nullable().optional(),
+    port_env: z.string().nullable().optional(),
+    api_env_key: z.string().nullable().optional(),
   }).parse(req.body);
   return describeProject(updateProject(id, patch));
 });
@@ -77,7 +91,9 @@ app.post('/api/sessions', async (req) => {
     branches: z.array(z.object({ projectId: z.number().int(), base: z.string().min(1), branch: z.string().min(1) })),
     firstPrompt: z.string().optional(),
   }).parse(req.body);
-  const session = await createSession(body);
+  const created = await createSession(body);
+  assignAccount(created.id);
+  const session = getSession(created.id)!;
   if (body.firstPrompt?.trim()) {
     runPrompt(session.id, body.firstPrompt, []).catch((e) => app.log.error(e));
   }
@@ -110,9 +126,115 @@ app.post('/api/sessions/:id/read', async (req) => {
 app.post('/api/sessions/:id/close', async (req) => {
   const { id } = idParam.parse(req.params);
   const { removeWorktrees } = z.object({ removeWorktrees: z.boolean().default(false) }).parse(req.body ?? {});
+  await stopServers(id);
   await closeSession(id, removeWorktrees);
+  releaseAccount(id);
   return { ok: true };
 });
+
+// 환경값 (프로필별)
+const envVarSchema = z.object({
+  key: z.string(), value: z.string().default(''), required: z.boolean().default(false), secret: z.boolean().default(false),
+  source: z.enum(['detected', 'ai', 'clone', 'profile', 'manual']).default('manual'), found_in: z.string().nullable().default(null),
+});
+app.get('/api/sessions/:id/env', async (req) => sessionEnvState(idParam.parse(req.params).id));
+app.put('/api/sessions/:id/env', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const body = z.object({
+    projectId: z.number().int(),
+    mode: z.enum(['profile', 'new', 'session']),
+    newName: z.string().optional(),
+    vars: z.array(envVarSchema),
+  }).parse(req.body);
+  saveSessionEnv(id, body.projectId, body.mode, body.vars as EnvVar[], body.newName);
+  return sessionEnvState(id);
+});
+app.post('/api/sessions/:id/env/select', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const body = z.object({ projectId: z.number().int(), profileId: z.number().int() }).parse(req.body);
+  selectProfile(id, body.projectId, body.profileId);
+  return sessionEnvState(id);
+});
+app.post('/api/sessions/:id/env/analyze', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const body = z.object({ projectId: z.number().int(), ai: z.boolean().default(false), known: z.array(z.string()).default([]) }).parse(req.body);
+  const s = getSession(id);
+  const wt = s?.worktrees.find((w) => w.project_id === body.projectId);
+  const project = projectById(body.projectId);
+  if (!s || !wt || !project) throw new Error('세션이나 프로젝트를 찾을 수 없습니다.');
+  const scanned = scanEnv(wt.path, project.local_path);
+  if (!body.ai) return scanned;
+  const ai = await analyzeEnvWithAI(wt.path, [...new Set([...body.known, ...scanned.map((v) => v.key)])]);
+  // AI 판단을 앞에 두고, AI가 놓친 정적 분석 결과를 덧붙인다.
+  const keys = new Set(ai.map((v) => v.key));
+  const scannedByKey = new Map(scanned.map((v) => [v.key, v]));
+  return [
+    ...ai.map((v) => ({ ...v, value: v.value || scannedByKey.get(v.key)?.value || '' })),
+    ...scanned.filter((v) => !keys.has(v.key)),
+  ];
+});
+app.post('/api/env/parse', async (req) => {
+  const { text } = z.object({ text: z.string() }).parse(req.body);
+  return parseDotenv(text);
+});
+app.delete('/api/env-profiles/:id', async (req) => {
+  deleteProfile(idParam.parse(req.params).id);
+  return { ok: true };
+});
+
+// 서버 실행
+app.get('/api/sessions/:id/servers', async (req) => {
+  const s = getSession(idParam.parse(req.params).id);
+  if (!s) throw new Error('세션이 없습니다.');
+  return listServers(s);
+});
+app.post('/api/sessions/:id/servers/start', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const { worktreeIds } = z.object({ worktreeIds: z.array(z.number().int()).optional() }).parse(req.body ?? {});
+  await startServers(id, worktreeIds);
+  return listServers(getSession(id)!);
+});
+app.post('/api/sessions/:id/servers/stop', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const { worktreeIds } = z.object({ worktreeIds: z.array(z.number().int()).optional() }).parse(req.body ?? {});
+  await stopServers(id, worktreeIds);
+  return listServers(getSession(id)!);
+});
+app.post('/api/sessions/:id/servers/restart', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const { worktreeIds } = z.object({ worktreeIds: z.array(z.number().int()).optional() }).parse(req.body ?? {});
+  await stopServers(id, worktreeIds);
+  await startServers(id, worktreeIds);
+  return listServers(getSession(id)!);
+});
+app.get('/api/worktrees/:id/logs', async (req) => getLogs(idParam.parse(req.params).id));
+
+// 테스트 계정 풀
+app.get('/api/accounts', async () => ({ accounts: listAccounts(), free: freeAccountCount() }));
+app.post('/api/accounts', async (req) => {
+  const b = z.object({ login: z.string(), password: z.string(), note: z.string().default('') }).parse(req.body);
+  addAccount(b.login, b.password, b.note);
+  return { ok: true };
+});
+app.patch('/api/accounts/:id', async (req) => {
+  const b = z.object({ password: z.string().optional(), note: z.string().optional() }).parse(req.body);
+  updateAccount(idParam.parse(req.params).id, b);
+  return { ok: true };
+});
+app.delete('/api/accounts/:id', async (req) => {
+  deleteAccount(idParam.parse(req.params).id);
+  return { ok: true };
+});
+app.get('/api/accounts/:id/password', async (req) => ({ password: accountPassword(idParam.parse(req.params).id) }));
+app.post('/api/sessions/:id/account/assign', async (req) => ({ account: assignAccount(idParam.parse(req.params).id) }));
+app.post('/api/sessions/:id/account/release', async (req) => {
+  const { id } = idParam.parse(req.params);
+  releaseAccount(id);
+  setSession(id, {});
+  return { ok: true };
+});
+
+app.get('/api/github/status', async () => githubStatus());
 
 // 첨부 이미지
 app.get('/api/uploads/:file', async (req, reply) => {
@@ -130,7 +252,7 @@ app.put('/api/settings', async (req) => {
   const body = z.object({
     permissionMode: z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto']),
     notify: z.object({
-      onComplete: z.boolean(), onError: z.boolean(), os: z.boolean(), sound: z.boolean(),
+      onComplete: z.boolean(), onError: z.boolean(), onServerFail: z.boolean().default(true), os: z.boolean(), sound: z.boolean(),
       skipWhenViewing: z.boolean(), minSeconds: z.number().int().min(0).max(3600),
     }),
   }).parse(req.body);
@@ -152,6 +274,15 @@ if (fs.existsSync(webDist)) {
   app.setNotFoundHandler((req, reply) => {
     if (req.url.startsWith('/api')) return reply.status(404).send({ error: 'not found' });
     return reply.sendFile('index.html');
+  });
+}
+
+// 도구를 끌 때 띄워 둔 서버도 같이 끈다.
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(sig, async () => {
+    await stopAll().catch(() => {});
+    await app.close().catch(() => {});
+    process.exit(0);
   });
 }
 

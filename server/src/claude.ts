@@ -6,6 +6,8 @@ import { CLAUDE_EXECUTABLE, UPLOAD_DIR } from './config.js';
 import { appendMessage, getSession, setSession } from './sessions.js';
 import { getSettings } from './settings.js';
 import { notifyRunFinished } from './notify.js';
+import { serverPorts } from './runner.js';
+import { accountOf } from './accounts.js';
 
 export const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const;
 type ImageType = (typeof IMAGE_TYPES)[number];
@@ -37,7 +39,23 @@ function buildSystemAppend(worktrees: { project_name: string; path: string; bran
     '이 세션은 아래 git 워크트리에서만 작업한다. 원본 클론 폴더나 다른 워크트리는 수정하지 않는다.',
     ...lines,
     '커밋, 푸시, PR 생성은 사용자가 도구에서 따로 실행하므로 요청받지 않으면 하지 않는다.',
+    '개발 서버는 도구가 띄우고 관리한다. 직접 띄우거나 끄지 말고, 메시지의 <tool_context>에 적힌 주소로 확인한다.',
   ].join('\n');
+}
+
+/** 시스템 프롬프트는 세션 처음에 고정되므로, 바뀌는 정보(서버 주소, 계정)는 매 메시지에 붙인다. */
+function runtimeContext(sessionId: number): string | null {
+  const ports = serverPorts(sessionId);
+  const account = accountOf(sessionId);
+  const lines: string[] = [];
+  if (ports.length) {
+    lines.push('실행 중인 개발 서버:', ...ports.map((p) => `- ${p.project_name}: http://localhost:${p.port} (${p.status})`));
+    lines.push('핫 리로드가 안 되는 서버(예: Spring)는 코드를 바꾼 뒤 사용자에게 서버 재시작을 부탁한다.');
+  } else {
+    lines.push('지금 실행 중인 개발 서버가 없다. 화면 확인이 필요하면 사용자에게 서버 실행을 부탁한다.');
+  }
+  if (account) lines.push(`화면 확인용 테스트 계정: ${account.login} / ${account.password} (이 세션 전용)`);
+  return `<tool_context>\n${lines.join('\n')}\n</tool_context>`;
 }
 
 /** 세션의 워크트리에서 Claude Code를 실행하고 메시지를 저장·중계한다. */
@@ -62,6 +80,8 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
     })),
     ...(text.trim() ? [{ type: 'text' as const, text }] : []),
   ];
+  const ctx = runtimeContext(sessionId);
+  if (ctx) content.push({ type: 'text', text: ctx });
 
   async function* input(): AsyncGenerator<SDKUserMessage> {
     yield { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null };
