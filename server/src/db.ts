@@ -136,6 +136,15 @@ addColumn('screen_checks', 'manual', 'manual INTEGER NOT NULL DEFAULT 0');
 db.prepare(`UPDATE screen_checks SET manual = 1 WHERE reason = '직접 추가' AND manual = 0`).run();
 // 커밋 메시지 템플릿 파일 경로(저장소 기준 상대 경로나 절대 경로). 비우면 저장소에서 찾는다.
 addColumn('projects', 'commit_template', 'commit_template TEXT');
+// 테스트 계정은 워크스페이스마다 따로 쓴다(RE100 계정을 DRMS 세션에 배정하지 않게). 비어 있으면 모든 워크스페이스에서 쓰는 공용 계정.
+addColumn('test_accounts', 'workspace_id', 'workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL');
+{
+  // 워크스페이스가 하나뿐일 때 만든 계정은 그 워크스페이스 것으로 옮긴다.
+  const ws = db.prepare(`SELECT id FROM workspaces`).all() as { id: number }[];
+  if (ws.length === 1) db.prepare(`UPDATE test_accounts SET workspace_id = ? WHERE workspace_id IS NULL`).run(ws[0].id);
+}
+// 워크스페이스마다 쓰는 Jira 프로젝트 키(예: KERE, DRMS). 세션을 만들 때 이 프로젝트에서 티켓을 고르거나 만든다.
+addColumn('workspaces', 'jira_project', 'jira_project TEXT');
 addColumn('sessions', 'stale_notified', 'stale_notified INTEGER NOT NULL DEFAULT 0');
 
 db.exec(`

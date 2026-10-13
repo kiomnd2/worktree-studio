@@ -2,25 +2,46 @@ import { db } from './db.js';
 import { decrypt, encrypt } from './secret.js';
 import { broadcast } from './hub.js';
 
-export type AccountView = { id: number; login: string; note: string; session_id: number | null; ticket: string | null };
+export type AccountView = {
+  id: number; login: string; note: string; session_id: number | null; ticket: string | null;
+  /** 이 계정을 쓰는 워크스페이스. null이면 모든 워크스페이스에서 쓰는 공용 계정 */
+  workspace_id: number | null; workspace_name: string | null;
+};
 
 export function listAccounts(): AccountView[] {
-  return db.prepare(`SELECT a.id, a.login, a.note, a.session_id, s.ticket FROM test_accounts a
-    LEFT JOIN sessions s ON s.id = a.session_id ORDER BY a.login`).all() as AccountView[];
+  return db.prepare(`SELECT a.id, a.login, a.note, a.session_id, s.ticket, a.workspace_id, w.name AS workspace_name FROM test_accounts a
+    LEFT JOIN sessions s ON s.id = a.session_id LEFT JOIN workspaces w ON w.id = a.workspace_id ORDER BY w.name IS NULL, w.name, a.login`).all() as AccountView[];
 }
 
-export function addAccount(login: string, password: string, note = '') {
+/** 세션의 워크스페이스에서 쓸 수 있는 남은 계정: 그 워크스페이스 계정과 공용 계정 */
+export function freeAccountsFor(workspaceId: number): AccountView[] {
+  return listAccounts().filter((a) => !a.session_id && (a.workspace_id === null || a.workspace_id === workspaceId));
+}
+
+function workspaceOfSession(sessionId: number): number | null {
+  return (db.prepare(`SELECT workspace_id FROM sessions WHERE id = ?`).get(sessionId) as { workspace_id: number } | undefined)?.workspace_id ?? null;
+}
+
+export function addAccount(login: string, password: string, note = '', workspaceId: number | null = null) {
   if (!login.trim() || !password) throw new Error('계정과 비밀번호를 넣어 주세요.');
   try {
-    db.prepare(`INSERT INTO test_accounts (login, password, note) VALUES (?, ?, ?)`).run(login.trim(), encrypt(password), note);
+    db.prepare(`INSERT INTO test_accounts (login, password, note, workspace_id) VALUES (?, ?, ?, ?)`).run(login.trim(), encrypt(password), note, workspaceId);
   } catch {
     throw new Error('이미 등록된 계정입니다.');
   }
 }
 
-export function updateAccount(id: number, patch: { password?: string; note?: string }) {
+export function updateAccount(id: number, patch: { password?: string; note?: string; workspace_id?: number | null }) {
   if (patch.password) db.prepare(`UPDATE test_accounts SET password = ? WHERE id = ?`).run(encrypt(patch.password), id);
   if (patch.note !== undefined) db.prepare(`UPDATE test_accounts SET note = ? WHERE id = ?`).run(patch.note, id);
+  if (patch.workspace_id !== undefined) {
+    // 다른 워크스페이스 세션이 쓰는 중이면 옮기지 않는다. 그 세션에서 반납한 뒤 옮긴다.
+    const row = db.prepare(`SELECT a.session_id, s.workspace_id FROM test_accounts a LEFT JOIN sessions s ON s.id = a.session_id WHERE a.id = ?`).get(id) as { session_id: number | null; workspace_id: number | null } | undefined;
+    if (row?.session_id && patch.workspace_id !== null && row.workspace_id !== patch.workspace_id) {
+      throw new Error('다른 워크스페이스 세션이 쓰고 있는 계정입니다. 그 세션에서 반납한 뒤 옮기세요.');
+    }
+    db.prepare(`UPDATE test_accounts SET workspace_id = ? WHERE id = ?`).run(patch.workspace_id, id);
+  }
 }
 
 export function deleteAccount(id: number) {
@@ -56,11 +77,16 @@ export function assignAccount(sessionId: number, accountId?: number): AccountVie
   if (id === undefined) {
     const existing = accountsOf(sessionId)[0];
     if (existing) return listAccounts().find((a) => a.id === existing.id) ?? null;
-    id = (db.prepare(`SELECT id FROM test_accounts WHERE session_id IS NULL ORDER BY login LIMIT 1`).get() as { id: number } | undefined)?.id;
+    // 워크스페이스 전용 계정을 공용 계정보다 먼저 배정한다.
+    id = (db.prepare(`SELECT id FROM test_accounts WHERE session_id IS NULL AND (workspace_id = ? OR workspace_id IS NULL)
+      ORDER BY workspace_id IS NULL, login LIMIT 1`).get(workspaceOfSession(sessionId)) as { id: number } | undefined)?.id;
     if (id === undefined) return null;
   } else {
-    const row = db.prepare(`SELECT session_id FROM test_accounts WHERE id = ?`).get(id) as { session_id: number | null } | undefined;
+    const row = db.prepare(`SELECT session_id, workspace_id FROM test_accounts WHERE id = ?`).get(id) as { session_id: number | null; workspace_id: number | null } | undefined;
     if (!row) throw new Error('계정이 없습니다.');
+    if (row.workspace_id !== null && row.workspace_id !== workspaceOfSession(sessionId)) {
+      throw new Error('다른 워크스페이스의 계정입니다. 설정의 테스트 계정 풀에서 워크스페이스를 바꾸거나 이 워크스페이스 계정을 고르세요.');
+    }
     if (row.session_id === sessionId) return listAccounts().find((a) => a.id === id) ?? null;
     if (row.session_id !== null) throw new Error('다른 세션이 쓰고 있는 계정입니다. 그 세션에서 반납한 뒤 고르세요.');
   }
@@ -82,6 +108,7 @@ export function releaseAccountById(accountId: number) {
   if (row?.session_id) releaseAccount(row.session_id, accountId);
 }
 
-export function freeAccountCount(): number {
-  return (db.prepare(`SELECT COUNT(*) AS n FROM test_accounts WHERE session_id IS NULL`).get() as { n: number }).n;
+export function freeAccountCount(workspaceId?: number): number {
+  if (workspaceId === undefined) return (db.prepare(`SELECT COUNT(*) AS n FROM test_accounts WHERE session_id IS NULL`).get() as { n: number }).n;
+  return freeAccountsFor(workspaceId).length;
 }

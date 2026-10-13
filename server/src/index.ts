@@ -10,13 +10,16 @@ import { HOST, PORT, UPLOAD_DIR } from './config.js';
 import { addClient } from './hub.js';
 import {
   addProject, createWorkspace, deleteProject, deleteWorkspace, describeProject,
-  getProject, listProjectRows, listWorkspaces, updateProject,
+  getProject, getWorkspace, listProjectRows, listWorkspaces, updateProject, updateWorkspace,
 } from './projects.js';
 import { listBranches } from './git.js';
 import { closeSession, createSession, getSession, listMessages, listSessions, removeQueued, setSession } from './sessions.js';
 import { resumeQueue, runPrompt, stopPrompt, submitPrompt } from './claude.js';
 import { decide, listApprovals } from './approvals.js';
 import { fileDiff, sessionChanges } from './changes.js';
+import { draftTicket } from './ticketdraft.js';
+import { chooseSite, createIssue, getIssue, issueTypes, jiraConfigView, jiraLogout, jiraStatus, oauthCallback, oauthStart, searchIssues } from './jira.js';
+import { confirmRoleAccount, deleteCase, generateCases, runTests, saveCase, stopTests, testShotPath, testState } from './tests.js';
 import { getSettings, saveSettings, type Settings } from './settings.js';
 import { sendNotification } from './notify.js';
 import { cleanupOrphans, clearFailure, getLogs, listServers, startServers, stopAll, stopServers } from './runner.js';
@@ -28,7 +31,7 @@ import {
 } from './accounts.js';
 import { githubStatus } from './github.js';
 import { getProject as projectById } from './projects.js';
-import { closePr, continueIgnoringChecks, getPrJob, listPrs, preparePr, startPr } from './pr.js';
+import { assertNewWork, closePr, continueIgnoringChecks, getPrJob, listPrs, preparePr, startPr } from './pr.js';
 import { addScreen, capturePreview, detectScreens, removeScreen, screenState, setScreenChecked } from './screens.js';
 import { cleanSession, listCleanup, refreshPrStates, scheduleCleanupPoll, startupSweep } from './cleanup.js';
 
@@ -82,6 +85,56 @@ app.post('/api/workspaces', async (req) => {
   const body = z.object({ name: z.string(), projectIds: z.array(z.number().int()) }).parse(req.body);
   return { id: createWorkspace(body.name, body.projectIds) };
 });
+app.patch('/api/workspaces/:id', async (req) => {
+  const b = z.object({ jira_project: z.string().nullable().optional() }).parse(req.body);
+  updateWorkspace(idParam.parse(req.params).id, b);
+  return { ok: true };
+});
+
+// Jira: 워크스페이스의 Jira 프로젝트에서 티켓을 고르거나 새로 만든다.
+app.get('/api/jira/config', async () => jiraConfigView());
+app.post('/api/jira/oauth/start', async (req) => ({ url: await oauthStart(z.object({ origin: z.string() }).parse(req.body).origin) }));
+// Atlassian 로그인 뒤 돌아오는 곳. 처리한 뒤 로그인을 시작한 화면(설정)으로 돌려보낸다.
+app.get('/api/jira/oauth/callback', async (req, reply) => {
+  const q = z.object({ code: z.string().optional(), state: z.string().default(''), error: z.string().optional(), error_description: z.string().optional() }).parse(req.query);
+  try {
+    if (q.error || !q.code) throw new Error(q.error_description ?? q.error ?? '로그인이 취소됐습니다.');
+    const origin = await oauthCallback(q.code, q.state);
+    return reply.redirect(`${origin}/?view=settings&jira=connected`);
+  } catch (err) {
+    reply.type('text/html; charset=utf-8');
+    return `<!doctype html><meta charset="utf-8"><title>Jira 로그인 실패</title><body style="font-family:sans-serif;padding:40px"><h1>Jira 로그인에 실패했습니다</h1><p>${String((err as Error).message).replace(/</g, '&lt;')}</p><p>이 창을 닫고 Worktree Studio 설정에서 다시 시도하세요.</p></body>`;
+  }
+});
+app.post('/api/jira/site', async (req) => {
+  chooseSite(z.object({ cloud_id: z.string() }).parse(req.body).cloud_id);
+  return jiraStatus();
+});
+app.post('/api/jira/logout', async () => {
+  jiraLogout();
+  return { ok: true };
+});
+app.get('/api/jira/status', async () => jiraStatus());
+const jiraProjectOf = (workspaceId: number) => {
+  const key = getWorkspace(workspaceId)?.jira_project;
+  if (!key) throw new Error('이 워크스페이스에 Jira 프로젝트 키가 없습니다. 설정의 워크스페이스에서 넣어 주세요.');
+  return key;
+};
+app.get('/api/jira/issues', async (req) => {
+  const q = z.object({ workspace: z.coerce.number().int(), q: z.string().default('') }).parse(req.query);
+  return searchIssues(jiraProjectOf(q.workspace), q.q);
+});
+app.get('/api/jira/issues/:key', async (req) => getIssue(z.object({ key: z.string() }).parse(req.params).key));
+app.get('/api/jira/issuetypes', async (req) => issueTypes(jiraProjectOf(z.object({ workspace: z.coerce.number().int() }).parse(req.query).workspace)));
+app.post('/api/jira/draft', async (req) => {
+  const b = z.object({ workspace: z.number().int(), prompt: z.string() }).parse(req.body);
+  return draftTicket(b.workspace, b);
+});
+app.post('/api/jira/issues', async (req) => {
+  const b = z.object({ workspace: z.number().int(), summary: z.string(), description: z.string().default(''), issuetype_id: z.string() }).parse(req.body);
+  return createIssue(jiraProjectOf(b.workspace), b);
+});
+
 app.delete('/api/workspaces/:id', async (req) => {
   deleteWorkspace(idParam.parse(req.params).id);
   return { ok: true };
@@ -237,6 +290,44 @@ app.post('/api/approvals/:id', async (req) => {
   return { ok: true };
 });
 
+// 화면 테스트: 케이스 만들기 → 역할별 계정 확인 → 브라우저로 실행·촬영
+app.get('/api/sessions/:id/tests', async (req) => testState(idParam.parse(req.params).id));
+app.post('/api/sessions/:id/tests/generate', async (req) => ({ count: await generateCases(idParam.parse(req.params).id) }));
+const caseSchema = z.object({
+  id: z.number().int().optional(), title: z.string(), role: z.string().default(''), start_path: z.string().default('/'),
+  steps: z.array(z.string()), expected: z.array(z.string()).default([]),
+});
+app.post('/api/sessions/:id/tests/cases', async (req) => {
+  saveCase(idParam.parse(req.params).id, caseSchema.parse(req.body));
+  return { ok: true };
+});
+app.delete('/api/sessions/:id/tests/cases/:caseId', async (req) => {
+  const { id, caseId } = z.object({ id: z.coerce.number().int(), caseId: z.coerce.number().int() }).parse(req.params);
+  deleteCase(id, caseId);
+  return { ok: true };
+});
+app.post('/api/sessions/:id/tests/accounts', async (req) => {
+  const { role, account_id } = z.object({ role: z.string().min(1), account_id: z.number().int() }).parse(req.body);
+  confirmRoleAccount(idParam.parse(req.params).id, role, account_id);
+  return { ok: true };
+});
+app.post('/api/sessions/:id/tests/run', async (req) => {
+  const { ids } = z.object({ ids: z.array(z.number().int()).optional() }).parse(req.body ?? {});
+  runTests(idParam.parse(req.params).id, ids);
+  return { ok: true };
+});
+app.post('/api/sessions/:id/tests/stop', async (req) => {
+  stopTests(idParam.parse(req.params).id);
+  return { ok: true };
+});
+app.get('/api/tests/file/:session/:case/:file', async (req, reply) => {
+  const p = z.object({ session: z.coerce.number().int(), case: z.coerce.number().int(), file: z.string() }).parse(req.params);
+  const full = testShotPath(p.session, p.case, p.file);
+  if (!full) return reply.status(404).send();
+  reply.type(full.endsWith('.png') ? 'image/png' : 'image/jpeg');
+  return fs.createReadStream(full);
+});
+
 // 변경 파일 비교
 const scopeSchema = z.enum(['base', 'uncommitted']).default('base');
 app.get('/api/sessions/:id/changes', async (req) => {
@@ -260,14 +351,17 @@ app.post('/api/sessions/:id/servers/:worktreeId/dismiss', async (req) => {
 app.get('/api/worktrees/:id/logs', async (req) => getLogs(idParam.parse(req.params).id));
 
 // 테스트 계정 풀
-app.get('/api/accounts', async () => ({ accounts: listAccounts(), free: freeAccountCount() }));
+app.get('/api/accounts', async (req) => {
+  const { workspace } = z.object({ workspace: z.coerce.number().int().optional() }).parse(req.query);
+  return { accounts: listAccounts(), free: freeAccountCount(workspace) };
+});
 app.post('/api/accounts', async (req) => {
-  const b = z.object({ login: z.string(), password: z.string(), note: z.string().default('') }).parse(req.body);
-  addAccount(b.login, b.password, b.note);
+  const b = z.object({ login: z.string(), password: z.string(), note: z.string().default(''), workspace_id: z.number().int().nullable().default(null) }).parse(req.body);
+  addAccount(b.login, b.password, b.note, b.workspace_id);
   return { ok: true };
 });
 app.patch('/api/accounts/:id', async (req) => {
-  const b = z.object({ password: z.string().optional(), note: z.string().optional() }).parse(req.body);
+  const b = z.object({ password: z.string().optional(), note: z.string().optional(), workspace_id: z.number().int().nullable().optional() }).parse(req.body);
   updateAccount(idParam.parse(req.params).id, b);
   return { ok: true };
 });
@@ -303,9 +397,12 @@ app.post('/api/sessions/:id/pr/prepare', async (req) => preparePr(idParam.parse(
 app.post('/api/sessions/:id/pr', async (req) => {
   const { id } = idParam.parse(req.params);
   const { items, ignore_check_failures } = z.object({
-    items: z.array(z.object({ worktree_id: z.number().int(), title: z.string(), body: z.string(), commit_message: z.string() })),
+    items: z.array(z.object({
+      worktree_id: z.number().int(), title: z.string(), body: z.string(), commit_message: z.string(), update_body: z.boolean().default(false),
+    })),
     ignore_check_failures: z.boolean().default(false),
   }).parse(req.body);
+  await assertNewWork(id, items);
   return startPr(id, items, { ignoreCheckFailures: ignore_check_failures });
 });
 app.post('/api/sessions/:id/pr/continue', async (req) => continueIgnoringChecks(idParam.parse(req.params).id));

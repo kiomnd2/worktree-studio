@@ -11,6 +11,7 @@ import EnvPage from './components/EnvPage';
 import PrDialog from './components/PrDialog';
 import CleanupPage from './components/CleanupPage';
 import ChangesPage from './components/ChangesPage';
+import TestsPage from './components/TestsPage';
 import type { PullRequest, ServerView } from './types';
 
 type View =
@@ -18,9 +19,12 @@ type View =
   | { kind: 'settings' }
   | { kind: 'cleanup' }
   | { kind: 'env'; id: number; message?: string }
-  | { kind: 'changes'; id: number };
+  | { kind: 'changes'; id: number }
+  | { kind: 'tests'; id: number };
 
 function initialView(): View {
+  // Jira 로그인 뒤 설정 화면으로 돌아온다(?view=settings&jira=connected).
+  if (new URLSearchParams(location.search).get('view') === 'settings') return { kind: 'settings' };
   const id = Number(new URLSearchParams(location.search).get('session'));
   return { kind: 'session', id: Number.isFinite(id) && id > 0 ? id : null };
 }
@@ -39,7 +43,7 @@ export default function App() {
   }, []);
   useEffect(reload, [reload]);
 
-  const selectedId = view.kind === 'session' || view.kind === 'env' || view.kind === 'changes' ? view.id : null;
+  const selectedId = view.kind === 'session' || view.kind === 'env' || view.kind === 'changes' || view.kind === 'tests' ? view.id : null;
   const [servers, setServers] = useState<ServerView[]>([]);
   const reloadServers = useCallback(() => {
     if (selectedId) api.servers(selectedId).then(setServers).catch(() => setServers([]));
@@ -150,6 +154,8 @@ export default function App() {
           <main className="main scroll"><SettingsPage /></main>
         ) : view.kind === 'cleanup' ? (
           <CleanupPage onOpenSession={(id) => setView({ kind: 'session', id })} />
+        ) : view.kind === 'tests' && selected ? (
+          <TestsPage key={selected.id} session={selected} onBack={() => setView({ kind: 'session', id: selected.id })} />
         ) : view.kind === 'changes' && selected ? (
           <ChangesPage key={selected.id} session={selected} onBack={() => setView({ kind: 'session', id: selected.id })} />
         ) : view.kind === 'env' && selected ? (
@@ -168,6 +174,7 @@ export default function App() {
               session={selected}
               onOpenEnv={(message) => setView({ kind: 'env', id: selected.id, message })}
               onOpenChanges={() => setView({ kind: 'changes', id: selected.id })}
+              onOpenTests={() => setView({ kind: 'tests', id: selected.id })}
               onClosed={() => { setView({ kind: 'session', id: null }); reload(); }}
             />
           </>

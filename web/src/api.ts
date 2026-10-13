@@ -1,5 +1,5 @@
 import type {
-  Account, Approval, ChangeScope, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
+  Account, Approval, ChangeScope, JiraConfig, JiraIssue, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
   ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, Workspace,
 } from './types';
 
@@ -31,6 +31,18 @@ export const api = {
 
   workspaces: () => request<Workspace[]>('GET', '/api/workspaces'),
   createWorkspace: (name: string, projectIds: number[]) => request<{ id: number }>('POST', '/api/workspaces', { name, projectIds }),
+  updateWorkspace: (id: number, patch: { jira_project?: string | null }) => request('PATCH', `/api/workspaces/${id}`, patch),
+  jiraConfig: () => request<JiraConfig>('GET', '/api/jira/config'),
+  jiraLoginUrl: (origin: string) => request<{ url: string }>('POST', '/api/jira/oauth/start', { origin }),
+  jiraChooseSite: (cloudId: string) => request<JiraStatus>('POST', '/api/jira/site', { cloud_id: cloudId }),
+  jiraLogout: () => request('POST', '/api/jira/logout'),
+  jiraStatus: () => request<JiraStatus>('GET', '/api/jira/status'),
+  jiraIssues: (workspaceId: number, q: string) => request<JiraIssue[]>('GET', `/api/jira/issues?${new URLSearchParams({ workspace: String(workspaceId), q })}`),
+  jiraIssueTypes: (workspaceId: number) => request<{ id: string; name: string }[]>('GET', `/api/jira/issuetypes?workspace=${workspaceId}`),
+  draftJiraIssue: (workspaceId: number, prompt: string) =>
+    request<{ title: string; issuetype_id: string; description: string; examples: string[]; examples_mine: boolean }>('POST', '/api/jira/draft', { workspace: workspaceId, prompt }),
+  createJiraIssue: (workspaceId: number, body: { summary: string; description: string; issuetype_id: string }) =>
+    request<JiraIssue>('POST', '/api/jira/issues', { workspace: workspaceId, ...body }),
   deleteWorkspace: (id: number) => request('DELETE', `/api/workspaces/${id}`),
 
   sessions: () => request<Session[]>('GET', '/api/sessions'),
@@ -45,6 +57,13 @@ export const api = {
   changes: (id: number, scope: ChangeScope) => request<WorktreeChanges[]>('GET', `/api/sessions/${id}/changes?scope=${scope}`),
   diff: (id: number, worktreeId: number, path: string, scope: ChangeScope, full: boolean, ignoreWhitespace: boolean) =>
     request<{ patch: string; binary: boolean }>('GET', `/api/sessions/${id}/diff?${new URLSearchParams({ worktree: String(worktreeId), path, scope, full: full ? '1' : '0', ws: ignoreWhitespace ? '1' : '0' })}`),
+  tests: (id: number) => request<TestState>('GET', `/api/sessions/${id}/tests`),
+  generateTests: (id: number) => request<{ count: number }>('POST', `/api/sessions/${id}/tests/generate`),
+  saveTest: (id: number, c: { id?: number; title: string; role: string; start_path: string; steps: string[]; expected: string[] }) => request('POST', `/api/sessions/${id}/tests/cases`, c),
+  deleteTest: (id: number, caseId: number) => request('DELETE', `/api/sessions/${id}/tests/cases/${caseId}`),
+  confirmTestAccount: (id: number, role: string, accountId: number) => request('POST', `/api/sessions/${id}/tests/accounts`, { role, account_id: accountId }),
+  runTests: (id: number, ids?: number[]) => request('POST', `/api/sessions/${id}/tests/run`, { ids }),
+  stopTests: (id: number) => request('POST', `/api/sessions/${id}/tests/stop`),
   approvals: (id: number) => request<Approval[]>('GET', `/api/sessions/${id}/approvals`),
   decideApproval: (approvalId: number, body: { approve: false } | { approve: true; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number }) =>
     request('POST', `/api/approvals/${approvalId}`, body),
@@ -69,7 +88,8 @@ export const api = {
   logs: (worktreeId: number) => request<LogLine[]>('GET', `/api/worktrees/${worktreeId}/logs`),
 
   accounts: () => request<{ accounts: Account[]; free: number }>('GET', '/api/accounts'),
-  addAccount: (login: string, password: string, note: string) => request('POST', '/api/accounts', { login, password, note }),
+  addAccount: (login: string, password: string, note: string, workspaceId: number | null) => request('POST', '/api/accounts', { login, password, note, workspace_id: workspaceId }),
+  updateAccount: (id: number, patch: { note?: string; workspace_id?: number | null }) => request('PATCH', `/api/accounts/${id}`, patch),
   deleteAccount: (id: number) => request('DELETE', `/api/accounts/${id}`),
   accountPassword: (id: number) => request<{ password: string }>('GET', `/api/accounts/${id}/password`),
   assignAccount: (sessionId: number, accountId?: number) => request('POST', `/api/sessions/${sessionId}/account/assign`, { accountId }),

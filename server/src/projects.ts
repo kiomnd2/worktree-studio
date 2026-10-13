@@ -63,14 +63,26 @@ export function deleteProject(id: number) {
   db.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
 }
 
-export type WorkspaceView = { id: number; name: string; projects: { id: number; name: string; kind: string }[] };
+export type WorkspaceView = { id: number; name: string; jira_project: string | null; projects: { id: number; name: string; kind: string }[] };
 
 export function listWorkspaces(): WorkspaceView[] {
-  const ws = db.prepare(`SELECT id, name FROM workspaces ORDER BY name`).all() as { id: number; name: string }[];
+  const ws = db.prepare(`SELECT id, name, jira_project FROM workspaces ORDER BY name`).all() as { id: number; name: string; jira_project: string | null }[];
   const rows = db.prepare(`
     SELECT wp.workspace_id, p.id, p.name, p.kind FROM workspace_projects wp
     JOIN projects p ON p.id = wp.project_id ORDER BY wp.position`).all() as { workspace_id: number; id: number; name: string; kind: string }[];
   return ws.map((w) => ({ ...w, projects: rows.filter((r) => r.workspace_id === w.id).map(({ id, name, kind }) => ({ id, name, kind })) }));
+}
+
+export function updateWorkspace(id: number, patch: { jira_project?: string | null }) {
+  if (patch.jira_project !== undefined) {
+    const key = patch.jira_project?.trim().toUpperCase() || null;
+    if (key && !/^[A-Z][A-Z0-9_]*$/.test(key)) throw new Error('Jira 프로젝트 키는 KERE처럼 영문 대문자와 숫자로 넣어 주세요.');
+    db.prepare(`UPDATE workspaces SET jira_project = ? WHERE id = ?`).run(key, id);
+  }
+}
+
+export function getWorkspace(id: number): WorkspaceView | undefined {
+  return listWorkspaces().find((w) => w.id === id);
 }
 
 export function createWorkspace(name: string, projectIds: number[]) {

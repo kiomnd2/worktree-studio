@@ -1,7 +1,7 @@
 import { broadcast } from './hub.js';
 import { getSession } from './sessions.js';
 import { profileVars, resolveEnv, saveSessionEnv, selectedProfile, type EnvVar } from './envstore.js';
-import { accountOf, assignAccount, listAccounts } from './accounts.js';
+import { accountOf, assignAccount, freeAccountsFor } from './accounts.js';
 import { looksSecret } from './secret.js';
 import { sendNotification } from './notify.js';
 
@@ -119,8 +119,9 @@ export function requestEnv(sessionId: number, projectName: string, vars: { key: 
 }
 
 export function requestAccount(sessionId: number, role: string, reason: string): Promise<string> {
-  if (!listAccounts().some((a) => !a.session_id)) {
-    return Promise.resolve('남은 테스트 계정이 없습니다. 사용자에게 설정의 테스트 계정 풀에 계정을 추가해 달라고 하세요.');
+  const s = getSession(sessionId);
+  if (!s || freeAccountsFor(s.workspace_id).length === 0) {
+    return Promise.resolve('이 워크스페이스에 남은 테스트 계정이 없습니다. 사용자에게 설정의 테스트 계정 풀에 이 워크스페이스 계정을 추가해 달라고 하세요.');
   }
   return ask(sessionId, reason, { kind: 'account', role }, (d) => {
     if (!d.approve || !d.account_id) return '사용자가 테스트 계정 요청을 거절했습니다.';

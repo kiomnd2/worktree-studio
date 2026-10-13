@@ -8,7 +8,7 @@ const STEP_STATUS: Record<PrStep['status'], string> = { pending: '대기', runni
 
 type Props = { session: Session; onClose: () => void; onOpenCleanup: () => void };
 
-type Draft = PrDraft & { include: boolean };
+type Draft = PrDraft & { include: boolean; update_body: boolean };
 
 /** 푸시하고 PR 만들기. 진행 중이거나 끝난 작업이 있으면 그 진행 상황부터 보여 준다. */
 export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
@@ -44,7 +44,7 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
     setError(null);
     try {
       const r = await api.preparePr(session.id);
-      setDrafts(r.drafts.map((d) => ({ ...d, include: d.has_changes })));
+      setDrafts(r.drafts.map((d) => ({ ...d, include: d.pr_mode !== 'none', update_body: false })));
       setAiError(r.ai_error);
     } catch (e) {
       setError((e as Error).message);
@@ -57,7 +57,7 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
     if (!drafts) return;
     setError(null);
     try {
-      const items = drafts.filter((d) => d.include).map(({ worktree_id, title, body, commit_message }) => ({ worktree_id, title, body, commit_message }));
+      const items = drafts.filter((d) => d.include).map(({ worktree_id, title, body, commit_message, update_body }) => ({ worktree_id, title, body, commit_message, update_body }));
       setJob(await api.createPr(session.id, items, ignoreChecks));
       setMode('progress');
     } catch (e) {
@@ -91,16 +91,17 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
               <fieldset key={d.worktree_id} className={`box pr-repo${d.include ? '' : ' off'}`}>
                 <legend>
                   <label className="start-check">
-                    <input type="checkbox" checked={d.include} disabled={!d.has_changes} onChange={(e) => edit(d.worktree_id, { include: e.target.checked })} />
+                    <input type="checkbox" checked={d.include} disabled={d.pr_mode === 'none'} onChange={(e) => edit(d.worktree_id, { include: e.target.checked })} />
                     <strong>{d.project_name}</strong>
                     <span className={`kind ${d.project_kind}`}>{d.project_kind.toUpperCase()}</span>
                   </label>
                 </legend>
                 <div className="muted small">
                   <code>{d.branch}</code> → <code>{d.base_branch}</code>
-                  {' · '}{d.has_changes ? `커밋 ${d.commits_ahead}개${d.dirty_files.length ? ` + 커밋 안 한 파일 ${d.dirty_files.length}개` : ''}` : '기준 브랜치와 차이가 없어 건너뜁니다'}
-                  {d.existing_pr && <> · 이미 열린 <a href={d.existing_pr.url} target="_blank" rel="noreferrer">PR #{d.existing_pr.number}</a>에 푸시합니다</>}
+                  {d.pr_mode !== 'none' && ` · 커밋 ${d.commits_ahead}개${d.dirty_files.length ? ` + 커밋 안 한 파일 ${d.dirty_files.length}개` : ''}`}
+                  {d.existing_pr && <> · <a href={d.existing_pr.url} target="_blank" rel="noreferrer">PR #{d.existing_pr.number}</a> {d.existing_pr.state === 'OPEN' ? '열림' : d.existing_pr.state === 'MERGED' ? '머지됨' : '닫힘'}</>}
                 </div>
+                {d.pr_note && <p className={`small pr-note ${d.pr_mode}`}>{d.pr_note}</p>}
                 {d.include && (
                   <>
                     {d.dirty_files.length > 0 && (
@@ -117,6 +118,13 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
                         <textarea className="mono" rows={Math.min(10, Math.max(3, d.commit_message.split('\n').length + 1))} value={d.commit_message} onChange={(e) => edit(d.worktree_id, { commit_message: e.target.value })} />
                       </label>
                     )}
+                    {d.pr_mode === 'update' && (
+                      <label className="start-check small">
+                        <input type="checkbox" checked={d.update_body} onChange={(e) => edit(d.worktree_id, { update_body: e.target.checked })} />
+                        PR 제목·본문도 새로 쓴 것으로 바꾸기 <span className="muted">(끄면 열린 PR의 제목·본문은 그대로 두고 푸시만 합니다)</span>
+                      </label>
+                    )}
+                    {(d.pr_mode === 'new' || d.update_body) && <>
                     <label className="field">
                       <span>PR 제목</span>
                       <input value={d.title} onChange={(e) => edit(d.worktree_id, { title: e.target.value })} />
@@ -129,6 +137,7 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
                       </span></span>
                       <textarea className="mono pr-body" rows={12} value={d.body} onChange={(e) => edit(d.worktree_id, { body: e.target.value })} />
                     </label>
+                    </>}
                     <p className="muted small">
                       PR 전 검사: {d.check_cmd ? <code>{d.check_cmd}</code> : '없음 (설정의 "PR 전 검사"에 넣으면 실패 시 멈춥니다)'}
                     </p>
@@ -136,6 +145,9 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
                 )}
               </fieldset>
             ))}
+            {drafts && !preparing && drafts.every((d) => d.pr_mode === 'none') && (
+              <p className="banner ok" role="status">새로 올릴 변경이 없습니다. 바뀐 내용은 이미 위 PR에 모두 올라가 있습니다.</p>
+            )}
             {included.length > 1 && <p className="muted small">BE와 FE PR은 본문 끝에 서로를 관련 PR로 연결합니다.</p>}
             {included.some((d) => d.check_cmd) && (
               <label className="start-check small">
@@ -147,7 +159,9 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
             <div className="dialog-actions">
               <button type="button" onClick={onClose} disabled={preparing}>취소</button>
               {job && <button type="button" onClick={() => setMode('progress')}>지난 진행 보기</button>}
-              <button type="button" className="primary" disabled={preparing || included.length === 0} onClick={submit}>검사하고 PR 만들기</button>
+              <button type="button" className="primary" disabled={preparing || included.length === 0} onClick={submit}>
+                {included.length > 0 && included.every((d) => d.pr_mode === 'update') ? '검사하고 푸시' : '검사하고 PR 만들기'}
+              </button>
             </div>
           </>
         )}

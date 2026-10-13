@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, missingFrom } from '../api';
 import { attachToPrompt, insertIntoPrompt, openInPreview, useServerEvents } from '../events';
-import type { Account, LogLine, ScreenCheck, ScreenState, ServerView, Session, WorktreeChanges } from '../types';
+import { usableIn, type Account, type LogLine, ScreenCheck, ScreenState, ServerView, Session, TestState, WorktreeChanges } from '../types';
 import StartServersDialog from './StartServersDialog';
 
 const STATUS_LABEL: Record<string, string> = {
   idle: '꺼짐', starting: '시작 중', running: '실행 중', unhealthy: '응답 없음', failed: '멈춤', stopped: '꺼짐',
 };
 
-type Props = { session: Session; onOpenEnv: (message?: string) => void; onOpenChanges: () => void; onClosed: () => void };
+type Props = { session: Session; onOpenEnv: (message?: string) => void; onOpenChanges: () => void; onOpenTests: () => void; onClosed: () => void };
 
-export default function RightPanel({ session, onOpenEnv, onOpenChanges, onClosed }: Props) {
+export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTests, onClosed }: Props) {
   const [servers, setServers] = useState<ServerView[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,6 +90,8 @@ export default function RightPanel({ session, onOpenEnv, onOpenChanges, onClosed
       <ChangesBlock session={session} onOpen={onOpenChanges} />
 
       <ScreensBlock session={session} />
+
+      <TestsBlock session={session} onOpen={onOpenTests} />
 
       {fe ? <Preview key={fe.url} sessionId={session.id} baseUrl={fe.url!} ready={fe.status === 'running'} /> : (
         <div className="placeholder">
@@ -236,6 +238,34 @@ function ChangesBlock({ session, onOpen }: { session: Session; onOpen: () => voi
           })}
         </ul>
       )}
+    </div>
+  );
+}
+
+/** 화면 테스트 요약. 케이스 만들기·계정 확인·실행은 테스트 화면에서 한다. */
+function TestsBlock({ session, onOpen }: { session: Session; onOpen: () => void }) {
+  const [state, setState] = useState<TestState | null>(null);
+  const reload = useCallback(() => { api.tests(session.id).then(setState).catch(() => setState(null)); }, [session.id]);
+  useEffect(reload, [reload]);
+  useServerEvents((e) => { if (e.type === 'tests.updated' && e.sessionId === session.id) reload(); });
+  if (!state?.fe_project) return null;
+  const c = state.cases;
+  const pass = c.filter((x) => x.status === 'pass').length;
+  const bad = c.filter((x) => ['fail', 'blocked', 'error'].includes(x.status)).length;
+  const need = state.roles.filter((r) => !r.account).length;
+  return (
+    <div className="panel-block">
+      <div className="block-head">
+        <h2>화면 테스트 {c.length > 0 && <span className="muted small">{c.length}개</span>}</h2>
+        <button className="small-btn primary" onClick={onOpen}>{c.length ? '테스트 보기' : '테스트 만들기'}</button>
+      </div>
+      <p className="muted small">
+        {state.generating ? '케이스를 만드는 중입니다.'
+          : state.running ? `실행 중 · 통과 ${pass} · 실패·확인 불가 ${bad}`
+          : c.length === 0 ? '이번 변경을 확인하는 테스트 케이스를 만들고 브라우저로 돌려 화면을 찍습니다.'
+          : need ? `계정 확인이 필요한 역할 ${need}개`
+          : c.some((x) => x.ran_at) ? `통과 ${pass} · 실패·확인 불가 ${bad}` : '실행 전입니다.'}
+      </p>
     </div>
   );
 }
@@ -533,7 +563,7 @@ function AccountBlock({ session }: { session: Session }) {
   const [pick, setPick] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
   const loadFree = useCallback(() => {
-    api.accounts().then((r) => setFree(r.accounts.filter((a) => !a.session_id))).catch(() => setFree([]));
+    api.accounts().then((r) => setFree(r.accounts.filter((a) => usableIn(a, session.workspace_id)))).catch(() => setFree([]));
   }, []);
   useEffect(loadFree, [loadFree, session.accounts.length]);
 

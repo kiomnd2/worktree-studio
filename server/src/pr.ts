@@ -36,7 +36,15 @@ export type PrDraft = {
   commit_template: { path: string; from: string | null } | null;
   /** 형식을 따라 쓴 최근 머지된 PR들. 없으면 템플릿이나 기본 형식을 쓴다. */
   style_examples: { number: number; title: string; author: string; mine: boolean }[];
-  existing_pr: { number: number; url: string } | null;
+  /** 이 브랜치로 이미 만든 PR(열린 것 우선, 없으면 가장 최근 것) */
+  existing_pr: BranchPr | null;
+  /**
+   * new: 새 PR을 만든다. update: 열린 PR에 이어서 푸시한다(제목·본문은 그대로).
+   * none: PR이 이미 올라가 있고 새로 올릴 게 없다.
+   */
+  pr_mode: 'new' | 'update' | 'none';
+  /** pr_mode가 none인 이유 등 사람에게 보여 줄 한 문장 */
+  pr_note: string | null;
   commit_message: string;
   title: string;
   body: string;
@@ -92,14 +100,44 @@ export function sessionSecrets(session: SessionView): string[] {
   return [...out];
 }
 
-async function existingPr(dir: string, branch: string): Promise<{ number: number; url: string } | null> {
+export type BranchPr = { number: number; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; head_oid: string };
+
+/** 이 브랜치로 만든 PR. 열린 PR이 있으면 그것, 없으면 가장 최근에 머지·닫힌 PR. */
+async function branchPr(dir: string, branch: string): Promise<BranchPr | null> {
   try {
-    const out = await runFile('gh', ['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,url', '--limit', '1'], dir, 20_000);
-    const list = JSON.parse(out || '[]') as { number: number; url: string }[];
-    return list[0] ?? null;
+    const out = await runFile('gh', ['pr', 'list', '--head', branch, '--state', 'all', '--json', 'number,url,state,headRefOid', '--limit', '5'], dir, 20_000);
+    const list = (JSON.parse(out || '[]') as { number: number; url: string; state: BranchPr['state']; headRefOid: string }[])
+      .map((p) => ({ number: p.number, url: p.url, state: p.state, head_oid: p.headRefOid }));
+    return list.find((p) => p.state === 'OPEN') ?? list.sort((a, b) => b.number - a.number)[0] ?? null;
   } catch {
     return null;
   }
+}
+
+async function existingPr(dir: string, branch: string): Promise<{ number: number; url: string } | null> {
+  const p = await branchPr(dir, branch);
+  return p?.state === 'OPEN' ? p : null;
+}
+
+/**
+ * 이미 PR이 있으면 그 PR에 올라간 커밋 뒤로 새로 생긴 게 있는지 본다.
+ * 커밋 안 한 변경이 있거나, PR 머리 커밋 뒤에 새 커밋이 있으면 새로 올릴 게 있는 것이다.
+ */
+async function prModeOf(dir: string, pr: BranchPr | null, dirty: number, ahead: number): Promise<{ mode: PrDraft['pr_mode']; note: string | null }> {
+  if (!pr) return { mode: dirty || ahead ? 'new' : 'none', note: dirty || ahead ? null : '기준 브랜치와 차이가 없습니다.' };
+  const head = await git(dir, ['rev-parse', 'HEAD']).catch(() => '');
+  // PR 머리 커밋이 로컬에 있으면 그 뒤 커밋 수를, 없으면(다른 곳에서 푸시) 같은지만 본다.
+  const after = await git(dir, ['rev-list', '--count', `${pr.head_oid}..HEAD`]).then(Number, () => (head === pr.head_oid ? 0 : 1));
+  const fresh = dirty > 0 || after > 0;
+  if (pr.state === 'OPEN') {
+    return fresh
+      ? { mode: 'update', note: `열린 PR #${pr.number}에 이어서 푸시합니다${after ? ` (새 커밋 ${after}개)` : ''}${dirty ? ` (커밋 안 한 파일 ${dirty}개)` : ''}.` }
+      : { mode: 'none', note: `이미 PR #${pr.number}에 모두 올라가 있습니다.` };
+  }
+  const done = pr.state === 'MERGED' ? '머지됐' : '닫혔';
+  return fresh
+    ? { mode: 'new', note: `이전 PR #${pr.number}은 이미 ${done}습니다. 그 뒤 변경으로 새 PR을 만듭니다.` }
+    : { mode: 'none', note: `PR #${pr.number}은 이미 ${done}고, 그 뒤로 새로 올릴 변경이 없습니다.` };
 }
 
 /** 대화에서 사용자 요청과 Claude의 마지막 설명을 뽑아 PR 본문 재료로 쓴다. */
@@ -240,6 +278,8 @@ async function collectEach(session: SessionView): Promise<RepoFacts[]> {
     const templatePath = findTemplate(w.path);
     const ct = await commitTemplateOf(w, project?.commit_template ?? null);
     const template = templatePath ? fs.readFileSync(path.join(w.path, templatePath), 'utf8') : null;
+    const pr = await branchPr(w.path, w.branch);
+    const { mode, note } = await prModeOf(w.path, pr, dirty.length, ahead);
     const draft: PrDraft = {
       worktree_id: w.id,
       project_name: w.project_name,
@@ -248,11 +288,14 @@ async function collectEach(session: SessionView): Promise<RepoFacts[]> {
       base_branch: w.base_branch,
       dirty_files: dirty,
       commits_ahead: ahead,
-      has_changes: dirty.length > 0 || ahead > 0,
+      // 이미 PR로 올라간 것만 있으면 새로 올릴 변경이 없는 것으로 본다.
+      has_changes: mode !== 'none',
       check_cmd: project?.check_cmd ?? null,
       template_path: templatePath,
       commit_template: ct ? { path: ct.path, from: null } : null,
-      existing_pr: await existingPr(w.path, w.branch),
+      existing_pr: pr,
+      pr_mode: mode,
+      pr_note: note,
       style_examples: examples.map(({ number, title, author, mine }) => ({ number, title, author, mine })),
       commit_message: `${session.ticket} ${session.summary}`.trim(),
       title: `[${session.ticket}] ${session.summary || w.branch}`.trim(),
@@ -349,6 +392,21 @@ function cleanCommitMessage(msg: string): string {
   return msg.split('\n').filter((l) => !/^\s*Co-Authored-By:/i.test(l)).map((l) => l.replace(/\s+$/, '')).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+/** 이미 PR로 다 올라가 새로 올릴 게 없는 레포가 섞여 있으면 막는다. 같은 변경으로 PR을 또 만들지 않게. */
+export async function assertNewWork(sessionId: number, items: PrItem[]) {
+  const session = getSession(sessionId);
+  if (!session) throw new Error('세션이 없습니다.');
+  for (const it of items) {
+    const w = session.worktrees.find((x) => x.id === it.worktree_id);
+    if (!w) continue;
+    const ref = await baseRef(w.path, w.base_branch);
+    const dirty = porcelainFiles(await git(w.path, ['status', '--porcelain']).catch(() => '')).length;
+    const ahead = Number(await git(w.path, ['rev-list', '--count', `${ref}..HEAD`]).catch(() => '0')) || 0;
+    const { mode, note } = await prModeOf(w.path, await branchPr(w.path, w.branch), dirty, ahead);
+    if (mode === 'none') throw new Error(`${w.project_name}: ${note ?? '새로 올릴 변경이 없습니다.'}`);
+  }
+}
+
 export function getPrJob(sessionId: number): PrJob | null {
   return jobs.get(sessionId) ?? null;
 }
@@ -357,7 +415,8 @@ export function listPrs(sessionId: number): PullRequestRow[] {
   return db.prepare(`SELECT * FROM pull_requests WHERE session_id = ? ORDER BY id`).all(sessionId) as PullRequestRow[];
 }
 
-export type PrItem = { worktree_id: number; title: string; body: string; commit_message: string };
+/** update_body: 열린 PR에 이어서 푸시할 때 제목·본문도 새로 쓴 것으로 바꿀지 */
+export type PrItem = { worktree_id: number; title: string; body: string; commit_message: string; update_body?: boolean };
 
 function update(job: PrJob) {
   broadcast({ type: 'pr.updated', sessionId: job.session_id });
@@ -472,6 +531,8 @@ async function runJob(session: SessionView, job: PrJob, items: PrItem[], prior?:
     }
 
     const created: { repo: RepoJob; number: number; url: string; body: string }[] = [];
+    // 관련 PR 링크용: 이번에 새로 만든 PR과 이어서 푸시한 기존 PR 모두
+    const linked: { repo: RepoJob; number: number; url: string; body: string; fresh: boolean }[] = [];
     for (const repo of job.repos) {
       const w = wt(repo.worktree_id);
       const item = items.find((i) => i.worktree_id === repo.worktree_id)!;
@@ -483,7 +544,26 @@ async function runJob(session: SessionView, job: PrJob, items: PrItem[], prior?:
         let url: string;
         if (existing) {
           url = existing.url;
-          s.detail = `이미 열린 PR #${existing.number}에 푸시했습니다.`;
+          // 열린 PR은 사용자가 고르지 않는 한 제목·본문을 건드리지 않는다. 리뷰 중 고친 내용이 날아가지 않게.
+          if (item.update_body) {
+            const file = path.join(os.tmpdir(), `wts-pr-${session.id}-${w.id}.md`);
+            fs.writeFileSync(file, body);
+            try {
+              await runFile('gh', ['pr', 'edit', url, '--title', item.title.trim(), '--body-file', file], w.path, 60_000);
+            } finally {
+              fs.rmSync(file, { force: true });
+            }
+            s.detail = `열린 PR #${existing.number}에 푸시하고 제목·본문을 고쳤습니다.`;
+          } else {
+            s.detail = `열린 PR #${existing.number}에 푸시했습니다. 제목·본문은 그대로 두었습니다.`;
+          }
+          s.status = 'done';
+          repo.pr_url = url;
+          const number = existing.number;
+          const known = db.prepare(`SELECT id FROM pull_requests WHERE session_id = ? AND url = ?`).get(session.id, url) as { id: number } | undefined;
+          if (!known) db.prepare(`INSERT INTO pull_requests (session_id, worktree_id, number, url, title, state) VALUES (?, ?, ?, ?, ?, 'OPEN')`).run(session.id, w.id, number, url, item.title.trim());
+          linked.push({ repo, number, url, body, fresh: false });
+          return;
         } else {
           const file = path.join(os.tmpdir(), `wts-pr-${session.id}-${w.id}.md`);
           fs.writeFileSync(file, body);
@@ -498,6 +578,7 @@ async function runJob(session: SessionView, job: PrJob, items: PrItem[], prior?:
         const number = Number(url.match(/\/pull\/(\d+)/)?.[1] ?? 0);
         repo.pr_url = url;
         created.push({ repo, number, url, body });
+        linked.push({ repo, number, url, body, fresh: true });
         const known = db.prepare(`SELECT id FROM pull_requests WHERE session_id = ? AND url = ?`).get(session.id, url) as { id: number } | undefined;
         if (known) db.prepare(`UPDATE pull_requests SET state = 'OPEN', title = ? WHERE id = ?`).run(item.title.trim(), known.id);
         else db.prepare(`INSERT INTO pull_requests (session_id, worktree_id, number, url, title, state) VALUES (?, ?, ?, ?, ?, 'OPEN')`)
@@ -505,10 +586,10 @@ async function runJob(session: SessionView, job: PrJob, items: PrItem[], prior?:
       });
     }
 
-    // BE와 FE PR을 서로 관련 PR로 연결한다.
-    if (created.length > 1) {
-      for (const c of created) {
-        const others = created.filter((o) => o !== c).map((o) => `- ${o.repo.project_name}: ${o.url}`).join('\n');
+    // BE와 FE PR을 서로 관련 PR로 연결한다. 본문은 이번에 새로 만든 PR만 고친다(기존 PR 본문은 그대로).
+    if (linked.length > 1) {
+      for (const c of linked.filter((l) => l.fresh)) {
+        const others = linked.filter((o) => o !== c).map((o) => `- ${o.repo.project_name}: ${o.url}`).join('\n');
         const file = path.join(os.tmpdir(), `wts-pr-link-${session.id}-${c.repo.worktree_id}.md`);
         fs.writeFileSync(file, `${c.body.replace(/\s+$/, '')}\n\n### 관련 PR\n${others}\n`);
         await runFile('gh', ['pr', 'edit', c.url, '--body-file', file], wt(c.repo.worktree_id).path, 60_000).catch(() => {});

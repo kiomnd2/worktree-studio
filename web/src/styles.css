@@ -461,3 +461,80 @@ body.resizing iframe { pointer-events: none; }
 .step.ignored .step-dot { background: #C98A1B; }
 .pr-continue { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 12px; border-radius: 8px; background: var(--warn-soft); color: var(--warn-ink); }
 .pr-continue span { flex: 1 1 320px; }
+.pr-note { margin: 0; padding: 6px 10px; border-radius: 6px; background: var(--soft); color: var(--ink-2); }
+.pr-note.none { background: var(--ok-soft); color: var(--ok-ink); }
+.pr-note.update { background: var(--accent-soft); color: var(--accent-ink); }
+
+/* 화면 테스트 */
+.settings.tests { max-width: 1240px; }
+.tests-head { padding: 14px 20px; display: flex; flex-direction: column; gap: 10px; }
+.tests-head p { margin: 0; }
+.role-accounts.needs { border-color: #E9B98A; }
+.role-list { list-style: none; margin: 0; padding: 12px 20px 16px; display: flex; flex-direction: column; gap: 8px; }
+.role-list li { display: grid; grid-template-columns: minmax(90px, auto) auto minmax(220px, 1fr) auto; align-items: center; gap: 12px; }
+.role-list select { min-height: 36px; }
+.test-list { display: flex; flex-direction: column; gap: 12px; }
+.test-case { padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+.test-case.pass { border-left: 4px solid var(--ok); }
+.test-case.fail, .test-case.error { border-left: 4px solid var(--err); }
+.test-case.blocked { border-left: 4px solid #C98A1B; }
+.test-case-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 8px 14px; }
+.test-case-head h2 { font-size: 15px; }
+.test-case-head p { margin: 2px 0 0; }
+.test-case-head .small-btn { margin-left: 0; }
+.test-case-head .pill { display: inline-flex; align-items: center; gap: 6px; }
+.test-case-body { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; }
+.test-case-body h3 { margin: 0 0 4px; color: var(--muted); font-weight: 500; }
+.test-case-body ol, .test-case-body ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 3px; }
+.test-case-body li.ok::marker { color: var(--ok); }
+.test-case-body li.bad { color: var(--err); }
+.test-summary { margin: 0; padding: 8px 12px; border-radius: 6px; background: var(--soft); font-size: 13px; }
+.test-summary.pass { background: var(--ok-soft); color: var(--ok-ink); }
+.test-summary.fail, .test-summary.error { background: var(--err-soft); color: var(--err); }
+.test-summary.blocked { background: var(--warn-soft); color: var(--warn-ink); }
+.test-shots { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+.shot-thumb { flex: 0 0 auto; width: 220px; min-height: 0; padding: 6px; display: flex; flex-direction: column; gap: 4px; text-align: left; font-weight: 400; background: var(--sheet); }
+.shot-thumb img { width: 100%; height: 138px; object-fit: cover; object-position: top; border: 1px solid var(--rule); border-radius: 4px; }
+.shot-thumb span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dialog.shot-zoom { width: min(1500px, 100%); padding: 12px; gap: 8px; margin: 0; }
+.shot-zoom img { width: 100%; height: auto; max-height: calc(100vh - 140px); object-fit: contain; border: 1px solid var(--rule); border-radius: 6px; }
+@media (max-width: 900px) { .test-case-body { grid-template-columns: 1fr; } .role-list li { grid-template-columns: 1fr; } }
+
+/* Jira 티켓 고르기 */
+.jira-picker { display: flex; flex-direction: column; gap: 10px; }
+.jira-picker legend .muted { font-weight: 400; margin-left: 6px; }
+.jira-picker .segmented { align-self: flex-start; }
+.jira-list { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow-y: auto; border: 1px solid var(--rule); border-radius: 8px; }
+.jira-list > li { border-bottom: 1px solid var(--ground); }
+.jira-list > li:last-child { border-bottom: 0; }
+.jira-list > li.muted { padding: 10px 12px; }
+.jira-item { width: 100%; min-height: 0; padding: 8px 12px; border: 0; border-radius: 0; background: transparent; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; text-align: left; font-weight: 400; }
+.jira-item:hover { background: var(--soft); }
+.jira-item.on { background: var(--accent-soft); }
+.jira-item .muted { grid-column: 2; }
+.jira-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jira-new { display: flex; flex-direction: column; gap: 10px; }
+.jira-key { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.jira-key input { width: 110px; min-height: 30px; }
+.ws-list li .jira-key + .small-btn { margin-left: 8px; }
+.jira-guide { padding: 12px 20px 0; }
+.jira-guide summary { cursor: pointer; font-weight: 500; }
+.jira-guide ol { margin: 8px 0 4px; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.callback-row { align-items: center; margin-top: 4px; }
+.callback-row code { padding: 4px 8px; background: var(--soft); border-radius: 4px; }
+.callback-row .small-btn { margin-left: 0; }
+.jira-login { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 14px 20px 18px; }
+.jira-ai { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.jira-ai .small-btn { margin-left: 0; display: inline-flex; align-items: center; gap: 6px; }
+
+/* 새 세션 단계 */
+.wizard-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.wizard-head h1 { margin: 0; }
+.wizard-steps { list-style: none; margin: 0; padding: 0; display: flex; gap: 6px; font-size: 13px; color: var(--muted); }
+.wizard-steps li { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: var(--soft); }
+.wizard-steps li span { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--rule); color: var(--ink); font-size: 11px; font-weight: 600; }
+.wizard-steps li.on { background: var(--accent-soft); color: var(--accent-ink); font-weight: 500; }
+.wizard-steps li.on span { background: var(--accent); color: #fff; }
+.wizard-steps li.done span { background: var(--ok); color: #fff; }
+.ticket-card { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft); }
+.ticket-title { font-weight: 500; }

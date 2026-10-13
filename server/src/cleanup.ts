@@ -9,6 +9,7 @@ import { serverPorts, stopServers } from './runner.js';
 import { releaseAccount } from './accounts.js';
 import { listPrs, type PullRequestRow } from './pr.js';
 import { deleteSessionScreens, screenDirSize } from './screens.js';
+import { deleteSessionTests } from './tests.js';
 import { getSettings } from './settings.js';
 import { sendNotification } from './notify.js';
 import { broadcast } from './hub.js';
@@ -133,7 +134,7 @@ export async function cleanSession(sessionId: number, opts: { deleteRemote: bool
     }
   }
   await attempt('계정 반납', async () => { releaseAccount(sessionId); });
-  await attempt('스크린샷 삭제', async () => { deleteSessionScreens(sessionId); });
+  await attempt('스크린샷 삭제', async () => { deleteSessionScreens(sessionId); deleteSessionTests(sessionId); });
   await attempt('세션 기록 보관', async () => { if (!s.closed) setSession(sessionId, { closed: 1 }); });
   broadcast({ type: 'sessions.changed' });
   broadcast({ type: 'cleanup.changed' });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
-import type { Account, PermissionMode, Project, ProjectKind, Settings, Workspace } from '../types';
+import type { Account, JiraConfig, JiraStatus, PermissionMode, Project, ProjectKind, Settings, Workspace } from '../types';
 
 const KINDS: { value: ProjectKind; label: string }[] = [
   { value: 'be', label: 'BE' }, { value: 'fe', label: 'FE' }, { value: 'full', label: '통합' }, { value: 'unknown', label: '미정' },
@@ -49,8 +49,9 @@ export default function SettingsPage() {
       {error && <p className="banner error" role="alert">{error}</p>}
       {notice && <p className="banner ok" role="status">{notice}</p>}
       <ProjectsSection projects={projects} run={run} />
+      <JiraSection run={run} />
       <WorkspacesSection projects={projects} workspaces={workspaces} run={run} />
-      <AccountsSection accounts={accounts} run={run} />
+      <AccountsSection accounts={accounts} workspaces={workspaces} run={run} />
       {settings && <PreferencesSection settings={settings} setSettings={setSettings} run={run} />}
     </div>
   );
@@ -139,6 +140,75 @@ function ProjectRow({ p, run }: { p: Project; run: Run }) {
   );
 }
 
+/** 워크스페이스의 Jira 프로젝트 키. 바꾸고 나가거나 Enter를 누르면 저장한다. */
+function JiraKeyInput({ workspace, run }: { workspace: Workspace; run: Run }) {
+  const [key, setKey] = useState(workspace.jira_project ?? '');
+  useEffect(() => setKey(workspace.jira_project ?? ''), [workspace.jira_project]);
+  const save = () => { if ((workspace.jira_project ?? '') !== key.trim().toUpperCase()) run(() => api.updateWorkspace(workspace.id, { jira_project: key.trim() || null }), 'Jira 프로젝트 키를 저장했습니다.')(); };
+  return (
+    <label className="jira-key">
+      <span className="muted small">Jira 프로젝트</span>
+      <input className="mono" aria-label={`${workspace.name} Jira 프로젝트 키`} placeholder="예: KERE" value={key}
+        onChange={(e) => setKey(e.target.value.toUpperCase())} onBlur={save} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } }} />
+    </label>
+  );
+}
+
+/**
+ * Jira 연결: Atlassian 공식 MCP 서버의 OAuth로 로그인한다. 키나 앱 등록 없이 버튼 하나로 끝난다.
+ */
+function JiraSection({ run }: { run: Run }) {
+  const [cfg, setCfg] = useState<JiraConfig | null>(null);
+  const [status, setStatus] = useState<JiraStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const reload = useCallback(() => {
+    api.jiraConfig().then(setCfg).catch(() => {});
+    api.jiraStatus().then(setStatus).catch(() => setStatus(null));
+  }, []);
+  useEffect(() => {
+    reload();
+    // 로그인에서 돌아왔으면 주소의 표시를 지운다.
+    const url = new URL(location.href);
+    if (url.searchParams.has('jira') || url.searchParams.get('view') === 'settings') {
+      url.searchParams.delete('jira'); url.searchParams.delete('view');
+      history.replaceState(null, '', url);
+    }
+  }, [reload]);
+  if (!cfg) return null;
+  return (
+    <section className="card">
+      <div className="card-head split">
+        <div>
+          <h2>Jira</h2>
+          <p className="muted small">세션을 만들 때 워크스페이스의 Jira 프로젝트에서 티켓을 고르거나 새로 만듭니다. Atlassian 계정으로 로그인만 하면 되고, 로그인 정보는 암호화해 저장하며 만료되면 자동으로 이어집니다.</p>
+        </div>
+        <span className="chip-status">
+          <span className={`srv-dot ${status?.connected ? 'running' : cfg.logged_in ? 'failed' : 'idle'}`} aria-hidden="true" />
+          {status?.connected ? `연결됨 · ${status.user}` : status?.error ?? '로그인 필요'}
+        </span>
+      </div>
+      <div className="jira-login">
+        {cfg.logged_in && cfg.sites.length > 1 && (
+          <label className="field">
+            <span>Jira 사이트</span>
+            <select value={cfg.site?.id ?? ''} onChange={(e) => run(async () => { setStatus(await api.jiraChooseSite(e.target.value)); reload(); }, 'Jira 사이트를 바꿨습니다.')()}>
+              {cfg.sites.map((x) => <option key={x.id} value={x.id}>{x.name} ({x.url.replace('https://', '')})</option>)}
+            </select>
+          </label>
+        )}
+        {cfg.logged_in && cfg.sites.length <= 1 && cfg.site && <span className="small muted">사이트 <code>{cfg.site.url.replace('https://', '')}</code></span>}
+        <span className="spacer" />
+        {cfg.logged_in && <button type="button" onClick={run(async () => { await api.jiraLogout(); reload(); }, 'Jira에서 로그아웃했습니다.')}>로그아웃</button>}
+        <button type="button" className="primary" disabled={busy} onClick={async () => {
+          setBusy(true);
+          await run(async () => { location.href = (await api.jiraLoginUrl(location.origin)).url; })();
+          setBusy(false);
+        }}>{busy ? 'Atlassian으로 이동 중' : cfg.logged_in ? '다시 로그인' : 'Jira로 로그인'}</button>
+      </div>
+    </section>
+  );
+}
+
 function WorkspacesSection({ projects, workspaces, run }: { projects: Project[]; workspaces: Workspace[]; run: Run }) {
   const [name, setName] = useState('');
   const [picked, setPicked] = useState<number[]>([]);
@@ -147,8 +217,9 @@ function WorkspacesSection({ projects, workspaces, run }: { projects: Project[];
       <div className="card-head"><div><h2>워크스페이스</h2><p className="muted small">함께 작업할 프로젝트 묶음입니다. 세션을 만들면 묶인 프로젝트마다 워크트리가 생깁니다. 첫 번째 프로젝트가 Claude의 작업 위치가 됩니다.</p></div></div>
       <ul className="ws-list">
         {workspaces.map((w) => (
-          <li key={w.id}>
+ <li key={w.id}>
             <strong>{w.name}</strong> <span className="muted">{w.projects.map((p) => p.name).join(' + ')}</span>
+            <JiraKeyInput workspace={w} run={run} />
             <button className="danger small-btn" onClick={() => { if (confirm(`${w.name} 워크스페이스를 지울까요?`)) run(() => api.deleteWorkspace(w.id))(); }}>삭제</button>
           </li>
         ))}
@@ -214,26 +285,35 @@ function PreferencesSection({ settings, setSettings, run }: { settings: Settings
   );
 }
 
-function AccountsSection({ accounts, run }: { accounts: Account[]; run: Run }) {
+function AccountsSection({ accounts, workspaces, run }: { accounts: Account[]; workspaces: Workspace[]; run: Run }) {
   const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
   const [note, setNote] = useState('');
+  // 새 계정은 기본으로 첫 워크스페이스 것. ''는 공용.
+  const [wsId, setWsId] = useState<number | ''>('');
+  useEffect(() => { if (wsId === '' && workspaces[0] && accounts.length === 0) setWsId(workspaces[0].id); }, [workspaces]); // eslint-disable-line react-hooks/exhaustive-deps
   const used = accounts.filter((a) => a.session_id).length;
   return (
     <section className="card">
       <div className="card-head">
         <div>
           <h2>테스트 계정 풀 <span className="muted small">{accounts.length}개 중 {used}개 사용 중</span></h2>
-          <p className="muted small">세션을 만들면 비어 있는 계정이 하나 배정되고, 역할이 다른 계정이 더 필요하면 세션 화면에서 추가합니다. 메모에 역할(사업자, 지자체, 관리자 등)을 적어 두면 Claude와 화면 촬영에서 골라 씁니다. 세션을 닫으면 돌아옵니다. 같은 계정으로 두 곳에 로그인해 세션이 끊기는 일을 막습니다. 비밀번호는 암호화해 저장합니다.</p>
+          <p className="muted small">계정은 워크스페이스마다 따로 씁니다. 세션에는 그 워크스페이스 계정과 공용 계정만 배정됩니다. 세션을 만들면 비어 있는 계정이 하나 배정되고, 역할이 다른 계정이 더 필요하면 세션 화면에서 추가합니다. 메모에 역할(사업자, 지자체, 관리자 등)을 적어 두면 Claude와 화면 촬영에서 골라 씁니다. 세션을 닫으면 돌아옵니다. 같은 계정으로 두 곳에 로그인해 세션이 끊기는 일을 막습니다. 비밀번호는 암호화해 저장합니다.</p>
         </div>
       </div>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>계정</th><th>메모</th><th>상태</th><th>사용 세션</th><th><span className="sr-only">작업</span></th></tr></thead>
+          <thead><tr><th>워크스페이스</th><th>계정</th><th>메모</th><th>상태</th><th>사용 세션</th><th><span className="sr-only">작업</span></th></tr></thead>
           <tbody>
-            {accounts.length === 0 && <tr><td colSpan={5} className="muted">등록된 계정이 없습니다.</td></tr>}
+            {accounts.length === 0 && <tr><td colSpan={6} className="muted">등록된 계정이 없습니다.</td></tr>}
             {accounts.map((a) => (
               <tr key={a.id}>
+                <td>
+                  <select aria-label={`${a.login} 워크스페이스`} value={a.workspace_id ?? ''} onChange={(e) => run(() => api.updateAccount(a.id, { workspace_id: e.target.value ? Number(e.target.value) : null }), '워크스페이스를 바꿨습니다.')()}>
+                    {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                    <option value="">공용 (모든 워크스페이스)</option>
+                  </select>
+                </td>
                 <td className="mono">{a.login}</td>
                 <td className="muted">{a.note}</td>
                 <td><span className={`pill ${a.session_id ? 'accent' : 'ok'}`}>{a.session_id ? '사용 중' : '대기'}</span></td>
@@ -247,7 +327,13 @@ function AccountsSection({ accounts, run }: { accounts: Account[]; run: Run }) {
           </tbody>
         </table>
       </div>
-      <form className="add-row" onSubmit={(e) => { e.preventDefault(); run(async () => { await api.addAccount(login, password, note); setLogin(''); setPassword(''); setNote(''); }, '계정을 추가했습니다.')(); }}>
+      <form className="add-row" onSubmit={(e) => { e.preventDefault(); run(async () => { await api.addAccount(login, password, note, wsId === '' ? null : wsId); setLogin(''); setPassword(''); setNote(''); }, '계정을 추가했습니다.')(); }}>
+        <label className="field"><span>워크스페이스</span>
+          <select value={wsId} onChange={(e) => setWsId(e.target.value ? Number(e.target.value) : '')}>
+            {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            <option value="">공용</option>
+          </select>
+        </label>
         <label className="field"><span>계정</span><input className="mono" autoComplete="off" value={login} placeholder="qa-03@60hz.io" onChange={(e) => setLogin(e.target.value)} /></label>
         <label className="field"><span>비밀번호</span><input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
         <label className="field grow"><span>메모 <span className="muted">(선택)</span></span><input value={note} placeholder="역할 예: 사업자, 지자체(광역), 관리자" onChange={(e) => setNote(e.target.value)} /></label>

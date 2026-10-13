@@ -9,7 +9,8 @@ export type ServerEvent =
   | { type: 'pr.updated'; sessionId: number }
   | { type: 'screens.updated'; sessionId: number }
   | { type: 'cleanup.changed' }
-  | { type: 'approvals.updated'; sessionId: number };
+  | { type: 'approvals.updated'; sessionId: number }
+  | { type: 'tests.updated'; sessionId: number };
 
 export type LogLine = { seq: number; t: number; stream: 'out' | 'err' | 'sys'; level: 'error' | 'warn' | 'info'; text: string };
 

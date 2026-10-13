@@ -19,7 +19,16 @@ export type Project = {
   missing: boolean;
 };
 
-export type Workspace = { id: number; name: string; projects: { id: number; name: string; kind: ProjectKind }[] };
+export type Workspace = { id: number; name: string; jira_project: string | null; projects: { id: number; name: string; kind: ProjectKind }[] };
+
+export type JiraIssue = {
+  key: string; summary: string; status: string; status_category: string; type: string; assignee: string | null; url: string; updated: string;
+};
+export type JiraStatus = { connected: boolean; user: string | null; error: string | null; site: string | null };
+export type JiraConfig = {
+  logged_in: boolean; user: string | null;
+  site: { id: string; url: string } | null; sites: { id: string; name: string; url: string }[];
+};
 
 export type Worktree = {
   id: number;
@@ -68,7 +77,19 @@ export type ServerEvent =
   | { type: 'pr.updated'; sessionId: number }
   | { type: 'screens.updated'; sessionId: number }
   | { type: 'cleanup.changed' }
-  | { type: 'approvals.updated'; sessionId: number };
+  | { type: 'approvals.updated'; sessionId: number }
+  | { type: 'tests.updated'; sessionId: number };
+
+export type TestCase = {
+  id: number; session_id: number; title: string; role: string; start_path: string; steps: string[]; expected: string[];
+  account_id: number | null; status: 'draft' | 'queued' | 'running' | 'pass' | 'fail' | 'blocked' | 'error';
+  summary: string | null; results: { step: string; ok: boolean; note: string; shot: string | null }[];
+  shots: { file: string; caption: string }[]; ran_at: string | null;
+};
+export type TestState = {
+  cases: TestCase[]; fe_project: { id: number; name: string } | null; app_url: string | null; login_path: string | null;
+  generating: boolean; running: boolean; roles: { role: string; account: { id: number; login: string; note: string } | null }[];
+};
 
 export type ChangeScope = 'base' | 'uncommitted';
 export type ChangedFile = {
@@ -93,7 +114,8 @@ export type PrDraft = {
   dirty_files: string[]; commits_ahead: number; has_changes: boolean; check_cmd: string | null; template_path: string | null;
   commit_template: { path: string; from: string | null } | null;
   style_examples: { number: number; title: string; author: string; mine: boolean }[];
-  existing_pr: { number: number; url: string } | null; commit_message: string; title: string; body: string;
+  existing_pr: { number: number; url: string; state: PrState; head_oid: string } | null;
+  pr_mode: 'new' | 'update' | 'none'; pr_note: string | null; commit_message: string; title: string; body: string;
 };
 export type PrStep = { name: 'commit' | 'check' | 'push' | 'pr'; status: 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'ignored'; started_at: number | null; ended_at: number | null; detail: string | null; output: string | null };
 export type PrJob = {
@@ -154,5 +176,12 @@ export type ProjectEnvState = {
   missing: string[];
 };
 
-export type Account = { id: number; login: string; note: string; session_id: number | null; ticket: string | null };
+export type Account = {
+  id: number; login: string; note: string; session_id: number | null; ticket: string | null;
+  /** null이면 모든 워크스페이스에서 쓰는 공용 계정 */
+  workspace_id: number | null; workspace_name: string | null;
+};
+
+/** 이 워크스페이스 세션에 배정할 수 있는 남은 계정인지: 그 워크스페이스 계정이나 공용 계정 */
+export const usableIn = (a: Account, workspaceId: number) => !a.session_id && (a.workspace_id === null || a.workspace_id === workspaceId);
 export type MissingEnv = { projectId: number; project: string; keys: string[] };

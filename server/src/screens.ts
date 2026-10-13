@@ -53,7 +53,7 @@ export function screenState(sessionId: number) {
   };
 }
 
-function feWorktree(session: SessionView) {
+export function feWorktree(session: SessionView) {
   return session.worktrees.find((w) => w.project_kind === 'fe') ?? session.worktrees.find((w) => w.project_kind === 'full') ?? null;
 }
 
@@ -61,7 +61,7 @@ function changed(sessionId: number) {
   broadcast({ type: 'screens.updated', sessionId });
 }
 
-async function changedFiles(w: SessionView['worktrees'][number]): Promise<string[]> {
+export async function changedFiles(w: SessionView['worktrees'][number]): Promise<string[]> {
   const ref = (await refExists(w.path, `refs/remotes/origin/${w.base_branch}`)) ? `origin/${w.base_branch}` : w.base_branch;
   const tracked = await git(w.path, ['diff', '--name-only', ref]).catch(() => '');
   const untracked = await git(w.path, ['ls-files', '--others', '--exclude-standard']).catch(() => '');
@@ -69,7 +69,7 @@ async function changedFiles(w: SessionView['worktrees'][number]): Promise<string
 }
 
 /** 기준 브랜치와 갈라진 지점부터의 diff. 무엇이 바뀌었는지 보고 화면 영향을 판단하게 한다. 너무 길면 자른다. */
-async function changedDiff(w: SessionView['worktrees'][number]): Promise<string> {
+export async function changedDiff(w: SessionView['worktrees'][number]): Promise<string> {
   const base = (await refExists(w.path, `refs/remotes/origin/${w.base_branch}`)) ? `origin/${w.base_branch}` : w.base_branch;
   const ref = await git(w.path, ['merge-base', base, 'HEAD']).catch(() => base);
   const diff = await git(w.path, ['diff', '-U3', ref, '--', '.', ':(exclude)package-lock.json', ':(exclude)*.lock', ':(exclude)pnpm-lock.yaml']).catch(() => '');

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { useServerEvents } from '../events';
-import type { Account, Approval, Session } from '../types';
+import { usableIn, type Account, type Approval, type Session } from '../types';
 
 /** Claude가 프롬프트 중에 요청한 환경값·테스트 계정. 사용자가 확인해야 적용되고, 그동안 Claude는 기다린다. */
 export default function ApprovalCards({ session }: { session: Session }) {
@@ -12,7 +12,7 @@ export default function ApprovalCards({ session }: { session: Session }) {
   if (list.length === 0) return null;
   return (
     <section className="approvals" aria-label="확인이 필요한 요청">
-      {list.map((a) => (a.request.kind === 'env' ? <EnvCard key={a.id} approval={a} /> : <AccountCard key={a.id} approval={a} />))}
+      {list.map((a) => (a.request.kind === 'env' ? <EnvCard key={a.id} approval={a} /> : <AccountCard key={a.id} approval={a} workspaceId={session.workspace_id} />))}
     </section>
   );
 }
@@ -82,7 +82,7 @@ function EnvCard({ approval }: { approval: Approval }) {
   );
 }
 
-function AccountCard({ approval }: { approval: Approval }) {
+function AccountCard({ approval, workspaceId }: { approval: Approval; workspaceId: number }) {
   const req = approval.request as Extract<Approval['request'], { kind: 'account' }>;
   const [free, setFree] = useState<Account[]>([]);
   const [pick, setPick] = useState<number | ''>('');
@@ -92,11 +92,11 @@ function AccountCard({ approval }: { approval: Approval }) {
       // 메모가 요청한 역할과 맞는 계정을 앞에 두고 먼저 고른다.
       const words = req.role.toLowerCase().split(/[\s,()/]+/).filter(Boolean);
       const score = (a: Account) => words.filter((w) => a.note.toLowerCase().includes(w) || a.login.toLowerCase().includes(w)).length;
-      const list = r.accounts.filter((a) => !a.session_id).sort((a, b) => score(b) - score(a));
+      const list = r.accounts.filter((a) => usableIn(a, workspaceId)).sort((a, b) => score(b) - score(a));
       setFree(list);
       if (list[0] && score(list[0]) > 0) setPick(list[0].id);
     }).catch(() => setFree([]));
-  }, [req.role]);
+  }, [req.role, workspaceId]);
   return (
     <div className="approval-card" role="alertdialog" aria-label="테스트 계정 요청">
       <div className="approval-head">
