@@ -1,5 +1,5 @@
 import type {
-  Account, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
+  Account, Approval, ChangeScope, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
   ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, Workspace,
 } from './types';
 
@@ -41,7 +41,15 @@ export const api = {
   }) => request<Session>('POST', '/api/sessions', body),
   messages: (id: number) => request<StoredMessage[]>('GET', `/api/sessions/${id}/messages`),
   prompt: (id: number, text: string, images: { mediaType: string; data: string; name?: string }[]) =>
-    request('POST', `/api/sessions/${id}/prompt`, { text, images }),
+    request<{ queued: boolean; position: number }>('POST', `/api/sessions/${id}/prompt`, { text, images }),
+  changes: (id: number, scope: ChangeScope) => request<WorktreeChanges[]>('GET', `/api/sessions/${id}/changes?scope=${scope}`),
+  diff: (id: number, worktreeId: number, path: string, scope: ChangeScope, full: boolean, ignoreWhitespace: boolean) =>
+    request<{ patch: string; binary: boolean }>('GET', `/api/sessions/${id}/diff?${new URLSearchParams({ worktree: String(worktreeId), path, scope, full: full ? '1' : '0', ws: ignoreWhitespace ? '1' : '0' })}`),
+  approvals: (id: number) => request<Approval[]>('GET', `/api/sessions/${id}/approvals`),
+  decideApproval: (approvalId: number, body: { approve: false } | { approve: true; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number }) =>
+    request('POST', `/api/approvals/${approvalId}`, body),
+  removeQueued: (id: number, queueId: number) => request('DELETE', `/api/sessions/${id}/queue/${queueId}`),
+  resumeQueue: (id: number) => request('POST', `/api/sessions/${id}/queue/resume`),
   stop: (id: number) => request('POST', `/api/sessions/${id}/stop`),
   markRead: (id: number) => request('POST', `/api/sessions/${id}/read`),
   closeSession: (id: number, removeWorktrees: boolean) => request('POST', `/api/sessions/${id}/close`, { removeWorktrees }),
@@ -57,28 +65,30 @@ export const api = {
   startServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/start`, { worktreeIds, commands }),
   stopServers: (id: number, worktreeIds?: number[]) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/stop`, { worktreeIds }),
   restartServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/restart`, { worktreeIds, commands }),
+  dismissFailure: (id: number, worktreeId: number) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/${worktreeId}/dismiss`),
   logs: (worktreeId: number) => request<LogLine[]>('GET', `/api/worktrees/${worktreeId}/logs`),
 
   accounts: () => request<{ accounts: Account[]; free: number }>('GET', '/api/accounts'),
   addAccount: (login: string, password: string, note: string) => request('POST', '/api/accounts', { login, password, note }),
   deleteAccount: (id: number) => request('DELETE', `/api/accounts/${id}`),
   accountPassword: (id: number) => request<{ password: string }>('GET', `/api/accounts/${id}/password`),
-  assignAccount: (sessionId: number) => request('POST', `/api/sessions/${sessionId}/account/assign`),
-  releaseAccount: (sessionId: number) => request('POST', `/api/sessions/${sessionId}/account/release`),
+  assignAccount: (sessionId: number, accountId?: number) => request('POST', `/api/sessions/${sessionId}/account/assign`, { accountId }),
+  releaseAccount: (sessionId: number, accountId?: number) => request('POST', `/api/sessions/${sessionId}/account/release`, { accountId }),
+  releaseAccountById: (accountId: number) => request('POST', `/api/accounts/${accountId}/release`),
   githubStatus: () => request<{ installed: boolean; loggedIn: boolean; account: string | null }>('GET', '/api/github/status'),
 
   pr: (id: number) => request<{ job: PrJob | null; prs: PullRequest[] }>('GET', `/api/sessions/${id}/pr`),
   preparePr: (id: number) => request<{ drafts: PrDraft[]; ai_error: string | null }>('POST', `/api/sessions/${id}/pr/prepare`),
-  createPr: (id: number, items: { worktree_id: number; title: string; body: string; commit_message: string }[]) => request<PrJob>('POST', `/api/sessions/${id}/pr`, { items }),
+  createPr: (id: number, items: { worktree_id: number; title: string; body: string; commit_message: string }[], ignoreCheckFailures: boolean) =>
+    request<PrJob>('POST', `/api/sessions/${id}/pr`, { items, ignore_check_failures: ignoreCheckFailures }),
+  continuePr: (id: number) => request<PrJob>('POST', `/api/sessions/${id}/pr/continue`),
   closePr: (prId: number) => request('POST', `/api/prs/${prId}/close`),
 
   screens: (id: number) => request<ScreenState>('GET', `/api/sessions/${id}/screens`),
   detectScreens: (id: number) => request<{ found: number }>('POST', `/api/sessions/${id}/screens/detect`),
   addScreen: (id: number, route: string) => request('POST', `/api/sessions/${id}/screens`, { route }),
-  captureScreens: (id: number, ids?: number[]) => request<{ warnings: string[] }>('POST', `/api/sessions/${id}/screens/capture`, { ids }),
-  acceptScreen: (screenId: number, accepted: boolean) => request('PATCH', `/api/screens/${screenId}`, { accepted }),
+  checkScreen: (screenId: number, checked: boolean) => request('PATCH', `/api/screens/${screenId}`, { checked }),
   removeScreen: (screenId: number) => request('DELETE', `/api/screens/${screenId}`),
-  askScreen: (screenId: number, note: string) => request('POST', `/api/screens/${screenId}/ask`, { note }),
   capturePreview: (id: number, url: string) => request<{ data: string; warning: string | null }>('POST', `/api/sessions/${id}/preview/capture`, { url }),
 
   cleanup: () => request<{ rows: CleanupRow[]; startup: StartupReport | null }>('GET', '/api/cleanup'),

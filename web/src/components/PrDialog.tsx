@@ -4,7 +4,7 @@ import { insertIntoPrompt, useServerEvents } from '../events';
 import type { PrDraft, PrJob, PrStep, PullRequest, Session } from '../types';
 
 const STEP_LABEL: Record<PrStep['name'], string> = { commit: '커밋', check: '빌드·테스트', push: '푸시', pr: 'PR 생성' };
-const STEP_STATUS: Record<PrStep['status'], string> = { pending: '대기', running: '진행 중', done: '완료', failed: '실패', skipped: '건너뜀' };
+const STEP_STATUS: Record<PrStep['status'], string> = { pending: '대기', running: '진행 중', done: '완료', failed: '실패', skipped: '건너뜀', ignored: '실패 무시' };
 
 type Props = { session: Session; onClose: () => void; onOpenCleanup: () => void };
 
@@ -19,6 +19,7 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
   const [preparing, setPreparing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<'loading' | 'edit' | 'progress'>('loading');
+  const [ignoreChecks, setIgnoreChecks] = useState(false);
 
   const reload = () => api.pr(session.id).then((r) => { setJob(r.job); setPrs(r.prs); return r; });
 
@@ -57,7 +58,7 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
     setError(null);
     try {
       const items = drafts.filter((d) => d.include).map(({ worktree_id, title, body, commit_message }) => ({ worktree_id, title, body, commit_message }));
-      setJob(await api.createPr(session.id, items));
+      setJob(await api.createPr(session.id, items, ignoreChecks));
       setMode('progress');
     } catch (e) {
       setError((e as Error).message);
@@ -110,8 +111,10 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
                     )}
                     {d.dirty_files.length > 0 && (
                       <label className="field">
-                        <span>커밋 메시지</span>
-                        <input value={d.commit_message} onChange={(e) => edit(d.worktree_id, { commit_message: e.target.value })} />
+                        <span>커밋 메시지 <span className="muted small">
+                          {d.commit_template ? `템플릿 ${d.commit_template.path}${d.commit_template.from ? ` (${d.commit_template.from} 것)` : ''} 기준` : '최근 커밋 형식 기준'}
+                        </span></span>
+                        <textarea className="mono" rows={Math.min(10, Math.max(3, d.commit_message.split('\n').length + 1))} value={d.commit_message} onChange={(e) => edit(d.worktree_id, { commit_message: e.target.value })} />
                       </label>
                     )}
                     <label className="field">
@@ -119,7 +122,11 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
                       <input value={d.title} onChange={(e) => edit(d.worktree_id, { title: e.target.value })} />
                     </label>
                     <label className="field">
-                      <span>PR 본문 <span className="muted small">{d.template_path ? `템플릿 ${d.template_path} 기준` : '템플릿 없음'}</span></span>
+                      <span>PR 본문 <span className="muted small">
+                        {d.style_examples.length
+                          ? `최근 PR ${d.style_examples.map((x) => `#${x.number}${x.mine ? '(내 PR)' : ''}`).join(', ')} 형식 기준`
+                          : d.template_path ? `템플릿 ${d.template_path} 기준` : '기본 형식'}
+                      </span></span>
                       <textarea className="mono pr-body" rows={12} value={d.body} onChange={(e) => edit(d.worktree_id, { body: e.target.value })} />
                     </label>
                     <p className="muted small">
@@ -130,6 +137,12 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
               </fieldset>
             ))}
             {included.length > 1 && <p className="muted small">BE와 FE PR은 본문 끝에 서로를 관련 PR로 연결합니다.</p>}
+            {included.some((d) => d.check_cmd) && (
+              <label className="start-check small">
+                <input type="checkbox" checked={ignoreChecks} onChange={(e) => setIgnoreChecks(e.target.checked)} />
+                검사가 실패해도 PR 만들기 <span className="muted">(실패하면 PR 본문 끝에 실패한 채 올렸다고 남깁니다)</span>
+              </label>
+            )}
             {error && <p className="error-text" role="alert">{error}</p>}
             <div className="dialog-actions">
               <button type="button" onClick={onClose} disabled={preparing}>취소</button>
@@ -167,6 +180,15 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
             ))}
             {job.status === 'running' && <p className="muted small" role="status"><span className="spinner" aria-hidden="true" /> 진행 중입니다. 창을 닫아도 계속됩니다.</p>}
             {job.status === 'failed' && <p className="banner error" role="alert">{job.error}</p>}
+            {job.status === 'failed' && job.repos.some((r) => r.steps.some((s) => s.name === 'check' && s.status === 'failed')) && (
+              <div className="pr-continue">
+                <span className="small">빌드·테스트 실패가 이번 작업과 상관없거나 나중에 고칠 거라면, 실패를 무시하고 푸시와 PR을 이어서 할 수 있습니다. 이미 돌린 검사는 다시 돌리지 않습니다.</span>
+                <button type="button" className="primary" onClick={async () => {
+                  setError(null);
+                  try { setJob(await api.continuePr(session.id)); } catch (e) { setError((e as Error).message); }
+                }}>검사 실패 무시하고 진행</button>
+              </div>
+            )}
             {job.status === 'done' && (
               <div className="banner ok" role="status">
                 PR을 만들었습니다.{job.servers_stopped ? ' 이 세션의 서버를 끄고 포트를 반납했습니다.' : ''} 머지되면 <button className="link" onClick={onOpenCleanup}>리소스 정리</button>에서 워크트리와 브랜치를 지울 수 있습니다.

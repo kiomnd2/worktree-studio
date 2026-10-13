@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, missingFrom } from '../api';
-import { attachToPrompt, insertIntoPrompt, useServerEvents } from '../events';
-import type { LogLine, ScreenState, ServerView, Session } from '../types';
+import { attachToPrompt, insertIntoPrompt, openInPreview, useServerEvents } from '../events';
+import type { Account, LogLine, ScreenCheck, ScreenState, ServerView, Session, WorktreeChanges } from '../types';
 import StartServersDialog from './StartServersDialog';
 
 const STATUS_LABEL: Record<string, string> = {
   idle: '꺼짐', starting: '시작 중', running: '실행 중', unhealthy: '응답 없음', failed: '멈춤', stopped: '꺼짐',
 };
 
-type Props = { session: Session; onOpenEnv: (message?: string) => void; onOpenScreens: () => void; onClosed: () => void };
+type Props = { session: Session; onOpenEnv: (message?: string) => void; onOpenChanges: () => void; onClosed: () => void };
 
-export default function RightPanel({ session, onOpenEnv, onOpenScreens, onClosed }: Props) {
+export default function RightPanel({ session, onOpenEnv, onOpenChanges, onClosed }: Props) {
   const [servers, setServers] = useState<ServerView[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +47,8 @@ export default function RightPanel({ session, onOpenEnv, onOpenScreens, onClosed
   const be = servers.find((s) => s.project_kind === 'be' && s.url);
 
   return (
+    <>
+    <PanelResizer />
     <section className="panel" aria-label="서버, 미리보기, 로그">
       <div className="panel-block">
         <div className="block-head">
@@ -77,6 +79,7 @@ export default function RightPanel({ session, onOpenEnv, onOpenScreens, onClosed
                 ) : (
                   <button className="small-btn" disabled={busy} onClick={() => setConfirm({ kind: 'start', worktreeIds: [s.worktree_id] })}>실행</button>
                 )}
+                {s.failure && <FailureBox server={s} sessionId={session.id} onChanged={setServers} onError={setError} />}
               </li>
             );
           })}
@@ -84,7 +87,9 @@ export default function RightPanel({ session, onOpenEnv, onOpenScreens, onClosed
         {error && <p className="error-text" role="alert">{error}</p>}
       </div>
 
-      <ScreensBlock session={session} onOpen={onOpenScreens} />
+      <ChangesBlock session={session} onOpen={onOpenChanges} />
+
+      <ScreensBlock session={session} />
 
       {fe ? <Preview key={fe.url} sessionId={session.id} baseUrl={fe.url!} ready={fe.status === 'running'} /> : (
         <div className="placeholder">
@@ -111,6 +116,91 @@ export default function RightPanel({ session, onOpenEnv, onOpenScreens, onClosed
         />
       )}
     </section>
+    </>
+  );
+}
+
+/** 서버가 멈췄거나 응답이 없을 때 오류 요약을 보여 준다. 고칠지는 사용자가 정한다. */
+function FailureBox({ server: s, sessionId, onChanged, onError }: {
+  server: ServerView; sessionId: number; onChanged: (list: ServerView[]) => void; onError: (m: string | null) => void;
+}) {
+  const [showLog, setShowLog] = useState(false);
+  const f = s.failure!;
+  return (
+    <div className="failure-box err" role="alert">
+      <div className="failure-title">{f.kind === 'exit' ? '서버가 멈췄습니다' : '서버가 응답하지 않습니다'}</div>
+      <code className="failure-summary">{f.summary}</code>
+      <div className="failure-actions">
+        <button className="small-btn" onClick={() => setShowLog((v) => !v)}>{showLog ? '로그 접기' : '오류 로그'}</button>
+        <button className="small-btn" onClick={() => insertIntoPrompt(`${s.project_name} 서버가 실행 중에 실패했어.\n실행 명령: ${f.command}\n\`\`\`\n${f.excerpt.split('\n').slice(-80).join('\n')}\n\`\`\``)}>프롬프트에 넣기</button>
+        <button className="small-btn" onClick={async () => {
+          onError(null);
+          try { onChanged(await api.dismissFailure(sessionId, s.worktree_id)); } catch (e) { onError((e as Error).message); }
+        }}>닫기</button>
+      </div>
+      {showLog && <pre className="log-box failure-log">{f.excerpt}</pre>}
+    </div>
+  );
+}
+
+const PANEL_W_KEY = 'wts:panel-width';
+const PREVIEW_H_KEY = 'wts:preview-height';
+const PREVIEW_FIT_KEY = 'wts:preview-fit';
+/** 화면 맞춤에서 페이지를 그리는 폭. 일반적인 데스크톱 화면 폭. */
+const DESKTOP_WIDTH = 1440;
+
+function readNumber(key: string, fallback: number) {
+  try { const v = Number(localStorage.getItem(key)); return Number.isFinite(v) && v > 0 ? v : fallback; } catch { return fallback; }
+}
+function writeNumber(key: string, v: number) {
+  try { localStorage.setItem(key, String(v)); } catch { /* 사생활 보호 모드 등 */ }
+}
+
+/**
+ * 대화창과 오른쪽 패널 사이 경계. 끌어서 패널 폭을 바꾸고, 두 번 누르면 기본 폭으로 돌린다.
+ * 폭은 CSS 변수 --panel-w로 넘겨 좁은 화면 규칙(패널이 아래로 쌓임)은 그대로 둔다.
+ */
+function PanelResizer() {
+  useEffect(() => {
+    const saved = readNumber(PANEL_W_KEY, 0);
+    if (saved) document.documentElement.style.setProperty('--panel-w', `${saved}px`);
+  }, []);
+  const clamp = (w: number) => Math.max(360, Math.min(w, window.innerWidth - 480));
+  const set = (w: number) => {
+    document.documentElement.style.setProperty('--panel-w', `${w}px`);
+    writeNumber(PANEL_W_KEY, w);
+  };
+  return (
+    <div
+      className="panel-resizer"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="오른쪽 패널 폭 조절 (끌거나 화살표 키, 두 번 누르면 기본 폭)"
+      tabIndex={0}
+      onDoubleClick={() => { document.documentElement.style.removeProperty('--panel-w'); try { localStorage.removeItem(PANEL_W_KEY); } catch { /* */ } }}
+      onKeyDown={(e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        const cur = document.querySelector('.panel')?.getBoundingClientRect().width ?? 480;
+        set(clamp(cur + (e.key === 'ArrowLeft' ? 40 : -40)));
+      }}
+      onPointerDown={(e) => {
+        e.preventDefault();
+        const el = e.currentTarget;
+        el.setPointerCapture(e.pointerId);
+        // 끄는 동안 미리보기 iframe이 마우스를 가로채지 않게 막는다.
+        document.body.classList.add('resizing');
+        const move = (ev: PointerEvent) => set(clamp(window.innerWidth - ev.clientX));
+        const up = () => {
+          document.body.classList.remove('resizing');
+          el.removeEventListener('pointermove', move);
+          el.removeEventListener('pointerup', up);
+        };
+        el.addEventListener('pointermove', move);
+        el.addEventListener('pointerup', up);
+      }}
+    >
+      <span className="grip" aria-hidden="true" />
+    </div>
   );
 }
 
@@ -118,43 +208,94 @@ function isLive(s: ServerView) {
   return s.status === 'starting' || s.status === 'running' || s.status === 'unhealthy';
 }
 
-const SCREEN_LABEL: Record<string, string> = { pending: '안 찍음', capturing: '찍는 중', changed: '차이', same: '같음', failed: '실패', accepted: '의도한 변경' };
+/** 기준 브랜치와 달라진 파일 수 요약. 자세한 비교는 변경 파일 화면에서 한다. */
+function ChangesBlock({ session, onOpen }: { session: Session; onOpen: () => void }) {
+  const [data, setData] = useState<WorktreeChanges[] | null>(null);
+  const reload = useCallback(() => { api.changes(session.id, 'base').then(setData).catch(() => setData(null)); }, [session.id]);
+  useEffect(reload, [reload]);
+  // Claude 작업이 끝나면(세션 상태가 바뀌면) 다시 센다.
+  useServerEvents((e) => { if (e.type === 'session.updated' && e.sessionId === session.id) reload(); });
+  const total = data?.reduce((n, w) => n + w.files.length, 0) ?? 0;
+  return (
+    <div className="panel-block">
+      <div className="block-head">
+        <h2>변경 파일 {data && <span className="muted small">{total}개</span>}</h2>
+        <button className="small-btn primary" disabled={!data || total === 0} onClick={onOpen}>비교 보기</button>
+      </div>
+      {data && (
+        <ul className="changes-summary">
+          {data.map((w) => {
+            const add = w.files.reduce((n, f) => n + (f.additions ?? 0), 0);
+            const del = w.files.reduce((n, f) => n + (f.deletions ?? 0), 0);
+            return (
+              <li key={w.worktree_id}>
+                <span>{w.project_name}</span>
+                <span className="muted small">{w.files.length ? <>{w.files.length}개 <span className="plus">+{add}</span> <span className="minus">−{del}</span></> : '변경 없음'}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
 
-/** 영향받는 화면 체크리스트. 자세한 비교는 전후 비교 화면에서 한다. */
-function ScreensBlock({ session, onOpen }: { session: Session; onOpen: () => void }) {
+/**
+ * 영향받는 화면 체크리스트. Claude가 바뀐 파일에서 경로를 찾고, 사용자가 미리보기로 열어 보고 확인 표시를 한다.
+ */
+function ScreensBlock({ session }: { session: Session }) {
   const [state, setState] = useState<ScreenState | null>(null);
+  const [route, setRoute] = useState('');
   const [error, setError] = useState<string | null>(null);
   const reload = useCallback(() => { api.screens(session.id).then(setState).catch(() => setState(null)); }, [session.id]);
   useEffect(reload, [reload]);
   useServerEvents((e) => { if (e.type === 'screens.updated' && e.sessionId === session.id) reload(); });
   if (!state?.fe_project) return null;
-  const checks = state.checks;
-  const done = checks.filter((c) => c.status === 'same' || c.status === 'accepted').length;
+  const direct = state.checks.filter((c) => c.kind === 'direct' || c.manual);
+  const indirect = state.checks.filter((c) => c.kind === 'indirect' && !c.manual);
+  const done = direct.filter((c) => c.checked).length;
+  const run = (fn: () => Promise<unknown>) => { setError(null); fn().then(reload).catch((e) => setError(e.message)); };
+  const item = (c: ScreenCheck) => (
+    <li key={c.id}>
+      <input type="checkbox" aria-label={`${c.route} 확인함`} checked={c.checked} onChange={(e) => run(() => api.checkScreen(c.id, e.target.checked))} />
+      <div className="screen-entry">
+        <button className="link mono route" title={state.preview_url ? '미리보기에서 열기' : 'FE 서버를 실행하면 미리보기에서 열 수 있습니다'} disabled={!state.preview_url} onClick={() => openInPreview(c.route)}>{c.route}</button>
+        <span className="muted small">{c.reason}</span>
+        {c.also_routes.length > 0 && (
+          <span className="small also-routes">같은 화면:{' '}
+            {c.also_routes.map((r) => <button key={r} className="link mono" disabled={!state.preview_url} onClick={() => openInPreview(r)}>{r}</button>)}
+          </span>
+        )}
+      </div>
+      <button className="icon" aria-label={`${c.route} 목록에서 빼기`} onClick={() => run(() => api.removeScreen(c.id))}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+      </button>
+    </li>
+  );
   return (
     <div className="panel-block">
       <div className="block-head">
-        <h2>영향받는 화면 {checks.length > 0 && <span className="muted small">확인 {done} / {checks.length}</span>}</h2>
-        <div className="row">
-          <button className="small-btn" disabled={state.detecting} onClick={() => { setError(null); api.detectScreens(session.id).catch((e) => setError(e.message)); }}>
-            {state.detecting ? '찾는 중' : checks.length ? '다시 찾기' : '영향 화면 찾기'}
-          </button>
-          <button className="small-btn primary" onClick={onOpen}>전후 비교 보기</button>
-        </div>
+        <h2>영향받는 화면 {direct.length > 0 && <span className="muted small">확인 {done} / {direct.length}</span>}</h2>
+        <button className="small-btn" disabled={state.detecting} onClick={() => run(() => api.detectScreens(session.id))}>
+          {state.detecting ? '찾는 중' : state.checks.length ? '다시 찾기' : '영향 화면 찾기'}
+        </button>
       </div>
-      {checks.length === 0 ? (
-        <p className="muted small">{state.detecting ? 'Claude가 바뀐 파일에서 라우터와 import를 따라가는 중입니다. 1~2분 걸립니다.' : '바뀐 파일을 보고 영향받는 화면을 찾아 기준 브랜치와 비교합니다.'}</p>
-      ) : (
-        <ul className="screen-checklist">
-          {checks.slice(0, 8).map((c) => (
-            <li key={c.id}>
-              <span className={`check-mark ${c.status}`} aria-hidden="true" />
-              <span className="mono small route">{c.route}</span>
-              <span className="muted small">{SCREEN_LABEL[c.status]}{c.status === 'changed' && c.diff_ratio !== null ? ` ${(c.diff_ratio * 100).toFixed(1)}%` : ''}</span>
-            </li>
-          ))}
-          {checks.length > 8 && <li className="muted small">외 {checks.length - 8}개</li>}
-        </ul>
+      {state.checks.length === 0 && (
+        <p className="muted small">{state.detecting ? 'Claude가 바뀐 내용을 보고 실제로 달라지는 화면을 고르는 중입니다. 1~2분 걸립니다.' : '바뀐 내용을 보고 직접 열어 확인해야 할 화면을 고릅니다.'}</p>
       )}
+      {direct.length > 0 && <ul className="screen-checklist">{direct.map(item)}</ul>}
+      {direct.length === 0 && indirect.length > 0 && <p className="muted small">보이는 게 확실히 바뀌는 화면은 없습니다.</p>}
+      {indirect.length > 0 && (
+        <details className="indirect">
+          <summary className="small">간접 영향 {indirect.length}개 <span className="muted">(바뀐 코드를 쓰지만 보이는 변화는 확실하지 않음)</span></summary>
+          <ul className="screen-checklist">{indirect.map(item)}</ul>
+        </details>
+      )}
+      <form className="add-route" onSubmit={(e) => { e.preventDefault(); if (route.trim()) run(async () => { await api.addScreen(session.id, route); setRoute(''); }); }}>
+        <label className="sr-only" htmlFor={`add-route-${session.id}`}>화면 경로 추가</label>
+        <input id={`add-route-${session.id}`} className="mono" placeholder="/resources/12" value={route} onChange={(e) => setRoute(e.target.value)} />
+        <button type="submit" className="small-btn" disabled={!route.trim()}>추가</button>
+      </form>
       {error && <p className="error-text" role="alert">{error}</p>}
     </div>
   );
@@ -167,9 +308,44 @@ function Preview({ sessionId, baseUrl, ready }: { sessionId: number; baseUrl: st
   const [note, setNote] = useState<string | null>(null);
   const frame = useRef<HTMLIFrameElement>(null);
   const [expanded, setExpanded] = useExpand();
+  const block = useRef<HTMLDivElement>(null);
+  const [flash, setFlash] = useState(false);
+  // 미리보기 높이는 오른쪽 아래 손잡이로 늘이고 줄인다. 다음에 열어도 같은 높이로.
+  const frameWrap = useRef<HTMLDivElement>(null);
+  const [frameHeight] = useState(() => readNumber(PREVIEW_H_KEY, 420));
+  // 화면 맞춤: 데스크톱 폭으로 그린 페이지를 패널 폭에 맞게 줄여 전체 배치를 본다. 끄면 실제 크기.
+  const [fit, setFit] = useState(() => readNumber(PREVIEW_FIT_KEY, 1) === 1);
+  const [scale, setScale] = useState(1);
+  useEffect(() => {
+    const el = frameWrap.current;
+    if (!el || !fit) { setScale(1); return; }
+    const ro = new ResizeObserver(() => setScale(Math.min(1, el.clientWidth / DESKTOP_WIDTH)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fit, ready]);
+  useEffect(() => {
+    const el = frameWrap.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => { if (!expanded) writeNumber(PREVIEW_H_KEY, Math.round(el.getBoundingClientRect().height)); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ready, expanded]);
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const p = (e as CustomEvent<string>).detail;
+      setPath(p);
+      setSrc(`${baseUrl}${p.startsWith('/') ? p : `/${p}`}`);
+      // 체크리스트보다 아래에 있어 화면 밖일 수 있다. 미리보기로 스크롤하고 잠깐 강조해 바뀐 걸 알 수 있게 한다.
+      block.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setFlash(true);
+      setTimeout(() => setFlash(false), 1200);
+    };
+    window.addEventListener('wts:preview-open', onOpen);
+    return () => window.removeEventListener('wts:preview-open', onOpen);
+  }, [baseUrl]);
   const go = () => setSrc(`${baseUrl}${path.startsWith('/') ? path : `/${path}`}`);
   return (
-    <div className={`panel-block preview${expanded ? ' expanded' : ''}`}>
+    <div ref={block} className={`panel-block preview${expanded ? ' expanded' : ''}${flash ? ' flash' : ''}`}>
       <div className="block-head">
         <h2>미리보기</h2>
         <div className="row">
@@ -194,13 +370,30 @@ function Preview({ sessionId, baseUrl, ready }: { sessionId: number; baseUrl: st
             let url = src;
             try { url = frame.current?.contentWindow?.location.href ?? src; } catch { /* cross-origin */ }
             const r = await api.capturePreview(sessionId, url);
-            attachToPrompt({ mediaType: 'image/png', data: r.data, name: `미리보기 ${new URL(url).pathname}.png` });
-            setNote(r.warning ?? '프롬프트에 첨부했습니다.');
+            const pagePath = new URL(url).pathname;
+            const base = pagePath.replace(/^\/+|\/+$/g, '').replace(/\//g, '_');
+            attachToPrompt({ mediaType: 'image/png', data: r.data, name: `화면${base ? `_${base}` : ''}.png` });
+            insertIntoPrompt(`${pagePath} 화면`);
+            setNote(r.warning ?? '이 페이지를 프롬프트에 첨부했습니다.');
+            // 크게 보기 중이면 닫아서 바로 입력창을 보이게 한다.
+            setExpanded(false);
           } catch (e) { setNote((e as Error).message); } finally { setCapturing(false); }
-        }}>{capturing ? '찍는 중' : '캡처해서 첨부'}</button>
+        }}>{capturing ? '화면 찍는 중' : '프롬프트에 전달'}</button>
+        <label className="start-check small" title={`페이지를 ${DESKTOP_WIDTH}px 폭으로 그려 패널에 맞게 줄입니다`}>
+          <input type="checkbox" checked={fit} onChange={(e) => { setFit(e.target.checked); writeNumber(PREVIEW_FIT_KEY, e.target.checked ? 1 : 2); }} /> 화면 맞춤
+        </label>
         {note && <span className="muted small">{note}</span>}
       </div>
-      {ready ? <iframe ref={frame} title="FE 미리보기" src={src} /> : <div className="frame-wait">시작 중</div>}
+      {ready ? (
+        <div className={`frame-wrap${fit ? ' fit' : ''}`} ref={frameWrap} style={{ height: frameHeight }}>
+          <iframe
+            ref={frame}
+            title="FE 미리보기"
+            src={src}
+            style={fit ? { width: DESKTOP_WIDTH, height: `${100 / scale}%`, transform: `scale(${scale})`, transformOrigin: '0 0' } : undefined}
+          />
+        </div>
+      ) : <div className="frame-wait">시작 중</div>}
       <p className="muted small">로그인 쿠키가 미리보기 안에서 안 붙으면 새 창으로 여세요.</p>
     </div>
   );
@@ -334,38 +527,73 @@ function contextAround(all: LogLine[], target: LogLine): string {
   return all.slice(Math.max(0, i - 3), i + 15).map((l) => l.text).join('\n');
 }
 
+/** 세션 계정 목록. 역할이 다른 계정(사업자, 지자체, 관리자 등)을 여러 개 쓸 수 있다. */
 function AccountBlock({ session }: { session: Session }) {
-  const [password, setPassword] = useState<string | null>(null);
+  const [free, setFree] = useState<Account[]>([]);
+  const [pick, setPick] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => setPassword(null), [session.account?.id]);
-  if (!session.account) {
-    return (
-      <div className="panel-block account">
-        <div className="block-head"><h2>테스트 계정</h2></div>
-        <p className="muted small">배정된 계정이 없습니다. 설정에서 계정 풀에 계정을 추가하세요.</p>
-        <button className="small-btn" onClick={() => api.assignAccount(session.id).catch((e) => setError(e.message))}>남은 계정 배정</button>
-        {error && <p className="error-text">{error}</p>}
-      </div>
-    );
-  }
-  const acc = session.account;
+  const loadFree = useCallback(() => {
+    api.accounts().then((r) => setFree(r.accounts.filter((a) => !a.session_id))).catch(() => setFree([]));
+  }, []);
+  useEffect(loadFree, [loadFree, session.accounts.length]);
+
+  const add = async () => {
+    if (pick === '') return;
+    setError(null);
+    try { await api.assignAccount(session.id, pick); setPick(''); loadFree(); } catch (e) { setError((e as Error).message); }
+  };
+
   return (
     <div className="panel-block account">
-      <div className="block-head"><h2>테스트 계정</h2><span className="muted small">이 세션 전용</span></div>
-      <div className="account-row">
-        <code>{acc.login}</code>
-        <code>{password ?? '••••••••'}</code>
-        <span className="spacer" />
-        <button className="small-btn" onClick={async () => {
-          if (password) { setPassword(null); return; }
-          try { setPassword((await api.accountPassword(acc.id)).password); } catch (e) { setError((e as Error).message); }
-        }}>{password ? '가리기' : '보기'}</button>
-        <button className="small-btn" onClick={async () => {
-          try { const p = password ?? (await api.accountPassword(acc.id)).password; await navigator.clipboard.writeText(p); } catch (e) { setError((e as Error).message); }
-        }}>비밀번호 복사</button>
+      <div className="block-head">
+        <h2>테스트 계정 {session.accounts.length > 0 && <span className="muted small">{session.accounts.length}개</span>}</h2>
+        <span className="muted small">이 세션 전용</span>
       </div>
-      {error && <p className="error-text">{error}</p>}
+      {session.accounts.length === 0 && <p className="muted small">배정된 계정이 없습니다.</p>}
+      <ul className="account-list">
+        {session.accounts.map((a) => <AccountRow key={a.id} session={session} account={a} onError={setError} onReleased={loadFree} />)}
+      </ul>
+      {free.length > 0 ? (
+        <div className="account-add">
+          <label className="sr-only" htmlFor={`acc-add-${session.id}`}>추가할 계정</label>
+          <select id={`acc-add-${session.id}`} value={pick} onChange={(e) => setPick(e.target.value ? Number(e.target.value) : '')}>
+            <option value="">계정 추가 (남은 {free.length}개)</option>
+            {free.map((a) => <option key={a.id} value={a.id}>{a.login}{a.note ? ` · ${a.note}` : ''}</option>)}
+          </select>
+          <button className="small-btn" disabled={pick === ''} onClick={add}>추가</button>
+        </div>
+      ) : (
+        <p className="muted small">남은 계정이 없습니다. 설정의 테스트 계정 풀에서 추가하세요.</p>
+      )}
+      {error && <p className="error-text" role="alert">{error}</p>}
     </div>
+  );
+}
+
+function AccountRow({ session, account, onError, onReleased }: {
+  session: Session; account: Session['accounts'][number]; onError: (m: string) => void; onReleased: () => void;
+}) {
+  const [password, setPassword] = useState<string | null>(null);
+  return (
+    <li className="account-row">
+      <div className="account-id">
+        <code>{account.login}</code>
+        {account.note && <span className="muted small">{account.note}</span>}
+      </div>
+      <code className="account-pw">{password ?? '••••••••'}</code>
+      <span className="spacer" />
+      <button className="small-btn" onClick={async () => {
+        if (password) { setPassword(null); return; }
+        try { setPassword((await api.accountPassword(account.id)).password); } catch (e) { onError((e as Error).message); }
+      }}>{password ? '가리기' : '보기'}</button>
+      <button className="small-btn" onClick={async () => {
+        try { const p = password ?? (await api.accountPassword(account.id)).password; await navigator.clipboard.writeText(p); } catch (e) { onError((e as Error).message); }
+      }}>비밀번호 복사</button>
+      <button className="small-btn" onClick={async () => {
+        if (!confirm(`${account.login} 계정을 풀에 돌려줄까요?`)) return;
+        try { await api.releaseAccount(session.id, account.id); onReleased(); } catch (e) { onError((e as Error).message); }
+      }}>반납</button>
+    </li>
   );
 }
 

@@ -48,12 +48,12 @@ export async function addProject(inputPath: string): Promise<ProjectRow> {
   return getProject(Number(info.lastInsertRowid))!;
 }
 
-export function updateProject(id: number, patch: Partial<Pick<ProjectRow, 'name' | 'kind' | 'start_cmd' | 'check_cmd' | 'health_path' | 'port_env' | 'api_env_key' | 'baseline_url' | 'login_path' | 'setup_cmd'>>) {
+export function updateProject(id: number, patch: Partial<Pick<ProjectRow, 'name' | 'kind' | 'start_cmd' | 'check_cmd' | 'health_path' | 'port_env' | 'api_env_key' | 'baseline_url' | 'login_path' | 'setup_cmd' | 'commit_template'>>) {
   const cur = getProject(id);
   if (!cur) throw new Error('프로젝트가 없습니다.');
   const next = { ...cur, ...patch };
-  db.prepare(`UPDATE projects SET name = ?, kind = ?, start_cmd = ?, check_cmd = ?, health_path = ?, port_env = ?, api_env_key = ?, baseline_url = ?, login_path = ?, setup_cmd = ? WHERE id = ?`)
-    .run(next.name, next.kind, next.start_cmd, next.check_cmd, next.health_path, next.port_env, next.api_env_key, next.baseline_url, next.login_path, next.setup_cmd, id);
+  db.prepare(`UPDATE projects SET name = ?, kind = ?, start_cmd = ?, check_cmd = ?, health_path = ?, port_env = ?, api_env_key = ?, baseline_url = ?, login_path = ?, setup_cmd = ?, commit_template = ? WHERE id = ?`)
+    .run(next.name, next.kind, next.start_cmd, next.check_cmd, next.health_path, next.port_env, next.api_env_key, next.baseline_url, next.login_path, next.setup_cmd, next.commit_template, id);
   return getProject(id)!;
 }
 

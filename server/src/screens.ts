@@ -2,36 +2,40 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium, type Browser, type BrowserContext } from 'playwright-core';
 import { PNG } from 'pngjs';
-import pixelmatch from 'pixelmatch';
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { CLAUDE_EXECUTABLE, DATA_DIR } from './config.js';
 import { db } from './db.js';
 import { git, refExists } from './git.js';
 import { getProject } from './projects.js';
-import { getSession, type SessionView } from './sessions.js';
+import { getSession, listMessages, type SessionView } from './sessions.js';
 import { listServers } from './runner.js';
 import { accountOf } from './accounts.js';
 import { broadcast } from './hub.js';
 
+/**
+ * 영향받는 화면 체크리스트. Claude가 바뀐 파일에서 화면 경로를 찾아 목록으로 만들고,
+ * 사용자가 미리보기에서 열어 보고 확인했다고 표시한다. 자동 촬영·비교는 하지 않는다.
+ */
+
+/** 예전 버전이 남긴 스크린샷 폴더. 리소스 정리에서 지운다. */
 export const SCREEN_DIR = path.join(DATA_DIR, 'screens');
 const VIEWPORT = { width: 1440, height: 900 };
-/** 이 비율보다 적게 바뀌면 같은 화면으로 본다. 글꼴 렌더링 같은 잡음을 흘려보내는 값. */
-const SAME_RATIO = 0.0005;
-const MAX_HEIGHT = 8000;
 
-export type Box = { x: number; y: number; w: number; h: number };
 export type ScreenCheck = {
-  id: number; session_id: number; route: string; reason: string;
-  before_file: string | null; after_file: string | null; diff_file: string | null;
-  diff_ratio: number | null; boxes: Box[];
-  status: 'pending' | 'capturing' | 'changed' | 'same' | 'failed' | 'accepted';
-  error: string | null; captured_at: string | null;
+  id: number; session_id: number; route: string; reason: string; checked: boolean;
+  /** direct: 이 화면에서 보이는 게 실제로 바뀜. indirect: 바뀐 코드를 쓰긴 하지만 보이는 변화는 확실하지 않음 */
+  kind: 'direct' | 'indirect';
+  /** 같은 화면 컴포넌트를 쓰는 다른 경로 */
+  also_routes: string[];
+  manual: boolean;
 };
 
-type Row = Omit<ScreenCheck, 'boxes'> & { boxes: string };
-const toView = (r: Row): ScreenCheck => ({ ...r, boxes: JSON.parse(r.boxes || '[]') });
+type Row = { id: number; session_id: number; route: string; reason: string; status: string; kind: string; also_routes: string; manual: number };
+const toView = (r: Row): ScreenCheck => ({
+  id: r.id, session_id: r.session_id, route: r.route, reason: r.reason, checked: r.status === 'accepted',
+  kind: r.kind === 'indirect' ? 'indirect' : 'direct', also_routes: JSON.parse(r.also_routes || '[]'), manual: Boolean(r.manual),
+});
 
-const capturing = new Set<number>();
 const detecting = new Set<number>();
 
 export function screenState(sessionId: number) {
@@ -39,16 +43,11 @@ export function screenState(sessionId: number) {
   if (!session) throw new Error('세션이 없습니다.');
   const fe = feWorktree(session);
   const project = fe ? getProject(fe.project_id) : undefined;
-  const after = fe ? listServers(session).find((s) => s.worktree_id === fe.id && s.url) : undefined;
-  const checks = (db.prepare(`SELECT * FROM screen_checks WHERE session_id = ? ORDER BY id`).all(sessionId) as Row[]).map(toView);
+  const server = fe ? listServers(session).find((s) => s.worktree_id === fe.id && s.url) : undefined;
+  const checks = (db.prepare(`SELECT id, session_id, route, reason, status, kind, also_routes, manual FROM screen_checks WHERE session_id = ? ORDER BY kind = 'indirect', id`).all(sessionId) as Row[]).map(toView);
   return {
     checks,
-    baseline_url: project?.baseline_url ?? null,
-    after_url: after?.status === 'running' ? after.url : null,
-    login_path: project?.login_path ?? null,
-    account: session.account?.login ?? null,
-    viewport: VIEWPORT,
-    capturing: capturing.has(sessionId),
+    preview_url: server?.status === 'running' ? server.url : null,
     detecting: detecting.has(sessionId),
     fe_project: project ? { id: project.id, name: project.name } : null,
   };
@@ -69,6 +68,14 @@ async function changedFiles(w: SessionView['worktrees'][number]): Promise<string
   return [...new Set([...tracked.split('\n'), ...untracked.split('\n')].filter(Boolean))];
 }
 
+/** 기준 브랜치와 갈라진 지점부터의 diff. 무엇이 바뀌었는지 보고 화면 영향을 판단하게 한다. 너무 길면 자른다. */
+async function changedDiff(w: SessionView['worktrees'][number]): Promise<string> {
+  const base = (await refExists(w.path, `refs/remotes/origin/${w.base_branch}`)) ? `origin/${w.base_branch}` : w.base_branch;
+  const ref = await git(w.path, ['merge-base', base, 'HEAD']).catch(() => base);
+  const diff = await git(w.path, ['diff', '-U3', ref, '--', '.', ':(exclude)package-lock.json', ':(exclude)*.lock', ':(exclude)pnpm-lock.yaml']).catch(() => '');
+  return diff.length > 30_000 ? `${diff.slice(0, 30_000)}\n… (이하 생략)` : diff;
+}
+
 const DETECT_SCHEMA = {
   type: 'object',
   properties: {
@@ -76,8 +83,13 @@ const DETECT_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        properties: { route: { type: 'string' }, reason: { type: 'string' } },
-        required: ['route', 'reason'],
+        properties: {
+          route: { type: 'string' },
+          also_routes: { type: 'array', items: { type: 'string' } },
+          kind: { type: 'string', enum: ['direct', 'indirect'] },
+          reason: { type: 'string' },
+        },
+        required: ['route', 'also_routes', 'kind', 'reason'],
       },
     },
   },
@@ -91,20 +103,34 @@ export async function detectScreens(sessionId: number) {
   const fe = feWorktree(session);
   if (!fe) throw new Error('이 세션에는 FE 워크트리가 없어 화면을 찾을 수 없습니다.');
   if (detecting.has(sessionId)) throw new Error('이미 영향 화면을 찾는 중입니다.');
-  const files = await Promise.all(session.worktrees.map(async (w) => ({ w, files: await changedFiles(w) })));
+  const files = await Promise.all(session.worktrees.map(async (w) => ({ w, files: await changedFiles(w), diff: await changedDiff(w) })));
   if (files.every((f) => f.files.length === 0)) throw new Error('기준 브랜치와 달라진 파일이 없습니다.');
 
   detecting.add(sessionId);
   changed(sessionId);
   try {
+    const asked = listMessages(sessionId).filter((m) => m.kind === 'user' && m.payload?.text).slice(-6)
+      .map((m) => `- ${String(m.payload.text).replace(/\s+/g, ' ').slice(0, 300)}`);
     const prompt = [
-      '이 FE 프로젝트에서 아래 변경 때문에 화면이 달라질 수 있는 페이지 경로(URL path)를 찾아줘.',
-      '라우터 설정(react-router, Next.js app/pages 디렉터리, vue-router 등)과 import 관계를 따라가서, 바뀐 컴포넌트·훅·스타일·API 호출을 쓰는 페이지를 모두 찾아.',
-      'BE 파일이 바뀌었으면 바뀐 API 경로를 FE 코드에서 검색해 그 API를 부르는 페이지도 넣어.',
-      '상세 화면처럼 경로에 ID가 들어가면 목 데이터, 시드 데이터, 테스트 코드에서 실제로 있을 법한 값을 골라 넣고, 못 찾으면 1을 넣어.',
-      'route는 "/"로 시작하는 경로만(호스트 없이), reason은 "직접 수정" 또는 "어떤 파일을 통해" 영향받는지 한 문장 한국어로. 최대 15개.',
+      '이 작업 때문에 사람이 직접 열어서 확인해야 하는 화면을 골라줘. 목록이 짧고 정확해야 한다. 넓게 잡지 마.',
       '',
-      ...files.map(({ w, files: list }) => `## ${w.project_name} (${w.project_kind}) 바뀐 파일\n${list.slice(0, 200).join('\n') || '(없음)'}`),
+      '규칙:',
+      '- 화면 하나 = 화면을 그리는 페이지 컴포넌트 하나. 같은 페이지 컴포넌트를 여러 라우트(예: /rego/x, /gov/rego/x)가 쓰면 대표 경로 하나를 route에, 나머지는 also_routes에 넣는다.',
+      '- kind=direct: 바뀐 코드 때문에 그 화면에서 보이는 내용·배치·동작이 실제로 달라지는 경우만. 바뀐 diff를 읽고, 그 화면이 바뀐 부분(컴포넌트, 렌더링에 쓰는 필드·라벨, 호출하는 API의 바뀐 응답 필드)을 실제로 쓰는지 확인해.',
+      '- kind=indirect: 바뀐 파일을 import하지만 바뀐 부분을 쓰지 않거나 보이는 변화가 확실하지 않은 경우. 타입 정의만 가져다 쓰는 화면은 대부분 indirect다. indirect는 정말 의심스러운 것만 넣는다.',
+      '- BE만 바뀌었으면 바뀐 API의 응답 필드가 그 화면에 표시되는지 확인한 뒤에만 direct로 넣는다.',
+      '- 사용자가 요청한 작업 범위(아래)를 기준으로 판단해. 그 범위 밖 화면은 확실할 때만 넣는다.',
+      '- 상세 화면처럼 경로에 ID가 들어가면 목 데이터·시드·테스트 코드에서 있을 법한 값을 고르고, 못 찾으면 1을 넣어.',
+      '- route와 also_routes는 "/"로 시작하는 경로만(호스트 없이). reason은 무엇이 어떻게 달라 보이는지 한 문장 한국어로.',
+      '- direct는 보통 1~3개다. 전체 10개를 넘기지 마.',
+      '',
+      `## 사용자가 이 세션에서 요청한 작업\n${asked.join('\n') || '(대화 없음)'}`,
+      '',
+      ...files.map(({ w, files: list, diff }) => [
+        `## ${w.project_name} (${w.project_kind}) 바뀐 파일`,
+        list.slice(0, 200).join('\n') || '(없음)',
+        diff ? `### 바뀐 내용 (diff)\n\`\`\`diff\n${diff}\n\`\`\`` : '',
+      ].join('\n')),
     ].join('\n');
     let structured: unknown = null;
     const q = query({
@@ -129,13 +155,28 @@ export async function detectScreens(sessionId: number) {
         structured = msg.structured_output ?? JSON.parse(msg.result);
       }
     }
-    const list = ((structured as { screens?: { route: string; reason: string }[] } | null)?.screens ?? [])
-      .map((s) => ({ route: normalizeRoute(s.route), reason: s.reason.trim() }))
-      .filter((s) => s.route);
-    const upsert = db.prepare(`INSERT INTO screen_checks (session_id, route, reason) VALUES (?, ?, ?)
-      ON CONFLICT(session_id, route) DO UPDATE SET reason = excluded.reason`);
-    db.transaction(() => { for (const s of list.slice(0, 15)) upsert.run(sessionId, s.route, s.reason); })();
-    return list.length;
+    type Found = { route: string; also_routes: string[]; kind: string; reason: string };
+    const list = ((structured as { screens?: Found[] } | null)?.screens ?? [])
+      .map((s) => ({
+        route: normalizeRoute(s.route),
+        also: [...new Set((s.also_routes ?? []).map(normalizeRoute).filter((r) => r && r !== normalizeRoute(s.route)))],
+        kind: s.kind === 'indirect' ? 'indirect' : 'direct',
+        reason: s.reason.trim(),
+      }))
+      .filter((s) => s.route)
+      .slice(0, 10);
+    // 다시 찾으면 이전에 찾은 목록을 새 결과로 바꾼다. 직접 추가했거나 확인 표시한 화면은 남긴다.
+    db.transaction(() => {
+      db.prepare(`DELETE FROM screen_checks WHERE session_id = ? AND manual = 0 AND status != 'accepted'`).run(sessionId);
+      const upsert = db.prepare(`INSERT INTO screen_checks (session_id, route, reason, kind, also_routes) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(session_id, route) DO UPDATE SET reason = excluded.reason, kind = excluded.kind, also_routes = excluded.also_routes`);
+      for (const s of list) upsert.run(sessionId, s.route, s.reason, s.kind, JSON.stringify(s.also));
+      // 새 결과에서 다른 화면의 also_routes로 묶인 경로가 따로 남아 있으면 지운다(확인 표시한 것 제외).
+      const grouped = list.flatMap((s) => s.also);
+      const del = db.prepare(`DELETE FROM screen_checks WHERE session_id = ? AND route = ? AND manual = 0`);
+      for (const r of grouped) del.run(sessionId, r);
+    })();
+    return list.filter((s) => s.kind === 'direct').length;
   } finally {
     detecting.delete(sessionId);
     changed(sessionId);
@@ -151,30 +192,23 @@ function normalizeRoute(route: string): string {
 export function addScreen(sessionId: number, route: string) {
   const r = normalizeRoute(route);
   if (!r) throw new Error('화면 경로를 넣어 주세요. 예: /resources/12');
-  db.prepare(`INSERT INTO screen_checks (session_id, route, reason) VALUES (?, ?, '직접 추가') ON CONFLICT(session_id, route) DO NOTHING`).run(sessionId, r);
+  db.prepare(`INSERT INTO screen_checks (session_id, route, reason, manual) VALUES (?, ?, '직접 추가', 1) ON CONFLICT(session_id, route) DO UPDATE SET manual = 1`).run(sessionId, r);
   changed(sessionId);
 }
 
 export function removeScreen(id: number) {
-  const row = db.prepare(`SELECT * FROM screen_checks WHERE id = ?`).get(id) as Row | undefined;
+  const row = db.prepare(`SELECT session_id FROM screen_checks WHERE id = ?`).get(id) as { session_id: number } | undefined;
   if (!row) return;
-  removeFiles(row);
   db.prepare(`DELETE FROM screen_checks WHERE id = ?`).run(id);
   changed(row.session_id);
 }
 
-export function setScreenStatus(id: number, accepted: boolean) {
-  const row = db.prepare(`SELECT * FROM screen_checks WHERE id = ?`).get(id) as Row | undefined;
+/** 사용자가 화면을 보고 확인했다고 표시한다. */
+export function setScreenChecked(id: number, checked: boolean) {
+  const row = db.prepare(`SELECT session_id FROM screen_checks WHERE id = ?`).get(id) as { session_id: number } | undefined;
   if (!row) throw new Error('화면 기록이 없습니다.');
-  const status = accepted ? 'accepted' : row.diff_ratio === null ? 'pending' : row.diff_ratio < SAME_RATIO ? 'same' : 'changed';
-  db.prepare(`UPDATE screen_checks SET status = ? WHERE id = ?`).run(status, id);
+  db.prepare(`UPDATE screen_checks SET status = ? WHERE id = ?`).run(checked ? 'accepted' : 'pending', id);
   changed(row.session_id);
-}
-
-function removeFiles(row: Pick<Row, 'session_id' | 'before_file' | 'after_file' | 'diff_file'>) {
-  for (const f of [row.before_file, row.after_file, row.diff_file]) {
-    if (f) fs.rmSync(path.join(SCREEN_DIR, String(row.session_id), f), { force: true });
-  }
 }
 
 export function deleteSessionScreens(sessionId: number) {
@@ -212,15 +246,24 @@ async function login(ctx: BrowserContext, base: string, loginPath: string, accou
     await pw.fill(account.password);
     await pw.press('Enter');
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+    // 제출 뒤에도 비밀번호 입력란이 보이면 로그인이 안 된 것이다(틀린 비밀번호, 추가 인증, 다른 형식의 폼 등).
+    if (await page.locator('input[type=password]').first().isVisible().catch(() => false)) {
+      return `${base}에서 ${account.login} 계정으로 로그인하지 못했습니다. 제출 뒤에도 로그인 화면입니다 (비밀번호, 추가 인증, 폼 형식을 확인하세요).`;
+    }
     return null;
   } catch (err) {
-    return `${base} 로그인을 못 했습니다 (${(err as Error).message.split('\n')[0]}). 로그인 없이 찍었습니다.`;
+    return `${base}에서 로그인하지 못했습니다 (${loginPath}에서 아이디·비밀번호 입력란을 못 찾음: ${(err as Error).message.split('\n')[0]}).`;
   } finally {
     await page.close().catch(() => {});
   }
 }
 
-async function shoot(ctx: BrowserContext, url: string): Promise<Buffer> {
+type Shot = { buf: Buffer; path: string; loginWall: boolean };
+
+const normPath = (p: string) => p.replace(/\/+$/, '') || '/';
+
+/** 찍은 뒤 실제로 도착한 경로와 로그인 화면인지를 함께 돌려준다. 로그인이 안 되면 앱이 다른 화면으로 보내기 때문. */
+async function shoot(ctx: BrowserContext, url: string): Promise<Shot> {
   const page = await ctx.newPage();
   try {
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 }).catch(async () => {
@@ -229,159 +272,33 @@ async function shoot(ctx: BrowserContext, url: string): Promise<Buffer> {
     // 깜빡이는 커서와 애니메이션이 차이로 잡히지 않게 멈춘다.
     await page.addStyleTag({ content: '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}' }).catch(() => {});
     await page.waitForTimeout(400);
-    return await page.screenshot({ fullPage: true, animations: 'disabled', clip: undefined });
+    const landed = new URL(page.url());
+    const wanted = new URL(url);
+    // 로그인 화면 자체를 찍으려는 경우가 아니면, 보이는 비밀번호 입력란은 로그인 벽으로 본다.
+    const loginWall = !/login|signin|sign-in/i.test(wanted.pathname)
+      && await page.locator('input[type=password]').first().isVisible().catch(() => false);
+    const buf = await page.screenshot({ fullPage: true, animations: 'disabled' });
+    return { buf, path: normPath(landed.pathname), loginWall };
   } finally {
     await page.close().catch(() => {});
   }
 }
 
-function pad(img: PNG, w: number, h: number): PNG {
-  if (img.width === w && img.height === h) return img;
-  const out = new PNG({ width: w, height: h });
-  out.data.fill(255);
-  PNG.bitblt(img, out, 0, 0, Math.min(img.width, w), Math.min(img.height, h), 0, 0);
-  return out;
-}
-
-/** 차이 픽셀을 격자로 묶어 사람이 볼 만한 상자 몇 개로 만든다. */
-function diffBoxes(diff: PNG, cell = 16): Box[] {
-  const cols = Math.ceil(diff.width / cell);
-  const rows = Math.ceil(diff.height / cell);
-  const hit = new Uint8Array(cols * rows);
-  for (let y = 0; y < diff.height; y++) {
-    for (let x = 0; x < diff.width; x++) {
-      const i = (y * diff.width + x) * 4;
-      if (diff.data[i] === 255 && diff.data[i + 1] === 0 && diff.data[i + 2] === 0) hit[Math.floor(y / cell) * cols + Math.floor(x / cell)] = 1;
-    }
-  }
-  const seen = new Uint8Array(cols * rows);
-  const boxes: Box[] = [];
-  for (let start = 0; start < hit.length; start++) {
-    if (!hit[start] || seen[start]) continue;
-    let minX = cols, minY = rows, maxX = 0, maxY = 0;
-    const stack = [start];
-    seen[start] = 1;
-    while (stack.length) {
-      const c = stack.pop()!;
-      const cx = c % cols, cy = Math.floor(c / cols);
-      minX = Math.min(minX, cx); maxX = Math.max(maxX, cx); minY = Math.min(minY, cy); maxY = Math.max(maxY, cy);
-      // 한 칸 떨어진 차이도 같은 덩어리로 묶는다.
-      for (let dy = -2; dy <= 2; dy++) {
-        for (let dx = -2; dx <= 2; dx++) {
-          const nx = cx + dx, ny = cy + dy;
-          if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
-          const n = ny * cols + nx;
-          if (hit[n] && !seen[n]) { seen[n] = 1; stack.push(n); }
-        }
-      }
-    }
-    boxes.push({ x: minX * cell, y: minY * cell, w: (maxX - minX + 1) * cell, h: (maxY - minY + 1) * cell });
-  }
-  return boxes.sort((a, b) => b.w * b.h - a.w * a.h).slice(0, 20).sort((a, b) => a.y - b.y || a.x - b.x);
-}
-
-function compare(before: Buffer, after: Buffer): { diff: Buffer; ratio: number; boxes: Box[] } {
-  const a0 = PNG.sync.read(before);
-  const b0 = PNG.sync.read(after);
-  const w = Math.max(a0.width, b0.width);
-  const h = Math.min(Math.max(a0.height, b0.height), MAX_HEIGHT);
-  const a = pad(a0, w, h);
-  const b = pad(b0, w, h);
-  const diff = new PNG({ width: w, height: h });
-  // 같은 브라우저·같은 기기에서 찍어 렌더링 잡음이 거의 없으므로 기본값(0.1)보다 훨씬 엄격하게 본다.
-  // 0.1이면 흰 바탕이 연한 분홍으로 바뀌는 정도의 배경색 변경을 놓친다. 안티앨리어싱은 pixelmatch가 따로 거른다.
-  const n = pixelmatch(a.data, b.data, diff.data, w, h, { threshold: 0.005, alpha: 0.25 });
-  return { diff: PNG.sync.write(diff), ratio: n / (w * h), boxes: diffBoxes(diff) };
-}
-
-/** 기준 서버와 작업 서버에서 같은 계정·같은 해상도로 화면을 찍고 비교한다. 진행 상황은 이벤트로 알린다. */
-export async function captureScreens(sessionId: number, ids?: number[]): Promise<{ warnings: string[] }> {
-  const state = screenState(sessionId);
-  if (!state.baseline_url) throw new Error(`기준 서버 주소가 없습니다. 설정의 ${state.fe_project?.name ?? 'FE'} 프로젝트에 develop 기준 서버 주소를 넣으세요.`);
-  if (!state.after_url) throw new Error('FE 서버가 실행 중이 아닙니다. 서버를 띄우고 헬스체크가 통과한 뒤 찍으세요.');
-  if (capturing.has(sessionId)) throw new Error('이미 화면을 찍는 중입니다.');
-  const targets = state.checks.filter((c) => !ids || ids.includes(c.id));
-  if (targets.length === 0) throw new Error('찍을 화면이 없습니다. 영향 화면을 찾거나 직접 추가하세요.');
-
-  capturing.add(sessionId);
-  const mark = db.prepare(`UPDATE screen_checks SET status = 'capturing', error = NULL WHERE id = ?`);
-  for (const t of targets) mark.run(t.id);
-  changed(sessionId);
-
-  const dir = path.join(SCREEN_DIR, String(sessionId));
-  fs.mkdirSync(dir, { recursive: true });
-  const warnings: string[] = [];
-  let browser: Browser | null = null;
-  try {
-    browser = await launchBrowser();
-    const account = accountOf(sessionId);
-    const beforeCtx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 });
-    const afterCtx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 });
-    if (account && state.login_path) {
-      for (const [ctx, base] of [[beforeCtx, state.baseline_url], [afterCtx, state.after_url]] as const) {
-        const w = await login(ctx, base, state.login_path, account);
-        if (w) warnings.push(w);
-      }
-    }
-    for (const t of targets) {
-      const stamp = Date.now();
-      try {
-        const [before, after] = await Promise.all([
-          shoot(beforeCtx, new URL(t.route, state.baseline_url).toString()),
-          shoot(afterCtx, new URL(t.route, state.after_url).toString()),
-        ]);
-        const { diff, ratio, boxes } = compare(before, after);
-        const files = { before: `${t.id}-${stamp}-before.png`, after: `${t.id}-${stamp}-after.png`, diff: `${t.id}-${stamp}-diff.png` };
-        fs.writeFileSync(path.join(dir, files.before), before);
-        fs.writeFileSync(path.join(dir, files.after), after);
-        fs.writeFileSync(path.join(dir, files.diff), diff);
-        const old = db.prepare(`SELECT * FROM screen_checks WHERE id = ?`).get(t.id) as Row | undefined;
-        if (old) removeFiles(old);
-        db.prepare(`UPDATE screen_checks SET before_file = ?, after_file = ?, diff_file = ?, diff_ratio = ?, boxes = ?, status = ?, error = NULL, captured_at = datetime('now') WHERE id = ?`)
-          .run(files.before, files.after, files.diff, ratio, JSON.stringify(boxes), ratio < SAME_RATIO ? 'same' : 'changed', t.id);
-      } catch (err) {
-        db.prepare(`UPDATE screen_checks SET status = 'failed', error = ? WHERE id = ?`).run((err as Error).message.split('\n')[0].slice(0, 300), t.id);
-      }
-      changed(sessionId);
-    }
-    await beforeCtx.close();
-    await afterCtx.close();
-  } catch (err) {
-    db.prepare(`UPDATE screen_checks SET status = 'failed', error = ? WHERE session_id = ? AND status = 'capturing'`).run((err as Error).message, sessionId);
-    throw err;
-  } finally {
-    await browser?.close().catch(() => {});
-    capturing.delete(sessionId);
-    changed(sessionId);
-  }
-  return { warnings };
-}
-
-/** 첫 차이 상자 주변만 잘라 Claude에게 보낼 이미지로 만든다. 전체 화면은 너무 클 수 있다. */
-export function cropForPrompt(sessionId: number, file: string, box: Box | undefined): string {
-  const img = PNG.sync.read(fs.readFileSync(path.join(SCREEN_DIR, String(sessionId), file)));
-  const top = Math.max(0, Math.min(img.height - 1, (box?.y ?? 0) - 300));
-  const h = Math.min(img.height - top, 1800);
-  const out = new PNG({ width: img.width, height: h });
-  PNG.bitblt(img, out, 0, top, img.width, h, 0, 0);
-  return PNG.sync.write(out).toString('base64');
-}
-
-export function getScreen(id: number): ScreenCheck | undefined {
-  const r = db.prepare(`SELECT * FROM screen_checks WHERE id = ?`).get(id) as Row | undefined;
-  return r ? toView(r) : undefined;
-}
-
 /** 미리보기에 띄운 주소를 찍어 프롬프트 첨부용 이미지로 돌려준다. 로그인 경로가 있으면 배정 계정으로 먼저 로그인한다. */
-export async function capturePreview(sessionId: number, url: string): Promise<{ data: string; warning: string | null }> {
+export async function capturePreview(sessionId: number, url: string, accountId?: number): Promise<{ data: string; warning: string | null }> {
   const state = screenState(sessionId);
-  if (!state.after_url || !url.startsWith(state.after_url)) throw new Error('이 세션의 FE 미리보기 주소만 찍을 수 있습니다.');
+  if (!state.preview_url || !url.startsWith(state.preview_url)) throw new Error('이 세션의 FE 미리보기 주소만 찍을 수 있습니다.');
   const browser = await launchBrowser();
   try {
     const ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 });
-    const account = accountOf(sessionId);
-    const warning = account && state.login_path ? await login(ctx, state.after_url, state.login_path, account) : null;
-    const buf = await shoot(ctx, url);
+    const account = accountOf(sessionId, accountId);
+    const loginPath = state.fe_project ? getProject(state.fe_project.id)?.login_path ?? null : null;
+    const loginWarning = account && loginPath ? await login(ctx, state.preview_url, loginPath, account) : null;
+    const shot = await shoot(ctx, url);
+    const buf = shot.buf;
+    const warning = shot.loginWall
+      ? `로그인 화면이 찍혔습니다. ${loginWarning ?? (!account ? '세션에 테스트 계정이 없습니다.' : !loginPath ? '설정에 로그인 경로가 없습니다.' : '')}`.trim()
+      : loginWarning;
     const img = PNG.sync.read(buf);
     // 첨부는 장당 5MB까지라 화면 두 장 높이로 자른다.
     const h = Math.min(img.height, VIEWPORT.height * 2);

@@ -33,24 +33,53 @@ export function accountPassword(id: number): string {
   return decrypt(row.password);
 }
 
-export function accountOf(sessionId: number): { id: number; login: string; password: string } | null {
-  const row = db.prepare(`SELECT id, login, password FROM test_accounts WHERE session_id = ?`).get(sessionId) as { id: number; login: string; password: string } | undefined;
-  return row ? { ...row, password: decrypt(row.password) } : null;
+export type SessionAccount = { id: number; login: string; password: string; note: string };
+
+/** 세션에 배정된 계정 전부. 역할(사업자, 지자체, 관리자 등)이 다른 계정을 여러 개 쓸 수 있다. 배정한 순서대로. */
+export function accountsOf(sessionId: number): SessionAccount[] {
+  const rows = db.prepare(`SELECT id, login, password, note FROM test_accounts WHERE session_id = ? ORDER BY assigned_at, id`).all(sessionId) as SessionAccount[];
+  return rows.map((r) => ({ ...r, password: decrypt(r.password) }));
 }
 
-/** 비어 있는 계정을 하나 배정한다. 없으면 null. */
-export function assignAccount(sessionId: number): AccountView | null {
-  const existing = accountOf(sessionId);
-  if (existing) return listAccounts().find((a) => a.id === existing.id) ?? null;
-  const free = db.prepare(`SELECT id FROM test_accounts WHERE session_id IS NULL ORDER BY login LIMIT 1`).get() as { id: number } | undefined;
-  if (!free) return null;
-  db.prepare(`UPDATE test_accounts SET session_id = ? WHERE id = ?`).run(sessionId, free.id);
+/** 세션의 계정 하나. id가 없거나 이 세션 계정이 아니면 처음 배정한 계정. */
+export function accountOf(sessionId: number, accountId?: number | null): SessionAccount | null {
+  const list = accountsOf(sessionId);
+  return list.find((a) => a.id === accountId) ?? list[0] ?? null;
+}
+
+/**
+ * 계정을 배정한다. accountId를 주면 그 계정을(비어 있어야 함), 안 주면 세션에 계정이 없을 때만 남은 계정 하나를.
+ * 남은 계정이 없으면 null.
+ */
+export function assignAccount(sessionId: number, accountId?: number): AccountView | null {
+  let id = accountId;
+  if (id === undefined) {
+    const existing = accountsOf(sessionId)[0];
+    if (existing) return listAccounts().find((a) => a.id === existing.id) ?? null;
+    id = (db.prepare(`SELECT id FROM test_accounts WHERE session_id IS NULL ORDER BY login LIMIT 1`).get() as { id: number } | undefined)?.id;
+    if (id === undefined) return null;
+  } else {
+    const row = db.prepare(`SELECT session_id FROM test_accounts WHERE id = ?`).get(id) as { session_id: number | null } | undefined;
+    if (!row) throw new Error('계정이 없습니다.');
+    if (row.session_id === sessionId) return listAccounts().find((a) => a.id === id) ?? null;
+    if (row.session_id !== null) throw new Error('다른 세션이 쓰고 있는 계정입니다. 그 세션에서 반납한 뒤 고르세요.');
+  }
+  db.prepare(`UPDATE test_accounts SET session_id = ?, assigned_at = datetime('now') WHERE id = ?`).run(sessionId, id);
   broadcast({ type: 'session.updated', sessionId });
-  return listAccounts().find((a) => a.id === free.id) ?? null;
+  return listAccounts().find((a) => a.id === id) ?? null;
 }
 
-export function releaseAccount(sessionId: number) {
-  db.prepare(`UPDATE test_accounts SET session_id = NULL WHERE session_id = ?`).run(sessionId);
+/** 세션 계정을 반납한다. accountId를 주면 그 계정만, 아니면 전부. */
+export function releaseAccount(sessionId: number, accountId?: number) {
+  if (accountId === undefined) db.prepare(`UPDATE test_accounts SET session_id = NULL WHERE session_id = ?`).run(sessionId);
+  else db.prepare(`UPDATE test_accounts SET session_id = NULL WHERE session_id = ? AND id = ?`).run(sessionId, accountId);
+  broadcast({ type: 'session.updated', sessionId });
+}
+
+/** 계정 하나를 어느 세션이 쓰든 반납한다(설정의 계정 풀에서). */
+export function releaseAccountById(accountId: number) {
+  const row = db.prepare(`SELECT session_id FROM test_accounts WHERE id = ?`).get(accountId) as { session_id: number | null } | undefined;
+  if (row?.session_id) releaseAccount(row.session_id, accountId);
 }
 
 export function freeAccountCount(): number {

@@ -9,7 +9,7 @@ import { runFile, runShell } from './exec.js';
 import { getProject } from './projects.js';
 import { getSession, listMessages, type SessionView } from './sessions.js';
 import { resolveEnv } from './envstore.js';
-import { accountOf } from './accounts.js';
+import { accountsOf } from './accounts.js';
 import { maskSecrets } from './secret.js';
 import { stopServers } from './runner.js';
 import { getSettings } from './settings.js';
@@ -32,6 +32,10 @@ export type PrDraft = {
   has_changes: boolean;
   check_cmd: string | null;
   template_path: string | null;
+  /** 커밋 메시지를 맞춘 템플릿. from은 다른 프로젝트 템플릿을 빌려 썼을 때 그 프로젝트 이름 */
+  commit_template: { path: string; from: string | null } | null;
+  /** 형식을 따라 쓴 최근 머지된 PR들. 없으면 템플릿이나 기본 형식을 쓴다. */
+  style_examples: { number: number; title: string; author: string; mine: boolean }[];
   existing_pr: { number: number; url: string } | null;
   commit_message: string;
   title: string;
@@ -39,7 +43,8 @@ export type PrDraft = {
 };
 
 type StepName = 'commit' | 'check' | 'push' | 'pr';
-type StepState = { name: StepName; status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; started_at: number | null; ended_at: number | null; detail: string | null; output: string | null };
+/** ignored: 검사가 실패했지만 사용자가 무시하고 진행하기로 함 */
+type StepState = { name: StepName; status: 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'ignored'; started_at: number | null; ended_at: number | null; detail: string | null; output: string | null };
 type RepoJob = { worktree_id: number; project_name: string; steps: StepState[]; pr_url: string | null };
 export type PrJob = {
   session_id: number;
@@ -49,6 +54,10 @@ export type PrJob = {
   repos: RepoJob[];
   error: string | null;
   servers_stopped: boolean;
+  /** 검사(빌드·테스트)가 실패해도 PR까지 진행한다 */
+  ignore_check_failures: boolean;
+  /** 실패 뒤 "무시하고 진행"으로 다시 돌릴 때 쓰는 입력 */
+  items: PrItem[];
 };
 
 const jobs = new Map<number, PrJob>();
@@ -79,8 +88,7 @@ export function sessionSecrets(session: SessionView): string[] {
     const { env, vars } = resolveEnv(session.id, w.project_id);
     for (const v of vars) if (v.secret && env[v.key]) out.add(env[v.key]);
   }
-  const acc = accountOf(session.id);
-  if (acc?.password) out.add(acc.password);
+  for (const acc of accountsOf(session.id)) if (acc.password) out.add(acc.password);
   return [...out];
 }
 
@@ -133,9 +141,88 @@ function porcelainFiles(porcelain: string): string[] {
   return porcelain.split('\n').filter(Boolean).map((l) => l.replace(/^[ MADRCU?!T]{1,2}\s+/, ''));
 }
 
-type RepoFacts = { draft: PrDraft; template: string | null; diffStat: string; diff: string; log: string };
+type PrExample = { number: number; title: string; body: string; author: string; mine: boolean };
+type RepoFacts = {
+  draft: PrDraft; template: string | null; diffStat: string; diff: string; log: string; examples: PrExample[]; commitStyle: string;
+  commitTemplate: string | null;
+};
+
+const CT_SKIP = new Set(['node_modules', '.git', 'build', 'dist', 'out', 'target', '.gradle', '.idea', '.venv', 'venv', '.next', '.claude', '.bkit', 'static', 'public']);
+const CT_NAME = /^(commit[_-]?(message[_-]?)?template.*\.(md|txt)|\.gitmessage(\.txt)?)$/i;
+
+/** 저장소에서 커밋 메시지 템플릿을 찾는다: git config commit.template, 그다음 commit_template*.md 같은 파일(깊이 4). */
+async function findCommitTemplate(dir: string): Promise<string | null> {
+  const configured = await git(dir, ['config', 'commit.template']).catch(() => '');
+  if (configured) {
+    const abs = path.resolve(dir, configured.replace(/^~(?=\/)/, os.homedir()));
+    if (fs.existsSync(abs)) return abs;
+  }
+  const walk = (d: string, depth: number): string | null => {
+    if (depth > 4) return null;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return null; }
+    for (const e of entries) if (e.isFile() && CT_NAME.test(e.name)) return path.join(d, e.name);
+    for (const e of entries) {
+      if (!e.isDirectory() || CT_SKIP.has(e.name)) continue;
+      const hit = walk(path.join(d, e.name), depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  return walk(dir, 0);
+}
+
+/** 프로젝트 설정의 경로가 있으면 그것을, 없으면 저장소에서 찾은 것을 읽는다. 돌려주는 path는 표시용. */
+async function commitTemplateOf(w: SessionView['worktrees'][number], setting: string | null): Promise<{ path: string; content: string } | null> {
+  const abs = setting?.trim()
+    ? path.resolve(w.path, setting.trim().replace(/^~(?=\/)/, os.homedir()))
+    : await findCommitTemplate(w.path);
+  if (!abs || !fs.existsSync(abs)) return null;
+  const content = fs.readFileSync(abs, 'utf8').slice(0, 8000);
+  const rel = path.relative(w.path, abs);
+  return { path: rel.startsWith('..') ? abs : rel, content };
+}
+
+let myLogin: Promise<string | null> | null = null;
+/** gh에 로그인한 계정. 내 PR을 형식 예시로 먼저 고르는 데 쓴다. */
+function ghLogin(): Promise<string | null> {
+  myLogin ??= runFile('gh', ['api', 'user', '--jq', '.login'], os.homedir(), 15_000).then((s) => s.trim() || null, () => null);
+  return myLogin;
+}
+
+/**
+ * 이 레포에서 최근 머지된 PR 본문을 형식 예시로 고른다. 팀이 실제로 쓰는 제목·본문 형식을 따르게 하기 위해서다.
+ * 내 PR을 먼저, 그다음 다른 사람 PR. 배포용 머지 PR(main < develop 등)과 본문이 짧은 PR은 뺀다.
+ */
+async function recentPrExamples(dir: string): Promise<PrExample[]> {
+  try {
+    const out = await runFile('gh', ['pr', 'list', '--state', 'merged', '--limit', '30', '--json', 'number,title,body,author,headRefName'], dir, 30_000);
+    const me = await ghLogin();
+    const list = (JSON.parse(out) as { number: number; title: string; body: string | null; author: { login: string }; headRefName: string }[])
+      .filter((p) => (p.body ?? '').trim().length >= 200)
+      .filter((p) => !/^(main|master|develop|release)/.test(p.headRefName) && !/^\s*(main|master)\s*<\s*develop/i.test(p.title))
+      .map((p) => ({ number: p.number, title: p.title, body: (p.body ?? '').trim(), author: p.author.login, mine: p.author.login === me }));
+    return [...list.filter((p) => p.mine), ...list.filter((p) => !p.mine)].slice(0, 3)
+      .map((p) => ({ ...p, body: p.body.length > 2500 ? `${p.body.slice(0, 2500)}\n…` : p.body }));
+  } catch {
+    return [];
+  }
+}
 
 async function collectFacts(session: SessionView): Promise<RepoFacts[]> {
+  const facts = await collectEach(session);
+  // 커밋 템플릿이 없는 레포(FE 등)는 같은 세션의 다른 레포 템플릿을 쓴다. 팀 규칙이 한 저장소에만 있는 경우가 많다.
+  const donor = facts.find((f) => f.commitTemplate);
+  for (const f of facts) {
+    if (!f.commitTemplate && donor) {
+      f.commitTemplate = donor.commitTemplate;
+      f.draft.commit_template = { path: donor.draft.commit_template!.path, from: donor.draft.project_name };
+    }
+  }
+  return facts;
+}
+
+async function collectEach(session: SessionView): Promise<RepoFacts[]> {
   return Promise.all(session.worktrees.map(async (w) => {
     const project = getProject(w.project_id);
     const ref = await baseRef(w.path, w.base_branch);
@@ -147,7 +234,11 @@ async function collectFacts(session: SessionView): Promise<RepoFacts[]> {
     const diff = await git(w.path, ['diff', ref]).catch(() => '');
     const untracked = porcelainFiles(porcelain.split('\n').filter((l) => l.startsWith('??')).join('\n'));
     const log = await git(w.path, ['log', '--oneline', `${ref}..HEAD`]).catch(() => '');
+    // 커밋 메시지 형식 예시: 기준 브랜치의 최근 커밋 제목(머지 커밋 제외)
+    const commitStyle = await git(w.path, ['log', ref, '--no-merges', '-8', '--format=%s']).catch(() => '');
+    const examples = await recentPrExamples(w.path);
     const templatePath = findTemplate(w.path);
+    const ct = await commitTemplateOf(w, project?.commit_template ?? null);
     const template = templatePath ? fs.readFileSync(path.join(w.path, templatePath), 'utf8') : null;
     const draft: PrDraft = {
       worktree_id: w.id,
@@ -160,7 +251,9 @@ async function collectFacts(session: SessionView): Promise<RepoFacts[]> {
       has_changes: dirty.length > 0 || ahead > 0,
       check_cmd: project?.check_cmd ?? null,
       template_path: templatePath,
+      commit_template: ct ? { path: ct.path, from: null } : null,
       existing_pr: await existingPr(w.path, w.branch),
+      style_examples: examples.map(({ number, title, author, mine }) => ({ number, title, author, mine })),
       commit_message: `${session.ticket} ${session.summary}`.trim(),
       title: `[${session.ticket}] ${session.summary || w.branch}`.trim(),
       body: template ?? '',
@@ -171,6 +264,9 @@ async function collectFacts(session: SessionView): Promise<RepoFacts[]> {
       diffStat: untracked.length ? `${diffStat}\n새 파일: ${untracked.join(', ')}` : diffStat,
       diff: diff.length > 40_000 ? `${diff.slice(0, 40_000)}\n… (이하 생략)` : diff,
       log,
+      examples,
+      commitStyle,
+      commitTemplate: ct?.content ?? null,
     };
   }));
 }
@@ -187,17 +283,25 @@ export async function preparePr(sessionId: number): Promise<{ drafts: PrDraft[];
   const mask = (s: string) => maskSecrets(s, secrets);
   const prompt = [
     `티켓 ${session.ticket}${session.summary ? ` (${session.summary})` : ''}의 PR 제목, 본문, 커밋 메시지를 레포별로 써줘.`,
-    '본문은 레포의 PR 템플릿 형식과 항목을 그대로 따르고, 모든 항목을 채워. 템플릿이 없으면 "## 작업 내용", "## 테스트", "## 체크리스트"로 써.',
-    '작업 내용은 diff와 대화에서 실제로 바뀐 것만 적고 추측하지 마. 테스트 항목은 표로, 확인 못 한 것은 "미확인"이라고 적어.',
-    '레포가 둘 이상이면 본문 끝에 "관련 PR" 자리를 두고 도구가 링크를 넣는다고 비워 둬. 비밀번호, 토큰 같은 값은 절대 넣지 마.',
-    '제목은 "[티켓] 요약" 형식의 한 줄, 커밋 메시지는 한 줄. 모두 한국어로.',
+    '형식 우선순위: (1) 레포마다 붙인 "최근 머지된 PR" 예시가 있으면 그 형식을 따른다. 제목의 접두어·이모지·티켓 표기 위치, 본문 섹션 구성과 제목, 문체와 길이를 맞춘다. "내 PR"로 표시된 예시를 가장 우선한다.',
+    '  예시의 내용은 다른 작업이니 내용을 베끼지 말고 형식만 따른다. (2) 예시가 없으면 레포의 PR 템플릿 항목을 채운다. (3) 둘 다 없으면 "## 개요", "## 변경", "## 확인"으로 쓴다.',
+    '커밋 메시지: 레포에 "커밋 메시지 템플릿"이 붙어 있으면 그 Format을 그대로 따른다(이모지·type은 템플릿 표에서 고르고, 본문 목록과 Jira 줄까지).',
+    `  Jira 줄의 이슈 키는 ${session.ticket}을 쓴다. 템플릿의 주의사항을 지키고, Co-Authored-By 같은 꼬리말은 쓰지 않는다. 템플릿이 없으면 "최근 커밋 제목" 형식의 한 줄로 쓴다.`,
+    '내용은 diff와 대화에서 실제로 바뀐 것만 적고 추측하지 마. 확인하지 못한 것은 확인했다고 쓰지 마.',
+    '레포가 둘 이상이면 도구가 본문 끝에 관련 PR 링크를 붙이니 따로 쓰지 마. 비밀번호, 토큰 같은 값은 절대 넣지 마. 모두 한국어로.',
+    `티켓 번호 ${session.ticket}은 예시가 티켓을 표기하는 방식대로 제목에 넣는다.`,
     '',
     `## 대화 기록 (요약 재료)\n${mask(conversationDigest(sessionId)) || '(없음)'}`,
     ...targets.map((f) => [
       '',
       `## 레포 worktree_id=${f.draft.worktree_id} ${f.draft.project_name} (${f.draft.project_kind}) ${f.draft.branch} → ${f.draft.base_branch}`,
-      `### PR 템플릿 (${f.draft.template_path ?? '없음'})\n${f.template ?? '(없음)'}`,
-      `### 커밋\n${f.log || '(아직 커밋 없음)'}`,
+      f.examples.length
+        ? `### 최근 머지된 PR (형식 예시)\n${f.examples.map((e) => `#### #${e.number}${e.mine ? ' (내 PR)' : ''} 제목: ${e.title}\n${e.body}`).join('\n\n')}`
+        : `### PR 템플릿 (${f.draft.template_path ?? '없음'})\n${f.template ?? '(없음)'}`,
+      f.commitTemplate
+        ? `### 커밋 메시지 템플릿 (${f.draft.commit_template!.path}${f.draft.commit_template!.from ? `, ${f.draft.commit_template!.from} 것을 같이 씀` : ''})\n${f.commitTemplate}`
+        : `### 최근 커밋 제목 (커밋 메시지 형식 예시)\n${f.commitStyle || '(없음)'}`,
+      `### 이번 브랜치 커밋\n${f.log || '(아직 커밋 없음)'}`,
       `### 변경 요약\n${f.diffStat}`,
       `### diff\n\`\`\`diff\n${mask(f.diff)}\n\`\`\``,
     ].join('\n')),
@@ -232,12 +336,17 @@ export async function preparePr(sessionId: number): Promise<{ drafts: PrDraft[];
       if (!f) continue;
       f.draft.title = mask(r.title.trim()) || f.draft.title;
       f.draft.body = mask(r.body.trim()) || f.draft.body;
-      f.draft.commit_message = mask(r.commit_message.trim()) || f.draft.commit_message;
+      f.draft.commit_message = cleanCommitMessage(mask(r.commit_message.trim())) || f.draft.commit_message;
     }
   } catch (err) {
     aiError = `본문 자동 작성에 실패해 템플릿만 채웠습니다: ${(err as Error).message}`;
   }
   return { drafts: facts.map((f) => f.draft), ai_error: aiError };
+}
+
+/** 꼬리말(Co-Authored-By 등)을 빼고 줄 끝 공백을 정리한다. 팀 템플릿이 금지하는 꼬리말이 섞이지 않게 한다. */
+function cleanCommitMessage(msg: string): string {
+  return msg.split('\n').filter((l) => !/^\s*Co-Authored-By:/i.test(l)).map((l) => l.replace(/\s+$/, '')).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 export function getPrJob(sessionId: number): PrJob | null {
@@ -277,7 +386,7 @@ async function step<T>(job: PrJob, repo: RepoJob, name: StepName, fn: (s: StepSt
  * 커밋 → 검사 → 푸시 → PR 생성. 모든 레포의 검사를 먼저 통과시킨 뒤에 푸시해서,
  * 한쪽만 PR이 올라가는 일이 없게 한다.
  */
-export function startPr(sessionId: number, items: PrItem[]): PrJob {
+export function startPr(sessionId: number, items: PrItem[], opts: { ignoreCheckFailures?: boolean; prior?: PrJob } = {}): PrJob {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
   if (session.status === 'running') throw new Error('Claude가 작업 중입니다. 끝난 뒤에 PR을 만드세요.');
@@ -290,6 +399,7 @@ export function startPr(sessionId: number, items: PrItem[]): PrJob {
 
   const job: PrJob = {
     session_id: sessionId, status: 'running', started_at: Date.now(), ended_at: null, error: null, servers_stopped: false,
+    ignore_check_failures: Boolean(opts.ignoreCheckFailures), items,
     repos: items.map((it) => ({
       worktree_id: it.worktree_id,
       project_name: session.worktrees.find((w) => w.id === it.worktree_id)!.project_name,
@@ -299,12 +409,20 @@ export function startPr(sessionId: number, items: PrItem[]): PrJob {
   };
   jobs.set(sessionId, job);
   update(job);
-  runJob(session, job, items).catch(() => { /* runJob이 job에 오류를 기록한다 */ });
+  runJob(session, job, items, opts.prior).catch(() => { /* runJob이 job에 오류를 기록한다 */ });
   return job;
 }
 
-async function runJob(session: SessionView, job: PrJob, items: PrItem[]) {
+/** 검사가 실패해 멈춘 작업을 검사 실패를 무시하고 이어서 진행한다. 이미 돌린 검사는 다시 돌리지 않는다. */
+export function continueIgnoringChecks(sessionId: number): PrJob {
+  const prior = jobs.get(sessionId);
+  if (!prior || prior.status !== 'failed') throw new Error('이어서 진행할 PR 작업이 없습니다.');
+  return startPr(sessionId, prior.items, { ignoreCheckFailures: true, prior });
+}
+
+async function runJob(session: SessionView, job: PrJob, items: PrItem[], prior?: PrJob) {
   const secrets = sessionSecrets(session);
+  const ignored = new Map<number, string>(); // 검사를 무시한 레포: worktree_id → 검사 명령
   const wt = (id: number) => session.worktrees.find((w) => w.id === id)!;
   try {
     for (const repo of job.repos) {
@@ -314,17 +432,34 @@ async function runJob(session: SessionView, job: PrJob, items: PrItem[]) {
         const dirty = await git(w.path, ['status', '--porcelain']);
         if (!dirty) { s.status = 'skipped'; s.detail = '커밋할 변경 없음'; return; }
         await git(w.path, ['add', '-A']);
-        await runFile('git', ['commit', '-m', item.commit_message.trim() || item.title.trim()], w.path, 120_000);
+        await runFile('git', ['commit', '-m', cleanCommitMessage(item.commit_message) || item.title.trim()], w.path, 120_000);
         s.detail = (await git(w.path, ['log', '-1', '--format=%h %s'])).slice(0, 200);
       });
       await step(job, repo, 'check', async (s) => {
         const cmd = getProject(w.project_id)?.check_cmd;
         if (!cmd) { s.status = 'skipped'; s.detail = '검사 명령 없음 (설정에서 넣을 수 있습니다)'; return; }
+        // 이어서 진행할 때는 이미 돌린 검사 결과를 그대로 쓴다. 빌드를 다시 기다리지 않게.
+        const before = prior?.repos.find((x) => x.worktree_id === repo.worktree_id)?.steps.find((x) => x.name === 'check');
+        if (before && (before.status === 'done' || before.status === 'failed' || before.status === 'ignored')) {
+          s.output = before.output;
+          if (before.status === 'done') { s.detail = `${before.detail ?? ''} (앞에서 통과)`; return; }
+          s.status = 'ignored';
+          s.detail = '앞에서 실패했지만 무시하고 진행합니다';
+          ignored.set(repo.worktree_id, cmd);
+          return;
+        }
         s.detail = `$ ${cmd}`;
         const r = await runShell(cmd, w.path, { timeoutMs: 30 * 60 * 1000 });
         s.output = maskSecrets(r.output.split('\n').slice(-120).join('\n'), secrets);
-        if (r.timedOut) throw new Error('검사가 30분 안에 끝나지 않았습니다.');
-        if (r.code !== 0) throw new Error(`검사가 실패했습니다 (코드 ${r.code}). PR을 만들지 않았습니다.`);
+        const failure = r.timedOut ? '검사가 30분 안에 끝나지 않았습니다.' : r.code !== 0 ? `검사가 실패했습니다 (코드 ${r.code}).` : null;
+        if (!failure) return;
+        if (job.ignore_check_failures) {
+          s.status = 'ignored';
+          s.detail = `${failure} 무시하고 진행합니다.`;
+          ignored.set(repo.worktree_id, cmd);
+          return;
+        }
+        throw new Error(`${failure} PR을 만들지 않았습니다.`);
       });
     }
 
@@ -341,7 +476,9 @@ async function runJob(session: SessionView, job: PrJob, items: PrItem[]) {
       const w = wt(repo.worktree_id);
       const item = items.find((i) => i.worktree_id === repo.worktree_id)!;
       await step(job, repo, 'pr', async (s) => {
-        const body = maskSecrets(item.body, secrets);
+        // 검사를 무시하고 올리면 리뷰하는 사람이 알 수 있게 본문 끝에 남긴다.
+        const note = ignored.has(repo.worktree_id) ? `\n\n> ⚠️ PR 전 검사(\`${ignored.get(repo.worktree_id)}\`)가 실패한 상태로 올렸습니다.` : '';
+        const body = maskSecrets(item.body.replace(/\s+$/, '') + note, secrets);
         const existing = await existingPr(w.path, w.branch);
         let url: string;
         if (existing) {

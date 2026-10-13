@@ -5,6 +5,7 @@ import { api } from '../api';
 import { useServerEvents } from '../events';
 import type { Session, StoredMessage } from '../types';
 import PromptInput from './PromptInput';
+import ApprovalCards from './ApprovalCards';
 
 type ToolResult = { text: string; isError: boolean };
 
@@ -94,6 +95,7 @@ export default function ChatView({ session }: { session: Session }) {
         {messages.map((m) => <MessageItem key={m.id} message={m} toolResults={toolResults} />)}
         {session.status === 'running' && <div className="working" aria-live="polite"><span className="spinner" aria-hidden="true" />작업 중</div>}
       </div>
+      <ApprovalCards session={session} />
       <PromptInput session={session} />
     </main>
   );

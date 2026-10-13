@@ -48,6 +48,11 @@ export function attachToPrompt(image: { mediaType: string; data: string; name: s
   window.dispatchEvent(new CustomEvent('wts:attach-image', { detail: image }));
 }
 
+/** 오른쪽 패널 미리보기에서 이 경로를 연다. */
+export function openInPreview(path: string) {
+  window.dispatchEvent(new CustomEvent('wts:preview-open', { detail: path }));
+}
+
 /** 로그 줄 같은 텍스트를 프롬프트 입력창에 붙인다. */
 export function insertIntoPrompt(text: string) {
   window.dispatchEvent(new CustomEvent('wts:insert-prompt', { detail: text }));

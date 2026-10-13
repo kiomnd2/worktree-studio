@@ -110,12 +110,32 @@ function addColumn(table: string, column: string, ddl: string) {
 }
 addColumn('projects', 'port_env', 'port_env TEXT');
 addColumn('projects', 'api_env_key', 'api_env_key TEXT');
-// Phase 3: 화면 비교 기준 서버와 로그인 경로
+// baseline_url은 예전 화면 전후 비교의 기준 서버 주소(지금은 쓰지 않음). login_path는 미리보기 캡처 로그인용.
 addColumn('projects', 'baseline_url', 'baseline_url TEXT');
 addColumn('projects', 'login_path', 'login_path TEXT');
 // 새 워크트리에서 처음 실행하기 전에 돌릴 의존성 설치 명령(uv sync, npm ci 등)과 설치를 마쳤는지
 addColumn('projects', 'setup_cmd', 'setup_cmd TEXT');
 addColumn('worktrees', 'setup_done', 'setup_done INTEGER NOT NULL DEFAULT 0');
+// 한 세션에 계정 여러 개: 배정 순서를 기억하고, 화면마다 어느 계정으로 찍을지 고른다.
+addColumn('test_accounts', 'assigned_at', 'assigned_at TEXT');
+addColumn('screen_checks', 'account_id', 'account_id INTEGER REFERENCES test_accounts(id) ON DELETE SET NULL');
+// Claude가 작업 중일 때 보낸 프롬프트를 순서대로 쌓아 둔다. 이미지는 보낼 때 이미 파일로 저장해 이름만 둔다.
+db.exec(`
+CREATE TABLE IF NOT EXISTS prompt_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  images TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
+// 영향 화면: 직접 영향(보이는 게 바뀜)인지 간접(가능성)인지, 같은 화면 컴포넌트를 쓰는 다른 경로, 직접 추가했는지
+addColumn('screen_checks', 'kind', `kind TEXT NOT NULL DEFAULT 'direct'`);
+addColumn('screen_checks', 'also_routes', `also_routes TEXT NOT NULL DEFAULT '[]'`);
+addColumn('screen_checks', 'manual', 'manual INTEGER NOT NULL DEFAULT 0');
+db.prepare(`UPDATE screen_checks SET manual = 1 WHERE reason = '직접 추가' AND manual = 0`).run();
+// 커밋 메시지 템플릿 파일 경로(저장소 기준 상대 경로나 절대 경로). 비우면 저장소에서 찾는다.
+addColumn('projects', 'commit_template', 'commit_template TEXT');
 addColumn('sessions', 'stale_notified', 'stale_notified INTEGER NOT NULL DEFAULT 0');
 
 db.exec(`
@@ -153,7 +173,7 @@ db.prepare(`UPDATE sessions SET status = 'idle' WHERE status = 'running'`).run()
 export type ProjectRow = {
   id: number; name: string; local_path: string; kind: string;
   start_cmd: string | null; check_cmd: string | null; health_path: string | null; created_at: string;
-  port_env: string | null; api_env_key: string | null; baseline_url: string | null; login_path: string | null; setup_cmd: string | null;
+  port_env: string | null; api_env_key: string | null; baseline_url: string | null; login_path: string | null; setup_cmd: string | null; commit_template: string | null;
 };
 export type SessionRow = {
   id: number; workspace_id: number; ticket: string; summary: string; status: string;

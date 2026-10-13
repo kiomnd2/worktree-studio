@@ -13,23 +13,23 @@ import {
   getProject, listProjectRows, listWorkspaces, updateProject,
 } from './projects.js';
 import { listBranches } from './git.js';
-import { closeSession, createSession, getSession, listMessages, listSessions, setSession } from './sessions.js';
-import { runPrompt, stopPrompt } from './claude.js';
+import { closeSession, createSession, getSession, listMessages, listSessions, removeQueued, setSession } from './sessions.js';
+import { resumeQueue, runPrompt, stopPrompt, submitPrompt } from './claude.js';
+import { decide, listApprovals } from './approvals.js';
+import { fileDiff, sessionChanges } from './changes.js';
 import { getSettings, saveSettings, type Settings } from './settings.js';
 import { sendNotification } from './notify.js';
-import { cleanupOrphans, getLogs, listServers, startServers, stopAll, stopServers } from './runner.js';
+import { cleanupOrphans, clearFailure, getLogs, listServers, startServers, stopAll, stopServers } from './runner.js';
 import { sessionEnvState } from './envapi.js';
 import { deleteProfile, saveSessionEnv, selectProfile, type EnvVar } from './envstore.js';
 import { analyzeEnvWithAI, parseDotenv, scanEnv } from './envscan.js';
 import {
-  accountPassword, addAccount, assignAccount, deleteAccount, freeAccountCount, listAccounts, releaseAccount, updateAccount,
+  accountPassword, addAccount, assignAccount, deleteAccount, freeAccountCount, listAccounts, releaseAccount, releaseAccountById, updateAccount,
 } from './accounts.js';
 import { githubStatus } from './github.js';
 import { getProject as projectById } from './projects.js';
-import { closePr, getPrJob, listPrs, preparePr, startPr } from './pr.js';
-import {
-  SCREEN_DIR, addScreen, capturePreview, captureScreens, cropForPrompt, detectScreens, getScreen, removeScreen, screenState, setScreenStatus,
-} from './screens.js';
+import { closePr, continueIgnoringChecks, getPrJob, listPrs, preparePr, startPr } from './pr.js';
+import { addScreen, capturePreview, detectScreens, removeScreen, screenState, setScreenChecked } from './screens.js';
 import { cleanSession, listCleanup, refreshPrStates, scheduleCleanupPoll, startupSweep } from './cleanup.js';
 
 const app = Fastify({ logger: { level: 'info' }, bodyLimit: 40 * 1024 * 1024 });
@@ -41,10 +41,6 @@ app.setErrorHandler((err: Error & { statusCode?: number; details?: Record<string
   reply.status(status).send({ error: err instanceof z.ZodError ? '입력값을 확인하세요.' : err.message, ...(err.details ?? {}) });
 });
 
-const orphans = cleanupOrphans();
-if (orphans) app.log.info(`이전 실행에서 남은 서버 프로세스 ${orphans}개를 정리했습니다.`);
-startupSweep(orphans).catch((e) => app.log.error(e));
-scheduleCleanupPoll();
 
 const idParam = z.object({ id: z.coerce.number().int().positive() });
 
@@ -64,9 +60,9 @@ app.patch('/api/projects/:id', async (req) => {
     health_path: z.string().nullable().optional(),
     port_env: z.string().nullable().optional(),
     api_env_key: z.string().nullable().optional(),
-    baseline_url: z.string().url('기준 서버 주소는 http://로 시작하는 전체 주소로 넣으세요.').nullable().optional(),
     login_path: z.string().nullable().optional(),
     setup_cmd: z.string().nullable().optional(),
+    commit_template: z.string().nullable().optional(),
   }).parse(req.body);
   return describeProject(updateProject(id, patch));
 });
@@ -104,9 +100,7 @@ app.post('/api/sessions', async (req) => {
   const created = await createSession(body);
   assignAccount(created.id);
   const session = getSession(created.id)!;
-  if (body.firstPrompt?.trim()) {
-    runPrompt(session.id, body.firstPrompt, []).catch((e) => app.log.error(e));
-  }
+  if (body.firstPrompt?.trim()) submitPrompt(session.id, body.firstPrompt, []);
   return session;
 });
 app.get('/api/sessions/:id', async (req) => {
@@ -121,11 +115,16 @@ app.post('/api/sessions/:id/prompt', async (req) => {
     text: z.string().default(''),
     images: z.array(z.object({ mediaType: z.string(), data: z.string(), name: z.string().optional() })).max(10).default([]),
   }).parse(req.body);
-  // 실행은 백그라운드로 두고, 진행 상황은 WebSocket으로 보낸다.
-  const s = getSession(id);
-  if (!s) throw new Error('세션이 없습니다.');
-  if (s.status === 'running') throw new Error('이미 작업 중입니다.');
-  runPrompt(id, body.text, body.images).catch((e) => app.log.error(e));
+  // 실행은 백그라운드로 두고, 진행 상황은 WebSocket으로 보낸다. 작업 중이면 대기열에 넣는다.
+  return submitPrompt(id, body.text, body.images);
+});
+app.delete('/api/sessions/:id/queue/:qid', async (req) => {
+  const { id, qid } = z.object({ id: z.coerce.number().int(), qid: z.coerce.number().int() }).parse(req.params);
+  removeQueued(id, qid);
+  return { ok: true };
+});
+app.post('/api/sessions/:id/queue/resume', async (req) => {
+  resumeQueue(idParam.parse(req.params).id);
   return { ok: true };
 });
 app.post('/api/sessions/:id/stop', async (req) => ({ stopped: stopPrompt(idParam.parse(req.params).id) }));
@@ -222,6 +221,42 @@ app.post('/api/sessions/:id/servers/restart', async (req) => {
   await startServers(id, worktreeIds, commandMap(commands));
   return listServers(getSession(id)!);
 });
+// Claude가 프롬프트 중에 요청한 환경값·테스트 계정 확인
+app.get('/api/sessions/:id/approvals', async (req) => listApprovals(idParam.parse(req.params).id));
+app.post('/api/approvals/:id', async (req) => {
+  const d = z.union([
+    z.object({ approve: z.literal(false) }),
+    z.object({
+      approve: z.literal(true),
+      vars: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
+      target: z.enum(['session', 'profile']).optional(),
+      account_id: z.number().int().optional(),
+    }),
+  ]).parse(req.body);
+  decide(idParam.parse(req.params).id, d);
+  return { ok: true };
+});
+
+// 변경 파일 비교
+const scopeSchema = z.enum(['base', 'uncommitted']).default('base');
+app.get('/api/sessions/:id/changes', async (req) => {
+  const { scope } = z.object({ scope: scopeSchema }).parse(req.query);
+  return sessionChanges(idParam.parse(req.params).id, scope);
+});
+app.get('/api/sessions/:id/diff', async (req) => {
+  const q = z.object({
+    worktree: z.coerce.number().int(), path: z.string().min(1), scope: scopeSchema,
+    full: z.enum(['0', '1']).default('0'), ws: z.enum(['0', '1']).default('0'),
+  }).parse(req.query);
+  return fileDiff(q.worktree, idParam.parse(req.params).id, q.path, { scope: q.scope, full: q.full === '1', ignoreWhitespace: q.ws === '1' });
+});
+
+// 서버 오류 표시 닫기
+app.post('/api/sessions/:id/servers/:worktreeId/dismiss', async (req) => {
+  const { id, worktreeId } = z.object({ id: z.coerce.number().int(), worktreeId: z.coerce.number().int() }).parse(req.params);
+  clearFailure(worktreeId, id);
+  return listServers(getSession(id)!);
+});
 app.get('/api/worktrees/:id/logs', async (req) => getLogs(idParam.parse(req.params).id));
 
 // 테스트 계정 풀
@@ -241,10 +276,18 @@ app.delete('/api/accounts/:id', async (req) => {
   return { ok: true };
 });
 app.get('/api/accounts/:id/password', async (req) => ({ password: accountPassword(idParam.parse(req.params).id) }));
-app.post('/api/sessions/:id/account/assign', async (req) => ({ account: assignAccount(idParam.parse(req.params).id) }));
+app.post('/api/sessions/:id/account/assign', async (req) => {
+  const { accountId } = z.object({ accountId: z.number().int().optional() }).parse(req.body ?? {});
+  return { account: assignAccount(idParam.parse(req.params).id, accountId) };
+});
+app.post('/api/accounts/:id/release', async (req) => {
+  releaseAccountById(idParam.parse(req.params).id);
+  return { ok: true };
+});
 app.post('/api/sessions/:id/account/release', async (req) => {
   const { id } = idParam.parse(req.params);
-  releaseAccount(id);
+  const { accountId } = z.object({ accountId: z.number().int().optional() }).parse(req.body ?? {});
+  releaseAccount(id, accountId);
   setSession(id, {});
   return { ok: true };
 });
@@ -259,17 +302,19 @@ app.get('/api/sessions/:id/pr', async (req) => {
 app.post('/api/sessions/:id/pr/prepare', async (req) => preparePr(idParam.parse(req.params).id));
 app.post('/api/sessions/:id/pr', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { items } = z.object({
+  const { items, ignore_check_failures } = z.object({
     items: z.array(z.object({ worktree_id: z.number().int(), title: z.string(), body: z.string(), commit_message: z.string() })),
+    ignore_check_failures: z.boolean().default(false),
   }).parse(req.body);
-  return startPr(id, items);
+  return startPr(id, items, { ignoreCheckFailures: ignore_check_failures });
 });
+app.post('/api/sessions/:id/pr/continue', async (req) => continueIgnoringChecks(idParam.parse(req.params).id));
 app.post('/api/prs/:id/close', async (req) => {
   await closePr(idParam.parse(req.params).id);
   return { ok: true };
 });
 
-// 영향 화면 전후 비교
+// 영향받는 화면 체크리스트
 app.get('/api/sessions/:id/screens', async (req) => screenState(idParam.parse(req.params).id));
 app.post('/api/sessions/:id/screens/detect', async (req) => ({ found: await detectScreens(idParam.parse(req.params).id) }));
 app.post('/api/sessions/:id/screens', async (req) => {
@@ -277,48 +322,18 @@ app.post('/api/sessions/:id/screens', async (req) => {
   addScreen(idParam.parse(req.params).id, route);
   return { ok: true };
 });
-app.post('/api/sessions/:id/screens/capture', async (req) => {
-  const { id } = idParam.parse(req.params);
-  const { ids } = z.object({ ids: z.array(z.number().int()).optional() }).parse(req.body ?? {});
-  return captureScreens(id, ids);
-});
 app.patch('/api/screens/:id', async (req) => {
-  const { accepted } = z.object({ accepted: z.boolean() }).parse(req.body);
-  setScreenStatus(idParam.parse(req.params).id, accepted);
+  const { checked } = z.object({ checked: z.boolean() }).parse(req.body);
+  setScreenChecked(idParam.parse(req.params).id, checked);
   return { ok: true };
 });
 app.delete('/api/screens/:id', async (req) => {
   removeScreen(idParam.parse(req.params).id);
   return { ok: true };
 });
-app.post('/api/screens/:id/ask', async (req) => {
-  const { note } = z.object({ note: z.string().default('') }).parse(req.body ?? {});
-  const check = getScreen(idParam.parse(req.params).id);
-  if (!check?.before_file || !check.after_file) throw new Error('먼저 화면을 찍으세요.');
-  const s = getSession(check.session_id);
-  if (s?.status === 'running') throw new Error('Claude가 작업 중입니다. 끝난 뒤에 보내세요.');
-  const box = check.boxes[0];
-  const text = [
-    `${check.route} 화면을 기준 브랜치(첫 번째 이미지)와 작업 브랜치(두 번째 이미지)로 비교했더니 ${((check.diff_ratio ?? 0) * 100).toFixed(2)}%가 달라졌어.`,
-    box ? `가장 위쪽 차이는 x=${box.x}, y=${box.y} 근처(${box.w}x${box.h})이고, 이미지는 그 주변을 잘라 붙였어.` : '',
-    note.trim() || '의도하지 않은 변경이면 원인을 찾아 고쳐줘. 의도한 변경이면 그렇다고 알려줘.',
-  ].filter(Boolean).join('\n');
-  runPrompt(check.session_id, text, [
-    { mediaType: 'image/png', data: cropForPrompt(check.session_id, check.before_file, box), name: `${check.route} 기준.png` },
-    { mediaType: 'image/png', data: cropForPrompt(check.session_id, check.after_file, box), name: `${check.route} 작업.png` },
-  ]).catch((e) => app.log.error(e));
-  return { ok: true };
-});
-app.get('/api/screens/file/:session/:file', async (req, reply) => {
-  const { session, file } = z.object({ session: z.coerce.number().int(), file: z.string().regex(/^\d+-\d+-(before|after|diff)\.png$/) }).parse(req.params);
-  const full = path.join(SCREEN_DIR, String(session), file);
-  if (!fs.existsSync(full)) return reply.status(404).send();
-  reply.type('image/png');
-  return fs.createReadStream(full);
-});
 app.post('/api/sessions/:id/preview/capture', async (req) => {
-  const { url } = z.object({ url: z.string().url() }).parse(req.body);
-  return capturePreview(idParam.parse(req.params).id, url);
+  const { url, accountId } = z.object({ url: z.string().url(), accountId: z.number().int().optional() }).parse(req.body);
+  return capturePreview(idParam.parse(req.params).id, url, accountId);
 });
 
 // 리소스 정리
@@ -391,3 +406,10 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 await app.listen({ port: PORT, host: HOST });
+
+// 포트를 잡은 뒤에 정리한다. 도구를 실수로 두 번 띄우면 두 번째는 listen에서 실패하는데,
+// 그 전에 정리부터 하면 먼저 떠 있던 도구가 띄운 서버들을 남의 것으로 보고 꺼 버린다.
+const orphans = cleanupOrphans();
+if (orphans) app.log.info(`이전 실행에서 남은 서버 프로세스 ${orphans}개를 정리했습니다.`);
+startupSweep(orphans).catch((e) => app.log.error(e));
+scheduleCleanupPoll();

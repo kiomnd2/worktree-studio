@@ -37,6 +37,52 @@ const servers = new Map<number, Running>();
 // 서버가 꺼진 뒤에도 마지막 로그와 상태를 볼 수 있게 남겨 둔다.
 const lastRun = new Map<number, { status: ServerStatus; exitCode: number | null; port: number; logs: LogLine[] }>();
 
+/** 서버가 예기치 않게 멈췄거나 응답하지 않을 때 남기는 기록. 화면에 오류 요약으로 보여 준다. */
+export type ServerFailure = {
+  kind: 'exit' | 'unhealthy';
+  at: number;
+  exit_code: number | null;
+  command: string;
+  /** 한 줄 요약: 첫 오류 줄이나 종료 코드 */
+  summary: string;
+  /** 첫 오류 앞뒤와 마지막 줄들. 비밀값은 로그 단계에서 이미 가려져 있다. */
+  excerpt: string;
+};
+const failures = new Map<number, ServerFailure>();
+
+export function getFailure(worktreeId: number) { return failures.get(worktreeId) ?? null; }
+export function clearFailure(worktreeId: number, sessionId: number) {
+  failures.delete(worktreeId);
+  broadcast({ type: 'server.updated', sessionId });
+}
+
+/** 첫 오류 줄 앞뒤와 마지막 줄들을 모은다. 스택 트레이스는 첫 오류 뒤에 이어지는 경우가 많다. */
+function failureExcerpt(logs: LogLine[]): { summary: string | null; excerpt: string } {
+  const body = logs.filter((l) => l.stream !== 'sys');
+  const i = body.findIndex((l) => l.level === 'error');
+  const picked = new Set<LogLine>();
+  if (i >= 0) body.slice(Math.max(0, i - 5), i + 40).forEach((l) => picked.add(l));
+  body.slice(-40).forEach((l) => picked.add(l));
+  const lines = body.filter((l) => picked.has(l));
+  const out: string[] = [];
+  lines.forEach((l, k) => {
+    if (k > 0 && l.seq - lines[k - 1].seq > 1) out.push('…');
+    out.push(l.text);
+  });
+  // "Traceback ..."이나 "npm ERR! code ..." 같은 머리줄보다 실제 예외 줄(NameError: ..., TypeError: ...)이 요약으로 낫다.
+  const errs = body.filter((l) => l.level === 'error');
+  const head = errs.find((l) => /\b\w+(Error|Exception)\b.*:/.test(l.text) && !/Traceback/.test(l.text)) ?? errs[0];
+  return { summary: head ? head.text.trim().slice(0, 240) : null, excerpt: out.join('\n').slice(-12000) };
+}
+
+function recordFailure(r: Running, kind: ServerFailure['kind'], command: string) {
+  const { summary, excerpt } = failureExcerpt(r.logs);
+  failures.set(r.worktreeId, {
+    kind, at: Date.now(), exit_code: r.exitCode, command, excerpt,
+    summary: summary ?? (kind === 'exit' ? `종료 코드 ${r.exitCode}` : '헬스체크에 응답하지 않습니다'),
+  });
+}
+
 export type ServerView = {
   worktree_id: number;
   project_id: number;
@@ -53,6 +99,7 @@ export type ServerView = {
   health_path: string;
   /** 이 워크트리에서 아직 설치를 안 했으면 실행 전에 돌릴 설치 명령 */
   setup_pending: string | null;
+  failure: ServerFailure | null;
 };
 
 export function listServers(session: SessionView): ServerView[] {
@@ -77,6 +124,7 @@ export function listServers(session: SessionView): ServerView[] {
       cwd: w.path,
       health_path: project?.health_path || '/',
       setup_pending: project?.setup_cmd && !w.setup_done ? project.setup_cmd : null,
+      failure: failures.get(w.id) ?? null,
     };
   });
 }
@@ -107,6 +155,7 @@ const ERROR_PATTERNS = [
   /^\s*⨯/, // Next.js 오류 표시
   /Failed to compile|Module not found|Can't resolve '|Cannot find module|Unhandled Runtime Error|Build failed|Internal server error/i,
   /\berror TS\d+|\berror\s{2,}/, // tsc "error TS2322", eslint "  12:3  error  ..."
+  /No such file or directory|command not found|can't open file|is not recognized as|Permission denied/, // 셸·실행 단계 실패
 ];
 const WARN_PATTERNS = [
   /\bWARN(ING)?\b|\bWarning:/,
@@ -240,6 +289,7 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
     };
     servers.set(w.id, r);
     lastRun.delete(w.id);
+    failures.delete(w.id);
     db.prepare(`INSERT OR REPLACE INTO servers (worktree_id, port, pid, status) VALUES (?, ?, ?, 'starting')`).run(w.id, port, child.pid ?? null);
     if (setup) pushLine(r, 'sys', `이 워크트리에서 처음 실행해 의존성부터 설치합니다: ${setup}`);
     pushLine(r, 'sys', `$ ${cmd}`);
@@ -257,6 +307,7 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
         setStatus(r, 'running');
       } else if (r.status === 'starting' && Date.now() - r.startedAt > (setup ? SETUP_HEALTH_TIMEOUT_MS : HEALTH_TIMEOUT_MS)) {
         pushLine(r, 'sys', `${setup ? '15분' : '5분'} 안에 ${healthPath} 응답이 없습니다. 실행 명령이나 헬스체크 경로를 확인하세요.`);
+        recordFailure(r, 'unhealthy', cmd);
         setStatus(r, 'unhealthy');
       }
     }, 1500);
@@ -272,10 +323,12 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
       if (lines.length) broadcast({ type: 'log', sessionId, worktreeId: w.id, lines });
       servers.delete(w.id);
       lastRun.set(w.id, { status, exitCode: code, port, logs: r.logs });
+      if (!r.stopping) recordFailure(r, 'exit', cmd);
+      else failures.delete(w.id);
       db.prepare(`DELETE FROM servers WHERE worktree_id = ?`).run(w.id);
       broadcast({ type: 'server.updated', sessionId });
       if (!r.stopping && getSettings().notify.onServerFail) {
-        sendNotification(`${session.ticket} ${p.name} 서버가 멈췄습니다`, `종료 코드 ${code ?? signal}. 로그를 확인하세요.`, sessionId);
+        sendNotification(`${session.ticket} ${p.name} 서버가 멈췄습니다`, `${failures.get(w.id)?.summary ?? `종료 코드 ${code ?? signal}`}\n로그를 확인하세요.`, sessionId);
       }
     });
   }

@@ -10,9 +10,9 @@ export type Project = {
   health_path: string | null;
   port_env: string | null;
   api_env_key: string | null;
-  baseline_url: string | null;
   login_path: string | null;
   setup_cmd: string | null;
+  commit_template: string | null;
   current_branch: string | null;
   origin: string | null;
   worktrees: number;
@@ -42,8 +42,11 @@ export type Session = {
   primary_worktree_id: number | null;
   unread: number;
   updated_at: string;
-  account: { id: number; login: string } | null;
+  /** 배정한 순서대로. 역할이 다른 계정을 여러 개 쓸 수 있다. */
+  accounts: { id: number; login: string; note: string }[];
   worktrees: Worktree[];
+  queue: { id: number; text: string; image_count: number; created_at: string }[];
+  queue_paused: boolean;
 };
 
 export type StoredMessage = { id: number; kind: 'user' | 'sdk' | 'event'; payload: any; created_at: string };
@@ -64,37 +67,52 @@ export type ServerEvent =
   | { type: 'log'; sessionId: number; worktreeId: number; lines: LogLine[] }
   | { type: 'pr.updated'; sessionId: number }
   | { type: 'screens.updated'; sessionId: number }
-  | { type: 'cleanup.changed' };
+  | { type: 'cleanup.changed' }
+  | { type: 'approvals.updated'; sessionId: number };
+
+export type ChangeScope = 'base' | 'uncommitted';
+export type ChangedFile = {
+  path: string; old_path: string | null; status: 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked';
+  additions: number | null; deletions: number | null; binary: boolean;
+};
+export type WorktreeChanges = {
+  worktree_id: number; project_name: string; branch: string; base_branch: string; compare_ref: string; files: ChangedFile[]; error: string | null;
+};
+
+export type Approval = {
+  id: number; session_id: number; reason: string; created_at: number;
+  request:
+    | { kind: 'env'; project_id: number; project_name: string; profile_name: string; vars: { key: string; value: string; reason: string; secret: boolean; current: string | null }[] }
+    | { kind: 'account'; role: string };
+};
 
 export type PrState = 'OPEN' | 'MERGED' | 'CLOSED';
 export type PullRequest = { id: number; session_id: number; worktree_id: number; number: number; url: string; title: string; state: PrState; created_at: string };
 export type PrDraft = {
   worktree_id: number; project_name: string; project_kind: ProjectKind; branch: string; base_branch: string;
   dirty_files: string[]; commits_ahead: number; has_changes: boolean; check_cmd: string | null; template_path: string | null;
+  commit_template: { path: string; from: string | null } | null;
+  style_examples: { number: number; title: string; author: string; mine: boolean }[];
   existing_pr: { number: number; url: string } | null; commit_message: string; title: string; body: string;
 };
-export type PrStep = { name: 'commit' | 'check' | 'push' | 'pr'; status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; started_at: number | null; ended_at: number | null; detail: string | null; output: string | null };
+export type PrStep = { name: 'commit' | 'check' | 'push' | 'pr'; status: 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'ignored'; started_at: number | null; ended_at: number | null; detail: string | null; output: string | null };
 export type PrJob = {
-  session_id: number; status: 'running' | 'done' | 'failed'; started_at: number; ended_at: number | null; error: string | null; servers_stopped: boolean;
+  session_id: number; status: 'running' | 'done' | 'failed'; started_at: number; ended_at: number | null; error: string | null; servers_stopped: boolean; ignore_check_failures: boolean;
   repos: { worktree_id: number; project_name: string; pr_url: string | null; steps: PrStep[] }[];
 };
 
-export type Box = { x: number; y: number; w: number; h: number };
 export type ScreenCheck = {
-  id: number; session_id: number; route: string; reason: string; before_file: string | null; after_file: string | null; diff_file: string | null;
-  diff_ratio: number | null; boxes: Box[]; status: 'pending' | 'capturing' | 'changed' | 'same' | 'failed' | 'accepted'; error: string | null; captured_at: string | null;
+  id: number; session_id: number; route: string; reason: string; checked: boolean;
+  kind: 'direct' | 'indirect'; also_routes: string[]; manual: boolean;
 };
-export type ScreenState = {
-  checks: ScreenCheck[]; baseline_url: string | null; after_url: string | null; login_path: string | null; account: string | null;
-  viewport: { width: number; height: number }; capturing: boolean; detecting: boolean; fe_project: { id: number; name: string } | null;
-};
+export type ScreenState = { checks: ScreenCheck[]; preview_url: string | null; detecting: boolean; fe_project: { id: number; name: string } | null };
 
 export type CleanupState = 'running' | 'protected' | 'ready' | 'waiting_merge' | 'active';
 export type CleanupRow = {
   session_id: number; ticket: string; summary: string; workspace_name: string; closed: boolean; updated_at: string; idle_days: number;
   prs: { id: number; number: number; url: string; state: PrState }[]; servers: number;
   worktrees: { id: number; project_name: string; path: string; branch: string; exists: boolean; dirty: number; size_kb: number | null }[];
-  account: string | null; screens_kb: number; state: CleanupState; reason: string;
+  accounts: string[]; screens_kb: number; state: CleanupState; reason: string;
 };
 export type StartupReport = { at: string; orphans_killed: number; pruned: { project: string; lines: string[] }[]; accounts_released: number; missing_worktrees: number };
 export type CleanResult = { session_id: number; steps: { name: string; ok: boolean; detail: string }[]; error: string | null };
@@ -117,6 +135,7 @@ export type ServerView = {
   cwd: string;
   health_path: string;
   setup_pending: string | null;
+  failure: { kind: 'exit' | 'unhealthy'; at: number; exit_code: number | null; command: string; summary: string; excerpt: string } | null;
 };
 
 export type EnvSource = 'detected' | 'ai' | 'clone' | 'profile' | 'manual';

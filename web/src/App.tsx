@@ -9,8 +9,8 @@ import SettingsPage from './components/SettingsPage';
 import RightPanel from './components/RightPanel';
 import EnvPage from './components/EnvPage';
 import PrDialog from './components/PrDialog';
-import ScreensPage from './components/ScreensPage';
 import CleanupPage from './components/CleanupPage';
+import ChangesPage from './components/ChangesPage';
 import type { PullRequest, ServerView } from './types';
 
 type View =
@@ -18,7 +18,7 @@ type View =
   | { kind: 'settings' }
   | { kind: 'cleanup' }
   | { kind: 'env'; id: number; message?: string }
-  | { kind: 'screens'; id: number };
+  | { kind: 'changes'; id: number };
 
 function initialView(): View {
   const id = Number(new URLSearchParams(location.search).get('session'));
@@ -39,7 +39,7 @@ export default function App() {
   }, []);
   useEffect(reload, [reload]);
 
-  const selectedId = view.kind === 'session' || view.kind === 'env' || view.kind === 'screens' ? view.id : null;
+  const selectedId = view.kind === 'session' || view.kind === 'env' || view.kind === 'changes' ? view.id : null;
   const [servers, setServers] = useState<ServerView[]>([]);
   const reloadServers = useCallback(() => {
     if (selectedId) api.servers(selectedId).then(setServers).catch(() => setServers([]));
@@ -111,7 +111,11 @@ export default function App() {
                   {s.port && s.url ? ` :${s.port}` : ' 꺼짐'}
                 </span>
               ))}
-              {selected.account && <span className="chip-status">계정 {selected.account.login}</span>}
+              {selected.accounts.length > 0 && (
+                <span className="chip-status" title={selected.accounts.map((a) => `${a.login}${a.note ? ` (${a.note})` : ''}`).join('\n')}>
+                  {selected.accounts.length === 1 ? `계정 ${selected.accounts[0].login}` : `계정 ${selected.accounts.length}개`}
+                </span>
+              )}
               {prs.map((p) => (
                 <a key={p.id} className="chip-status" href={p.url} target="_blank" rel="noreferrer">
                   <span className={`srv-dot ${p.state === 'OPEN' ? 'running' : p.state === 'MERGED' ? 'merged' : 'idle'}`} aria-hidden="true" />
@@ -146,8 +150,8 @@ export default function App() {
           <main className="main scroll"><SettingsPage /></main>
         ) : view.kind === 'cleanup' ? (
           <CleanupPage onOpenSession={(id) => setView({ kind: 'session', id })} />
-        ) : view.kind === 'screens' && selected ? (
-          <ScreensPage key={selected.id} session={selected} onBack={() => setView({ kind: 'session', id: selected.id })} />
+        ) : view.kind === 'changes' && selected ? (
+          <ChangesPage key={selected.id} session={selected} onBack={() => setView({ kind: 'session', id: selected.id })} />
         ) : view.kind === 'env' && selected ? (
           <EnvPage
             key={`${selected.id}-${view.message ?? ''}`}
@@ -163,7 +167,7 @@ export default function App() {
               key={`panel-${selected.id}`}
               session={selected}
               onOpenEnv={(message) => setView({ kind: 'env', id: selected.id, message })}
-              onOpenScreens={() => setView({ kind: 'screens', id: selected.id })}
+              onOpenChanges={() => setView({ kind: 'changes', id: selected.id })}
               onClosed={() => { setView({ kind: 'session', id: null }); reload(); }}
             />
           </>

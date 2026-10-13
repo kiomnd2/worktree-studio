@@ -8,7 +8,8 @@ export type ServerEvent =
   | { type: 'log'; sessionId: number; worktreeId: number; lines: LogLine[] }
   | { type: 'pr.updated'; sessionId: number }
   | { type: 'screens.updated'; sessionId: number }
-  | { type: 'cleanup.changed' };
+  | { type: 'cleanup.changed' }
+  | { type: 'approvals.updated'; sessionId: number };
 
 export type LogLine = { seq: number; t: number; stream: 'out' | 'err' | 'sys'; level: 'error' | 'warn' | 'info'; text: string };
 

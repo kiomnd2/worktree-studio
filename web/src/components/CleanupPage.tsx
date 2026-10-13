@@ -116,7 +116,7 @@ export default function CleanupPage({ onOpenSession }: { onOpenSession: (id: num
                       ))}
                       {r.screens_kb > 0 && <div className="muted small">스크린샷 {kb(r.screens_kb)}</div>}
                     </td>
-                    <td>{r.account ?? <span className="muted">없음</span>}</td>
+                    <td>{r.accounts.length ? r.accounts.map((a) => <div key={a} className="mono small">{a}</div>) : <span className="muted">없음</span>}</td>
                     <td><span className={`pill ${STATE[r.state].cls}`}>{STATE[r.state].label}</span><div className="muted small">{r.reason}</div></td>
                   </tr>
                 ))}

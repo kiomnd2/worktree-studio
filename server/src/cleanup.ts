@@ -26,7 +26,7 @@ export type CleanupRow = {
   prs: Pick<PullRequestRow, 'id' | 'number' | 'url' | 'state'>[];
   servers: number;
   worktrees: { id: number; project_name: string; path: string; branch: string; exists: boolean; dirty: number; size_kb: number | null }[];
-  account: string | null;
+  accounts: string[];
   screens_kb: number;
   state: CleanupState;
   reason: string;
@@ -81,7 +81,7 @@ async function rowOf(s: SessionView): Promise<CleanupRow> {
     prs: prs.map((p) => ({ id: p.id, number: p.number, url: p.url, state: p.state })),
     servers: serverPorts(s.id).length,
     worktrees,
-    account: s.account?.login ?? null,
+    accounts: s.accounts.map((a) => a.login),
     screens_kb: Math.round(screenDirSize(s.id) / 1024),
     ...classify(s, prs, dirty),
   };
@@ -89,7 +89,7 @@ async function rowOf(s: SessionView): Promise<CleanupRow> {
 
 /** 정리 화면 목록. 닫았지만 워크트리 폴더나 계정이 남은 세션도 넣는다. */
 export async function listCleanup(): Promise<{ rows: CleanupRow[]; startup: StartupReport | null }> {
-  const sessions = listSessions(true).filter((s) => !s.closed || s.worktrees.some((w) => fs.existsSync(w.path)) || s.account || screenDirSize(s.id) > 0);
+  const sessions = listSessions(true).filter((s) => !s.closed || s.worktrees.some((w) => fs.existsSync(w.path)) || s.accounts.length > 0 || screenDirSize(s.id) > 0);
   return { rows: await Promise.all(sessions.map(rowOf)), startup };
 }
 

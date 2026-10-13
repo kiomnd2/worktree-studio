@@ -70,7 +70,7 @@ function ProjectsSection({ projects, run }: { projects: Project[]; run: Run }) {
       </div>
       <div className="table-wrap">
         <table className="projects-table">
-          <thead><tr><th>로컬 폴더</th><th>종류</th><th>명령 <span className="muted">({'{port}'} 자리에 포트)</span></th><th>변수와 헬스체크</th><th>화면 비교 <span className="muted">(FE)</span></th><th><span className="sr-only">저장, 삭제</span></th></tr></thead>
+          <thead><tr><th>로컬 폴더</th><th>종류</th><th>명령 <span className="muted">({'{port}'} 자리에 포트)</span></th><th>변수와 헬스체크</th><th>미리보기 로그인 <span className="muted">(FE)</span></th><th><span className="sr-only">저장, 삭제</span></th></tr></thead>
           <tbody>
             {projects.length === 0 && <tr><td colSpan={6} className="muted">등록된 프로젝트가 없습니다. 아래에 클론 폴더 경로를 넣으세요.</td></tr>}
             {projects.map((p) => <ProjectRow key={p.id} p={p} run={run} />)}
@@ -92,7 +92,7 @@ function ProjectRow({ p, run }: { p: Project; run: Run }) {
   const initial = {
     kind: p.kind, start_cmd: p.start_cmd ?? '', check_cmd: p.check_cmd ?? '', health_path: p.health_path ?? '',
     port_env: p.port_env ?? '', api_env_key: p.api_env_key ?? '',
-    baseline_url: p.baseline_url ?? '', login_path: p.login_path ?? '', setup_cmd: p.setup_cmd ?? '',
+    login_path: p.login_path ?? '', setup_cmd: p.setup_cmd ?? '', commit_template: p.commit_template ?? '',
   };
   const [draft, setDraft] = useState(initial);
   const dirty = (Object.keys(initial) as (keyof typeof initial)[]).some((k) => draft[k] !== initial[k]);
@@ -113,6 +113,7 @@ function ProjectRow({ p, run }: { p: Project; run: Run }) {
         <div className="stacked">
           <label className="mini"><span>설치</span><input aria-label={`${p.name} 설치 명령`} className="mono" placeholder="uv sync, npm ci" title="새 워크트리에서 처음 실행할 때 한 번 돌립니다" value={draft.setup_cmd} onChange={(e) => setDraft({ ...draft, setup_cmd: e.target.value })} /></label>
           <label className="mini"><span>실행</span><input aria-label={`${p.name} 실행 명령`} className="mono" value={draft.start_cmd} onChange={(e) => setDraft({ ...draft, start_cmd: e.target.value })} /></label>
+          <label className="mini"><span>커밋 템플릿</span><input aria-label={`${p.name} 커밋 메시지 템플릿 경로`} className="mono" placeholder="자동 (저장소에서 찾음)" title="저장소 기준 상대 경로나 절대 경로. 비우면 commit_template*.md, .gitmessage, git config commit.template 순으로 찾고, 없으면 같은 세션의 다른 저장소 것을 씁니다." value={draft.commit_template} onChange={(e) => setDraft({ ...draft, commit_template: e.target.value })} /></label>
           <label className="mini"><span>PR 전 검사</span><input aria-label={`${p.name} 검사 명령`} className="mono" placeholder="./gradlew build" value={draft.check_cmd} onChange={(e) => setDraft({ ...draft, check_cmd: e.target.value })} /></label>
         </div>
       </td>
@@ -126,13 +127,12 @@ function ProjectRow({ p, run }: { p: Project; run: Run }) {
       <td>
         {p.kind === 'be' ? <span className="muted small">BE는 해당 없음</span> : (
           <div className="stacked">
-            <label className="mini"><span>기준 서버</span><input aria-label={`${p.name} develop 기준 서버 주소`} className="mono" placeholder="http://dev.example.com" value={draft.baseline_url} onChange={(e) => setDraft({ ...draft, baseline_url: e.target.value })} /></label>
             <label className="mini"><span>로그인 경로</span><input aria-label={`${p.name} 로그인 경로`} className="mono" placeholder="/login (선택)" value={draft.login_path} onChange={(e) => setDraft({ ...draft, login_path: e.target.value })} /></label>
           </div>
         )}
       </td>
       <td className="actions">
-        {dirty && <button onClick={run(() => api.updateProject(p.id, { ...draft, start_cmd: draft.start_cmd || null, check_cmd: draft.check_cmd || null, health_path: draft.health_path || null, port_env: draft.port_env || null, api_env_key: draft.api_env_key || null, baseline_url: draft.baseline_url.trim() || null, login_path: draft.login_path.trim() || null, setup_cmd: draft.setup_cmd.trim() || null }), '저장했습니다.')}>저장</button>}
+        {dirty && <button onClick={run(() => api.updateProject(p.id, { ...draft, start_cmd: draft.start_cmd || null, check_cmd: draft.check_cmd || null, health_path: draft.health_path || null, port_env: draft.port_env || null, api_env_key: draft.api_env_key || null, login_path: draft.login_path.trim() || null, setup_cmd: draft.setup_cmd.trim() || null, commit_template: draft.commit_template.trim() || null }), '저장했습니다.')}>저장</button>}
         <button className="danger" onClick={() => { if (confirm(`${p.name} 등록을 지울까요? 폴더는 지우지 않습니다.`)) run(() => api.deleteProject(p.id))(); }}>삭제</button>
       </td>
     </tr>
@@ -224,7 +224,7 @@ function AccountsSection({ accounts, run }: { accounts: Account[]; run: Run }) {
       <div className="card-head">
         <div>
           <h2>테스트 계정 풀 <span className="muted small">{accounts.length}개 중 {used}개 사용 중</span></h2>
-          <p className="muted small">세션을 만들면 비어 있는 계정이 하나씩 배정되고, 세션을 닫으면 돌아옵니다. 같은 계정으로 두 곳에 로그인해 세션이 끊기는 일을 막습니다. 비밀번호는 암호화해 저장합니다.</p>
+          <p className="muted small">세션을 만들면 비어 있는 계정이 하나 배정되고, 역할이 다른 계정이 더 필요하면 세션 화면에서 추가합니다. 메모에 역할(사업자, 지자체, 관리자 등)을 적어 두면 Claude와 화면 촬영에서 골라 씁니다. 세션을 닫으면 돌아옵니다. 같은 계정으로 두 곳에 로그인해 세션이 끊기는 일을 막습니다. 비밀번호는 암호화해 저장합니다.</p>
         </div>
       </div>
       <div className="table-wrap">
@@ -239,7 +239,7 @@ function AccountsSection({ accounts, run }: { accounts: Account[]; run: Run }) {
                 <td><span className={`pill ${a.session_id ? 'accent' : 'ok'}`}>{a.session_id ? '사용 중' : '대기'}</span></td>
                 <td>{a.ticket ?? <span className="muted">없음</span>}</td>
                 <td className="actions">
-                  {a.session_id && <button onClick={run(() => api.releaseAccount(a.session_id!), '계정을 반납했습니다.')}>반납</button>}
+                  {a.session_id && <button onClick={run(() => api.releaseAccountById(a.id), '계정을 반납했습니다.')}>반납</button>}
                   <button className="danger" onClick={() => { if (confirm(`${a.login} 계정을 풀에서 지울까요?`)) run(() => api.deleteAccount(a.id))(); }}>삭제</button>
                 </td>
               </tr>
@@ -250,7 +250,7 @@ function AccountsSection({ accounts, run }: { accounts: Account[]; run: Run }) {
       <form className="add-row" onSubmit={(e) => { e.preventDefault(); run(async () => { await api.addAccount(login, password, note); setLogin(''); setPassword(''); setNote(''); }, '계정을 추가했습니다.')(); }}>
         <label className="field"><span>계정</span><input className="mono" autoComplete="off" value={login} placeholder="qa-03@60hz.io" onChange={(e) => setLogin(e.target.value)} /></label>
         <label className="field"><span>비밀번호</span><input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-        <label className="field grow"><span>메모 <span className="muted">(선택)</span></span><input value={note} placeholder="관리자 권한" onChange={(e) => setNote(e.target.value)} /></label>
+        <label className="field grow"><span>메모 <span className="muted">(선택)</span></span><input value={note} placeholder="역할 예: 사업자, 지자체(광역), 관리자" onChange={(e) => setNote(e.target.value)} /></label>
         <button type="submit" className="dark" disabled={!login.trim() || !password}>계정 추가</button>
       </form>
     </section>
