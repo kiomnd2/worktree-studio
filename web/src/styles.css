@@ -83,7 +83,15 @@ input.narrow { width: 120px; }
 .markdown :not(pre) > code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; }
 .tool { border: 1px solid var(--rule); border-radius: 6px; background: var(--soft); }
 .tool.failed { border-color: #E2A3A3; }
-.tool summary { padding: 7px 12px; cursor: pointer; font-family: var(--mono); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool summary { padding: 7px 12px; cursor: pointer; font-family: var(--mono); font-size: 12.5px; display: flex; align-items: baseline; gap: 6px; white-space: nowrap; list-style: none; }
+.tool summary::-webkit-details-marker { display: none; }
+.tool summary::before { content: '▸'; flex: none; color: var(--ink-2); }
+.tool[open] summary::before { content: '▾'; }
+.tool summary .tool-name { flex: none; }
+.tool summary .tool-arg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tool summary .tool-pending { flex: none; }
+.tool-time { flex: none; margin-left: auto; padding-left: 8px; font-family: var(--sans); font-size: 12px; color: var(--muted); }
+.tool-time.live { color: var(--ok-ink); }
 .tool-name { font-weight: 500; } .tool-arg { color: var(--ink-2); } .tool-pending { color: var(--ok-ink); }
 .tool pre { margin: 0; padding: 4px 12px 10px 26px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow-y: auto; color: var(--ink-2); }
 .msg-result { font-size: 12px; color: var(--muted); }
@@ -557,7 +565,7 @@ a.small-btn { display: inline-flex; align-items: center; text-decoration: none; 
 .docs-summary button:hover { background: var(--soft); }
 
 /* 패널 맨 위 메뉴 */
-.panel-menus { position: sticky; top: -14px; z-index: 15; margin: -14px -14px 0; padding: 10px 14px; background: var(--soft); border-bottom: 1px solid var(--rule); }
+.panel-menus { position: sticky; top: -14px; z-index: 5; margin: -14px -14px 0; padding: 10px 14px; background: var(--soft); border-bottom: 1px solid var(--rule); }
 .panel-menu-bar { display: flex; flex-wrap: wrap; gap: 6px; }
 .panel-menu-btn { min-height: 32px; padding: 0 10px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
 .panel-menu-btn.on { border-color: var(--accent); background: var(--accent-soft); }
@@ -583,3 +591,16 @@ a.small-btn { display: inline-flex; align-items: center; text-decoration: none; 
 /* 테스트를 실행할 수 없는 이유 */
 .test-blockers { border: 1px solid var(--warn-ink); border-radius: 8px; padding: 8px 12px; color: var(--warn-ink); background: var(--warn-soft); }
 .test-blockers ul { margin: 4px 0 0; padding-left: 18px; }
+
+.first-plan { display: flex; align-items: flex-start; gap: 8px; margin-top: -4px; }
+.first-plan input { min-height: 0; padding: 0; margin: 6px 0 0; flex: none; }
+
+/* Claude의 질문 */
+.question { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.question legend { font-weight: 500; padding: 0; margin-bottom: 6px; }
+.question-chip { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 500; margin-right: 4px; }
+.question-options { display: flex; flex-direction: column; gap: 4px; }
+.question-option { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border: 1px solid var(--rule); border-radius: 6px; cursor: pointer; }
+.question-option.on { border-color: var(--accent); background: var(--accent-soft); }
+.question-option input { min-height: 0; padding: 0; margin: 4px 0 0; flex: none; }
+.question-other { min-height: 34px; }

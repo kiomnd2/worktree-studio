@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { createSdkMcpServer, query, tool, type CanUseTool, type PermissionMode, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { cancelApprovals, requestAccount, requestEnv, requestPlanApproval } from './approvals.js';
+import { cancelApprovals, requestAccount, requestAnswers, requestEnv, requestPlanApproval, type Question } from './approvals.js';
 import { docsDir, listDocs, saveDoc } from './docs.js';
 import { CLAUDE_EXECUTABLE, UPLOAD_DIR } from './config.js';
 import { appendMessage, enqueuePrompt, getSession, isQueuePaused, queueLength, setQueuePaused, setSession, shiftQueue } from './sessions.js';
@@ -47,6 +47,7 @@ function buildSystemAppend(worktrees: { project_name: string; path: string; bran
     '개발 서버는 도구가 띄우고 관리한다. 직접 띄우거나 끄지 말고, 메시지의 <tool_context>에 적힌 주소로 확인한다.',
     '환경값은 도구가 관리한다. 필요한 값이 없거나 틀렸으면 .env 파일을 만들거나 고치지 말고 mcp__studio__request_env_values로 요청한다.',
     '다른 역할의 테스트 계정이 필요하면 mcp__studio__request_test_account로 요청한다. 두 요청 모두 사용자가 화면에서 확인해야 적용된다.',
+    '작업 중에 사용자가 정해야 할 것(요구사항이 애매함, 방법이 여럿임, 데이터를 바꿔도 되는지 등)이 생기면 추측하지 말고 AskUserQuestion으로 바로 묻는다. 답을 받으면 이어서 작업한다.',
     '계획서, 화면설계서처럼 사람이 읽을 산출물은 mcp__studio__save_doc으로 HTML 문서로 저장한다. 저장소에 문서 파일을 만들지 않는다.',
     '저장한 문서 목록은 메시지의 <tool_context>에 나온다. 사용자가 문서를 언급하면 그 경로의 파일을 Read로 읽어 따른다.',
   ].join('\n');
@@ -79,7 +80,7 @@ const KIND_LABEL = { plan: '계획서', screen: '화면설계서', test: '테스
 
 /** 계획 모드에서 따를 순서. 산출물을 HTML 문서로 남기고, 사용자가 확인한 뒤에만 실행한다. */
 const PLAN_INSTRUCTIONS = [
-  '1. 코드를 읽어 요청을 이해한다. 모르는 것은 추측하지 말고 계획서의 "확인할 것"에 적는다.',
+  '1. 코드를 읽어 요청을 이해한다. 계획을 정하는 데 필요한데 코드로 알 수 없는 것은 AskUserQuestion으로 바로 묻고, 답을 계획에 반영한다. 사소한 것은 계획서의 "확인할 것"에 적는다.',
   '2. 계획서를 mcp__studio__save_doc(kind "plan", name "plan")으로 저장한다. 목표, 바꿀 파일과 이유, 단계, 데이터·API 변경, 영향 범위, 테스트 방법, 확인할 것을 담는다.',
   '3. 화면이 새로 생기거나 바뀌면 화면마다 화면설계서를 mcp__studio__save_doc(kind "screen", name "screen-<영문 화면 이름>")으로 저장한다.',
   '   화면설계서는 실제 화면과 같은 배치의 와이어프레임(HTML/CSS로 그린 것)에 번호 표시를 달고, 옆이나 아래에 번호별 설명 표(항목, 동작, 검증 규칙, 데이터 출처)를 둔다.',
@@ -218,7 +219,14 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
    */
   const canUseTool: CanUseTool = async (toolName, input) => {
     if (toolName.startsWith('mcp__studio__')) return { behavior: 'allow', updatedInput: input };
-    if (toolName === 'AskUserQuestion') return { behavior: 'deny', message: '이 화면에는 선택지로 묻는 창이 없습니다. 물어볼 것은 답변 글에 적고 이번 작업을 마치세요. 사용자가 다음 프롬프트로 답합니다.' };
+    if (toolName === 'AskUserQuestion') {
+      // 화면에 질문 카드를 띄우고 답을 받아 이어서 작업한다.
+      const questions = Array.isArray(input.questions) ? (input.questions as Question[]) : [];
+      if (questions.length === 0) return { behavior: 'deny', message: '질문이 비어 있습니다.' };
+      const answers = await requestAnswers(sessionId, questions);
+      if (!answers) return { behavior: 'deny', message: '사용자가 질문에 답하지 않았습니다. 추측해서 진행하지 말고, 지금까지 한 것과 정해야 할 것을 정리해 이번 작업을 마치세요.' };
+      return { behavior: 'allow', updatedInput: { ...input, answers } };
+    }
     if (toolName !== 'ExitPlanMode') return { behavior: 'deny', message: '이 도구는 승인 화면이 없어 쓸 수 없습니다. 필요하면 사용자에게 직접 실행을 부탁하세요.' };
     let plan = typeof input.plan === 'string' ? input.plan : '';
     if (!plan && typeof input.planFilePath === 'string') { try { plan = fs.readFileSync(input.planFilePath, 'utf8'); } catch { /* 요약 없이 문서만 보여 준다 */ } }

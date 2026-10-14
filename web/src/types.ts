@@ -117,7 +117,8 @@ export type Approval = {
   request:
     | { kind: 'env'; project_id: number; project_name: string; profile_name: string; vars: { key: string; value: string; reason: string; secret: boolean; current: string | null }[] }
     | { kind: 'account'; role: string }
-    | { kind: 'plan'; plan: string; docs: { name: string; title: string; kind: DocKind }[] };
+    | { kind: 'plan'; plan: string; docs: { name: string; title: string; kind: DocKind }[] }
+    | { kind: 'question'; questions: { question: string; header: string; options: { label: string; description: string }[]; multiSelect: boolean }[] };
 };
 
 /** 개발 산출물. plan: 계획서, screen: 화면설계서, test: 테스트 결과서 */

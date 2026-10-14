@@ -154,11 +154,13 @@ app.post('/api/sessions', async (req) => {
     summary: z.string().default(''),
     branches: z.array(z.object({ projectId: z.number().int(), base: z.string().min(1), branch: z.string().min(1) })),
     firstPrompt: z.string().optional(),
+    /** 첫 프롬프트를 계획 모드로 보낼지. 계획서·화면설계서를 만들고 승인을 기다린다. */
+    firstPromptPlan: z.boolean().default(false),
   }).parse(req.body);
   const created = await createSession(body);
   assignAccount(created.id);
   const session = getSession(created.id)!;
-  if (body.firstPrompt?.trim()) submitPrompt(session.id, body.firstPrompt, []);
+  if (body.firstPrompt?.trim()) submitPrompt(session.id, body.firstPrompt, [], { plan: body.firstPromptPlan });
   return session;
 });
 app.get('/api/sessions/:id', async (req) => {
@@ -308,6 +310,7 @@ app.post('/api/approvals/:id', async (req) => {
     z.object({ approve: z.literal(false), feedback: z.string().max(4000).optional() }),
     z.object({
       approve: z.literal(true),
+      answers: z.record(z.string(), z.string()).optional(),
       vars: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
       target: z.enum(['session', 'profile']).optional(),
       account_id: z.number().int().optional(),

@@ -51,7 +51,7 @@ export const api = {
   session: (id: number) => request<Session>('GET', `/api/sessions/${id}`),
   createSession: (body: {
     workspaceId: number; ticket: string; summary: string;
-    branches: { projectId: number; base: string; branch: string }[]; firstPrompt?: string;
+    branches: { projectId: number; base: string; branch: string }[]; firstPrompt?: string; firstPromptPlan?: boolean;
   }) => request<Session>('POST', '/api/sessions', body),
   messages: (id: number) => request<StoredMessage[]>('GET', `/api/sessions/${id}/messages`),
   prompt: (id: number, text: string, images: { mediaType: string; data: string; name?: string }[], plan = false) =>
@@ -71,7 +71,7 @@ export const api = {
   runTests: (id: number, ids?: number[]) => request('POST', `/api/sessions/${id}/tests/run`, { ids }),
   stopTests: (id: number) => request('POST', `/api/sessions/${id}/tests/stop`),
   approvals: (id: number) => request<Approval[]>('GET', `/api/sessions/${id}/approvals`),
-  decideApproval: (approvalId: number, body: { approve: false; feedback?: string } | { approve: true; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number }) =>
+  decideApproval: (approvalId: number, body: { approve: false; feedback?: string } | { approve: true; answers?: Record<string, string>; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number }) =>
     request('POST', `/api/approvals/${approvalId}`, body),
   removeQueued: (id: number, queueId: number) => request('DELETE', `/api/sessions/${id}/queue/${queueId}`),
   resumeQueue: (id: number) => request('POST', `/api/sessions/${id}/queue/resume`),

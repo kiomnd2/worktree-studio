@@ -9,19 +9,21 @@ export type TicketChoice =
   | { mode: 'new'; prompt: string; drafted: boolean; summary: string; description: string; issuetype_id: string; fields: Record<string, string> }
   | { mode: 'manual'; key: string };
 
-type Props = { workspace: Workspace; jira: JiraStatus | null; value: TicketChoice; onChange: (v: TicketChoice) => void };
+type Props = { workspace: Workspace; jira: JiraStatus | null; value: TicketChoice; onChange: (v: TicketChoice) => void; onDrafting?: (drafting: boolean) => void };
 
 /**
  * 세션의 출발점인 Jira 티켓. 워크스페이스의 Jira 프로젝트에서 이미 있는 티켓을 고르거나 새로 만든다.
  * Jira가 연결되지 않았거나 프로젝트 키가 없으면 티켓 번호를 직접 넣는다.
  */
-export default function JiraTicketPicker({ workspace, jira, value, onChange }: Props) {
+export default function JiraTicketPicker({ workspace, jira, value, onChange, onDrafting }: Props) {
   const ready = Boolean(jira?.connected && workspace.jira_project);
   const [q, setQ] = useState('');
   const [issues, setIssues] = useState<JiraIssue[] | null>(null);
   const [types, setTypes] = useState<{ id: string; name: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [drafting, setDrafting] = useState(false);
+  // 제안을 받는 동안 바깥(워크스페이스 고르기 등)을 막을 수 있게 알린다.
+  useEffect(() => { onDrafting?.(drafting); }, [drafting]); // eslint-disable-line react-hooks/exhaustive-deps
   const [draftNote, setDraftNote] = useState<string | null>(null);
   const [required, setRequired] = useState<JiraRequiredField[]>([]);
   const [requiredError, setRequiredError] = useState<string | null>(null);
@@ -58,6 +60,16 @@ export default function JiraTicketPicker({ workspace, jira, value, onChange }: P
   }
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
+  // 방식을 오가도 적던 내용이 사라지지 않게 방식마다 마지막 상태를 기억해 두고 돌아오면 되살린다.
+  const kept = useRef<Partial<Record<'existing' | 'new', TicketChoice>>>({});
+  function switchMode(mode: 'existing' | 'new') {
+    if (value.mode === mode) return;
+    if (value.mode === 'existing' || value.mode === 'new') kept.current[value.mode] = value;
+    onChange(kept.current[mode] ?? (mode === 'existing'
+      ? { mode: 'existing', issue: null }
+      : { mode: 'new', prompt: '', drafted: false, summary: '', description: '', fields: {}, issuetype_id: (types.find((x) => x.name === '작업') ?? types[0])?.id ?? '' }));
+  }
+
   // 검색어가 바뀌면 잠깐 기다렸다가 찾는다. 비우면 내게 배정된 진행 중 티켓.
   useEffect(() => {
     if (!ready || value.mode !== 'existing') return;
@@ -73,10 +85,11 @@ export default function JiraTicketPicker({ workspace, jira, value, onChange }: P
     if (!ready) return;
     api.jiraIssueTypes(workspace.id).then((t) => {
       setTypes(t);
-      // 새 티켓의 기본 유형은 "작업"(없으면 Task, 그것도 없으면 첫 번째)
-      if (value.mode === 'new' && !value.issuetype_id) {
+      // 새 티켓의 기본 유형은 "작업"(없으면 Task, 그것도 없으면 첫 번째). 응답을 기다리는 동안 적은 내용을 덮지 않게 최신 값에 얹는다.
+      const cur = latest.current;
+      if (cur.mode === 'new' && !cur.issuetype_id) {
         const def = t.find((x) => x.name === '작업') ?? t.find((x) => /task/i.test(x.name)) ?? t[0];
-        if (def) onChange({ ...value, issuetype_id: def.id });
+        if (def) onChange({ ...cur, issuetype_id: def.id });
       }
     }).catch(() => setTypes([]));
   }, [ready, workspace.id, value.mode]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -102,9 +115,8 @@ export default function JiraTicketPicker({ workspace, jira, value, onChange }: P
     <fieldset className="box jira-picker">
       <legend>Jira 티켓 <span className="muted small">{workspace.jira_project} 프로젝트</span></legend>
       <div className="segmented" role="group" aria-label="티켓 고르기 방식">
-        <button type="button" aria-pressed={value.mode === 'existing'} className={value.mode === 'existing' ? 'on' : ''} onClick={() => onChange({ mode: 'existing', issue: null })}>이미 있는 티켓</button>
-        <button type="button" aria-pressed={value.mode === 'new'} className={value.mode === 'new' ? 'on' : ''}
-          onClick={() => onChange({ mode: 'new', prompt: '', drafted: false, summary: '', description: '', fields: {}, issuetype_id: (types.find((x) => x.name === '작업') ?? types[0])?.id ?? '' })}>새로 만들기</button>
+        <button type="button" aria-pressed={value.mode === 'existing'} className={value.mode === 'existing' ? 'on' : ''} disabled={drafting} onClick={() => switchMode('existing')}>이미 있는 티켓</button>
+        <button type="button" aria-pressed={value.mode === 'new'} className={value.mode === 'new' ? 'on' : ''} disabled={drafting} onClick={() => switchMode('new')}>새로 만들기</button>
       </div>
 
       {value.mode === 'existing' && (

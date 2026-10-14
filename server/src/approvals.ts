@@ -19,18 +19,21 @@ export type EnvRequest = {
 export type AccountRequest = { kind: 'account'; role: string };
 /** 계획 모드에서 Claude가 계획을 마치고 실행해도 되는지 묻는 것. docs는 이번 계획에서 저장한 산출물 이름 */
 export type PlanRequest = { kind: 'plan'; plan: string; docs: { name: string; title: string; kind: string }[] };
+/** 작업 중 Claude가 정해야 할 것을 묻는 것(AskUserQuestion). 답을 받을 때까지 기다린다. */
+export type Question = { question: string; header: string; options: { label: string; description: string }[]; multiSelect: boolean };
+export type QuestionRequest = { kind: 'question'; questions: Question[] };
 
 export type Approval = {
   id: number;
   session_id: number;
   reason: string;
-  request: EnvRequest | AccountRequest | PlanRequest;
+  request: EnvRequest | AccountRequest | PlanRequest | QuestionRequest;
   created_at: number;
 };
 
 export type Decision =
   | { approve: false; feedback?: string }
-  | { approve: true; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number };
+  | { approve: true; answers?: Record<string, string>; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number };
 
 const pending = new Map<number, { approval: Approval; resolve: (text: string) => void }>();
 /** 승인했을 때 실제로 적용하고 Claude에게 돌려줄 문장을 만드는 함수 */
@@ -57,6 +60,8 @@ function ask(sessionId: number, reason: string, request: Approval['request'], ap
     const s = getSession(sessionId);
     const body = request.kind === 'plan'
       ? '계획을 마쳤습니다. 산출물을 보고 실행할지 정해 주세요.'
+      : request.kind === 'question'
+      ? `Claude가 묻습니다: ${request.questions[0]?.question ?? ''}`
       : `Claude가 ${request.kind === 'env' ? `${request.project_name} 환경값 ${request.vars.map((v) => v.key).join(', ')}` : `테스트 계정 (${request.role})`}을(를) 요청했습니다.`;
     sendNotification(`${s?.ticket ?? ''} 확인이 필요합니다`, body, sessionId);
   });
@@ -144,6 +149,15 @@ export function requestPlanApproval(sessionId: number, plan: string, docs: PlanR
   let result: { approve: true } | { approve: false; feedback: string } = { approve: false, feedback: '' };
   return ask(sessionId, '', { kind: 'plan', plan, docs }, (d) => {
     result = d.approve ? { approve: true } : { approve: false, feedback: d.feedback?.trim() ?? '' };
+    return '';
+  }).then(() => result);
+}
+
+/** Claude의 질문에 대한 사용자 답. 질문 문장을 키로 한 답(여러 개 고르면 쉼표로 이음). 답하지 않으면 null. */
+export function requestAnswers(sessionId: number, questions: Question[]): Promise<Record<string, string> | null> {
+  let result: Record<string, string> | null = null;
+  return ask(sessionId, '', { kind: 'question', questions }, (d) => {
+    result = d.approve && d.answers ? d.answers : null;
     return '';
   }).then(() => result);
 }

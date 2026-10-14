@@ -17,6 +17,7 @@ export default function ApprovalCards({ session }: { session: Session }) {
     <section className="approvals" aria-label="확인이 필요한 요청">
       {list.map((a) => (a.request.kind === 'env' ? <EnvCard key={a.id} approval={a} />
         : a.request.kind === 'plan' ? <PlanCard key={a.id} approval={a} />
+        : a.request.kind === 'question' ? <QuestionCard key={a.id} approval={a} />
         : <AccountCard key={a.id} approval={a} workspaceId={session.workspace_id} />))}
     </section>
   );
@@ -81,6 +82,56 @@ function EnvCard({ approval }: { approval: Approval }) {
         <button className="small-btn primary" disabled={busy || chosen.length === 0 || empty} title={empty ? '고른 키에 값을 모두 넣어 주세요' : undefined}
           onClick={() => decide({ approve: true, target, vars: chosen.map((r) => ({ key: r.key, value: r.value })) })}>
           {chosen.length}개 승인
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 작업 중 Claude의 질문. 보기에서 고르거나 직접 적어 답하면 Claude가 그 답으로 이어서 작업한다. */
+function QuestionCard({ approval }: { approval: Approval }) {
+  const req = approval.request as Extract<Approval['request'], { kind: 'question' }>;
+  // 질문마다 고른 보기와 직접 적은 답
+  const [picked, setPicked] = useState<Record<number, string[]>>({});
+  const [other, setOther] = useState<Record<number, string>>({});
+  const { busy, error, decide } = useDecide(approval.id);
+  const answerOf = (i: number) => [...(picked[i] ?? []), ...(other[i]?.trim() ? [other[i].trim()] : [])].join(', ');
+  const allAnswered = req.questions.every((_, i) => answerOf(i));
+  const toggle = (i: number, label: string, multi: boolean) => setPicked((p) => {
+    const cur = p[i] ?? [];
+    return { ...p, [i]: multi ? (cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label]) : [label] };
+  });
+  return (
+    <div className="approval-card" role="alertdialog" aria-label="Claude의 질문">
+      <div className="approval-head">
+        <strong>Claude가 묻습니다</strong>
+        <span className="muted small">답하기 전까지 Claude가 기다립니다</span>
+      </div>
+      {req.questions.map((q, i) => (
+        <fieldset key={i} className="question">
+          <legend>{q.header && <span className="question-chip">{q.header}</span>} {q.question}{q.multiSelect && <span className="muted small"> (여러 개 고를 수 있음)</span>}</legend>
+          <div className="question-options">
+            {q.options.map((o) => {
+              const on = (picked[i] ?? []).includes(o.label);
+              return (
+                <label key={o.label} className={`question-option${on ? ' on' : ''}`}>
+                  <input type={q.multiSelect ? 'checkbox' : 'radio'} name={`q-${approval.id}-${i}`} checked={on}
+                    onChange={() => { toggle(i, o.label, q.multiSelect); if (!q.multiSelect) setOther((x) => ({ ...x, [i]: '' })); }} />
+                  <span><strong>{o.label}</strong>{o.description && <span className="muted small"> — {o.description}</span>}</span>
+                </label>
+              );
+            })}
+            <input className="question-other" placeholder="직접 입력" value={other[i] ?? ''} aria-label={`${q.question} 직접 입력`}
+              onChange={(e) => { const v = e.target.value; setOther((x) => ({ ...x, [i]: v })); if (!q.multiSelect && v.trim()) setPicked((p) => ({ ...p, [i]: [] })); }} />
+          </div>
+        </fieldset>
+      ))}
+      {error && <p className="error-text" role="alert">{error}</p>}
+      <div className="approval-actions">
+        <button className="small-btn" disabled={busy} onClick={() => decide({ approve: false })}>답하지 않기</button>
+        <button className="small-btn primary" disabled={busy || !allAnswered} title={allAnswered ? undefined : '모든 질문에 답해 주세요'}
+          onClick={() => decide({ approve: true, answers: Object.fromEntries(req.questions.map((q, i) => [q.question, answerOf(i)])) })}>
+          답하고 이어서 진행
         </button>
       </div>
     </div>

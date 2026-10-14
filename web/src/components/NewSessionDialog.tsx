@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { usableIn, type JiraStatus, type Session, type Workspace } from '../types';
 import JiraTicketPicker, { type TicketChoice } from './JiraTicketPicker';
@@ -17,19 +17,33 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
   // 1: 워크스페이스·Jira 티켓 정하기, 2: 정해진 티켓 번호로 브랜치·첫 프롬프트 정하기
   const [step, setStep] = useState<1 | 2>(1);
   const [firstPrompt, setFirstPrompt] = useState('');
+  // 첫 프롬프트는 기본으로 계획 먼저: 코드를 고치기 전에 계획서·화면설계서를 만들고 승인을 기다린다.
+  const [firstPlan, setFirstPlan] = useState(true);
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [freeAccounts, setFreeAccounts] = useState<number | null>(null);
+  const [drafting, setDrafting] = useState(false);
+  // 바깥을 누르거나 Esc를 잘못 눌러 적던 내용(하려는 일, 제안받은 제목·설명, 첫 프롬프트)을 잃지 않게 한 번 묻는다.
+  const dirty = step === 2 || Boolean(firstPrompt.trim())
+    || (choice.mode === 'new' && Boolean(choice.prompt.trim() || choice.summary.trim() || choice.description.trim()))
+    || (choice.mode === 'manual' && Boolean(choice.key.trim()));
+  function requestClose() {
+    if (busy || drafting) return;
+    if (dirty && !confirm('작성 중인 내용이 사라집니다. 창을 닫을까요?')) return;
+    onClose();
+  }
+  const closeRef = useRef(requestClose);
+  closeRef.current = requestClose;
 
   useEffect(() => {
     api.workspaces().then((ws) => { setWorkspaces(ws); if (ws[0]) setWorkspaceId(ws[0].id); }).catch((e) => setError(e.message));
     api.jiraStatus().then(setJira).catch(() => setJira(null));
 
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeRef.current(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, []);
 
   const workspace = useMemo(() => workspaces?.find((w) => w.id === workspaceId) ?? null, [workspaces, workspaceId]);
   const jiraReady = Boolean(jira?.connected && workspace?.jira_project);
@@ -106,6 +120,7 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
         ticket,
         summary,
         firstPrompt: firstPrompt.trim() || undefined,
+        firstPromptPlan: firstPlan,
         branches: rows.map((r) => ({ projectId: r.projectId, base: r.base, branch: r.touched ? r.branch : defaultBranch(ticket) })),
       });
       onCreated(s);
@@ -119,7 +134,7 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
   const picked = choice.mode === 'existing' ? choice.issue : null;
 
   return (
-    <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+    <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) requestClose(); }}>
       <form className="dialog" role="dialog" aria-modal="true" aria-labelledby="new-session-title" onSubmit={submit}>
         <div className="wizard-head">
           <h1 id="new-session-title">새 세션 만들기</h1>
@@ -134,11 +149,18 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
           <>
             <label className="field">
               <span>워크스페이스</span>
-              <select value={workspaceId ?? ''} disabled={busy} onChange={(e) => setWorkspaceId(Number(e.target.value))}>
+              <select value={workspaceId ?? ''} disabled={busy || drafting} title={drafting ? '티켓 내용을 만드는 중에는 워크스페이스를 바꿀 수 없습니다' : undefined}
+                onChange={(e) => {
+                  // 워크스페이스를 바꾸면 고른 티켓과 적던 티켓 내용이 지워진다.
+                  const filled = (choice.mode === 'new' && Boolean(choice.prompt.trim() || choice.summary.trim() || choice.description.trim()))
+                    || (choice.mode === 'existing' && Boolean(choice.issue)) || (choice.mode === 'manual' && Boolean(choice.key.trim()));
+                  if (filled && !confirm('워크스페이스를 바꾸면 고른 티켓과 적던 내용이 지워집니다. 바꿀까요?')) return;
+                  setWorkspaceId(Number(e.target.value));
+                }}>
                 {workspaces?.map((w) => <option key={w.id} value={w.id}>{w.name} ({w.projects.map((p) => p.name).join(' + ')}){w.jira_project ? ` · Jira ${w.jira_project}` : ''}</option>)}
               </select>
             </label>
-            {workspace && <JiraTicketPicker workspace={workspace} jira={jira} value={choice} onChange={(v) => { setChoice(v); setSummaryEdit(null); }} />}
+            {workspace && <JiraTicketPicker key={workspace.id} workspace={workspace} jira={jira} value={choice} onChange={(v) => { setChoice(v); setSummaryEdit(null); }} onDrafting={setDrafting} />}
           </>
         ) : (
           <>
@@ -185,14 +207,20 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
               <span>첫 프롬프트 <span className="muted">(선택)</span></span>
               <textarea rows={4} value={firstPrompt} placeholder="비워 두면 워크트리만 만들고 대기합니다." onChange={(e) => setFirstPrompt(e.target.value)} />
             </label>
+            <label className="first-plan">
+              <input type="checkbox" checked={firstPlan} disabled={!firstPrompt.trim()} onChange={(e) => setFirstPlan(e.target.checked)} />
+              <span>
+                계획 먼저 <span className="muted small">— 코드를 고치기 전에 계획서와 화면설계서를 만들고, 승인한 뒤에 실행합니다</span>
+              </span>
+            </label>
           </>
         )}
         {error && <p className="error-text" role="alert">{error}</p>}
         <div className="dialog-actions">
           {step === 2
             ? <button type="button" disabled={busy} onClick={() => { setError(null); setStep(1); }}>← 이전</button>
-            : <button type="button" disabled={busy} onClick={onClose}>취소</button>}
-          <button type="submit" className="primary" disabled={busy || !workspace}>
+            : <button type="button" disabled={busy || drafting} onClick={requestClose}>취소</button>}
+          <button type="submit" className="primary" disabled={busy || drafting || !workspace}>
             {busy ? stage ?? '만드는 중' : step === 1 ? (choice.mode === 'new' ? '티켓 만들고 다음' : '다음') : '세션 만들기'}
           </button>
         </div>

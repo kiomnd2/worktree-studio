@@ -7,7 +7,7 @@ import type { Session, StoredMessage } from '../types';
 import PromptInput from './PromptInput';
 import ApprovalCards from './ApprovalCards';
 
-type ToolResult = { text: string; isError: boolean };
+type ToolResult = { text: string; isError: boolean; at: number };
 
 function toolSummary(name: string, input: any): string {
   if (!input || typeof input !== 'object') return '';
@@ -31,6 +31,26 @@ function resultText(content: unknown): string {
 function formatDuration(ms: number) {
   const s = Math.round(ms / 1000);
   return s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`;
+}
+
+/** 저장 시각(SQLite, UTC 'YYYY-MM-DD HH:MM:SS')을 ms로. 초 단위라 도구 시간은 1초 단위로 보인다. */
+const atOf = (createdAt: string) => Date.parse(`${createdAt.replace(' ', 'T')}Z`);
+
+/** 도구 하나가 걸린 시간. 1초 안에 끝난 것은 따로 적는다. */
+function toolDuration(ms: number) {
+  return ms < 1000 ? '1초 미만' : formatDuration(ms);
+}
+
+/** 작업 중일 때만 1초마다 다시 그려 진행 시간을 올린다. */
+function useNow(active: boolean) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [active]);
+  return now;
 }
 
 export default function ChatView({ session }: { session: Session }) {
@@ -72,11 +92,17 @@ export default function ChatView({ session }: { session: Session }) {
       const content = m.payload.message?.content;
       if (!Array.isArray(content)) continue;
       for (const block of content) {
-        if (block?.type === 'tool_result') map.set(block.tool_use_id, { text: resultText(block.content), isError: Boolean(block.is_error) });
+        if (block?.type === 'tool_result') map.set(block.tool_use_id, { text: resultText(block.content), isError: Boolean(block.is_error), at: atOf(m.created_at) });
       }
     }
     return map;
   }, [messages]);
+
+  const running = session.status === 'running';
+  const now = useNow(running);
+  // 이번 작업은 마지막으로 보낸 프롬프트부터 센다.
+  const lastUser = [...messages].reverse().find((m) => m.kind === 'user');
+  const runStart = running && lastUser ? atOf(lastUser.created_at) : null;
 
   return (
     <main className="main chat">
@@ -92,8 +118,13 @@ export default function ChatView({ session }: { session: Session }) {
             <ul>{session.worktrees.map((w) => <li key={w.id}><code>{w.path}</code></li>)}</ul>
           </div>
         )}
-        {messages.map((m) => <MessageItem key={m.id} message={m} toolResults={toolResults} />)}
-        {session.status === 'running' && <div className="working" aria-live="polite"><span className="spinner" aria-hidden="true" />작업 중</div>}
+        {messages.map((m) => <MessageItem key={m.id} message={m} toolResults={toolResults} now={runStart !== null && atOf(m.created_at) >= runStart ? now : null} />)}
+        {running && (
+          <div className="working" aria-live="off">
+            <span className="spinner" aria-hidden="true" />작업 중
+            {runStart !== null && <span className="muted small">· {formatDuration(Math.max(0, now - runStart))}째</span>}
+          </div>
+        )}
       </div>
       <ApprovalCards session={session} />
       <PromptInput session={session} />
@@ -101,7 +132,7 @@ export default function ChatView({ session }: { session: Session }) {
   );
 }
 
-function MessageItem({ message, toolResults }: { message: StoredMessage; toolResults: Map<string, ToolResult> }) {
+function MessageItem({ message, toolResults, now }: { message: StoredMessage; toolResults: Map<string, ToolResult>; now: number | null }) {
   const p = message.payload;
   if (message.kind === 'user') {
     return (
@@ -152,9 +183,17 @@ function MessageItem({ message, toolResults }: { message: StoredMessage; toolRes
           }
           if (b.type === 'tool_use') {
             const r = toolResults.get(b.id);
+            const start = atOf(message.created_at);
+            // 끝난 도구는 걸린 시간, 실행 중인 도구는 지금까지 흐른 시간. 작업이 끝났는데 결과가 없으면(중단 등) 비운다.
+            const took = r ? toolDuration(r.at - start) : now !== null ? `${formatDuration(Math.max(0, now - start))}째` : '';
             return (
               <details key={i} className={`tool${r?.isError ? ' failed' : ''}`}>
-                <summary><span className="tool-name">{b.name}</span> <span className="tool-arg">{toolSummary(b.name, b.input)}</span>{!r && <span className="tool-pending"> 실행 중</span>}</summary>
+                <summary>
+                  <span className="tool-name">{b.name}</span>
+                  <span className="tool-arg">{toolSummary(b.name, b.input)}</span>
+                  {!r && now !== null && <span className="tool-pending">실행 중</span>}
+                  {took && <span className={`tool-time${r ? '' : ' live'}`}>{took}</span>}
+                </summary>
                 {r && <pre>{r.text.length > 6000 ? `${r.text.slice(0, 6000)}\n… (${r.text.length - 6000}자 생략)` : r.text || '(출력 없음)'}</pre>}
               </details>
             );
