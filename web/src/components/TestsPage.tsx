@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { attachToPrompt, insertIntoPrompt, useServerEvents } from '../events';
+import ApprovalCards from './ApprovalCards';
 import { usableIn, type Account, type Session, type TestCase, type TestState } from '../types';
 
 const STATUS: Record<TestCase['status'], { label: string; cls: string }> = {
@@ -60,6 +61,7 @@ export default function TestsPage({ session, onBack }: { session: Session; onBac
             <button onClick={onBack}>세션 화면으로</button>
           </div>
         </div>
+        <ApprovalCards session={session} only="testdata" />
 
         <div className="card tests-head">
           <p className="muted small">

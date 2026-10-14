@@ -16,6 +16,7 @@ import { listBranches } from './git.js';
 import { closeSession, createSession, getSession, listMessages, listSessions, removeQueued, setSession } from './sessions.js';
 import { resumeQueue, runPrompt, stopPrompt, submitPrompt } from './claude.js';
 import { decide, listApprovals } from './approvals.js';
+import { clearTasks, getTasks } from './tasks.js';
 import { deleteDoc, docHtml, listArchive, listDocs, revealArchive } from './docs.js';
 import { fileDiff, sessionChanges } from './changes.js';
 import { draftTicket } from './ticketdraft.js';
@@ -304,6 +305,8 @@ app.delete('/api/sessions/:id/docs/:name', async (req) => {
   return { ok: true };
 });
 // Claude가 프롬프트 중에 요청한 환경값·테스트 계정 확인
+app.get('/api/sessions/:id/tasks', async (req) => getTasks(idParam.parse(req.params).id));
+app.delete('/api/sessions/:id/tasks', async (req) => { clearTasks(idParam.parse(req.params).id); return { ok: true }; });
 app.get('/api/sessions/:id/approvals', async (req) => listApprovals(idParam.parse(req.params).id));
 app.post('/api/approvals/:id', async (req) => {
   const d = z.union([
@@ -311,6 +314,7 @@ app.post('/api/approvals/:id', async (req) => {
     z.object({
       approve: z.literal(true),
       answers: z.record(z.string(), z.string()).optional(),
+      plan: z.string().max(4000).optional(),
       vars: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
       target: z.enum(['session', 'profile']).optional(),
       account_id: z.number().int().optional(),

@@ -6,6 +6,7 @@ import { openDoc, useServerEvents } from '../events';
 import type { Session, StoredMessage } from '../types';
 import PromptInput from './PromptInput';
 import ApprovalCards from './ApprovalCards';
+import TaskBar from './TaskBar';
 
 type ToolResult = { text: string; isError: boolean; at: number };
 
@@ -106,6 +107,7 @@ export default function ChatView({ session }: { session: Session }) {
 
   return (
     <main className="main chat">
+      <TaskBar sessionId={session.id} running={running} />
       <div
         className="stream"
         ref={scroller}
@@ -165,6 +167,16 @@ function MessageItem({ message, toolResults, now }: { message: StoredMessage; to
             return (
               <div key={i} className={`markdown${p.error ? ' error-text' : ''}`}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{b.text}</ReactMarkdown>
+              </div>
+            );
+          }
+          if (b.type === 'tool_use' && b.name === 'mcp__studio__set_tasks') {
+            // 목록은 위쪽 작업 목록에 늘 보이니 대화에는 한 줄만 남긴다.
+            const ts: { status: string }[] = Array.isArray(b.input?.tasks) ? b.input.tasks : [];
+            const doing = (b.input?.tasks ?? []).find((t: any) => t.status === 'doing')?.title;
+            return (
+              <div key={i} className="task-update muted small">
+                작업 목록 {ts.filter((t) => t.status === 'done' || t.status === 'skipped').length}/{ts.length}{doing ? ` · 지금: ${doing}` : ''}
               </div>
             );
           }

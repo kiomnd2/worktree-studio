@@ -5,6 +5,7 @@ import { createSdkMcpServer, query, tool, type CanUseTool, type PermissionMode, 
 import { z } from 'zod';
 import { cancelApprovals, requestAccount, requestAnswers, requestEnv, requestPlanApproval, type Question } from './approvals.js';
 import { docsDir, listDocs, saveDoc } from './docs.js';
+import { setTasks, startFirstTask, tasksForContext } from './tasks.js';
 import { CLAUDE_EXECUTABLE, UPLOAD_DIR } from './config.js';
 import { appendMessage, enqueuePrompt, getSession, isQueuePaused, queueLength, setQueuePaused, setSession, shiftQueue } from './sessions.js';
 import { getSettings } from './settings.js';
@@ -50,6 +51,8 @@ function buildSystemAppend(worktrees: { project_name: string; path: string; bran
     '작업 중에 사용자가 정해야 할 것(요구사항이 애매함, 방법이 여럿임, 데이터를 바꿔도 되는지 등)이 생기면 추측하지 말고 AskUserQuestion으로 바로 묻는다. 답을 받으면 이어서 작업한다.',
     '계획서, 화면설계서처럼 사람이 읽을 산출물은 mcp__studio__save_doc으로 HTML 문서로 저장한다. 저장소에 문서 파일을 만들지 않는다.',
     '저장한 문서 목록은 메시지의 <tool_context>에 나온다. 사용자가 문서를 언급하면 그 경로의 파일을 Read로 읽어 따른다.',
+    '<tool_context>에 작업 목록이 있으면 그 목록대로 진행한다. 항목을 시작하기 전에 doing으로, 끝나면 바로 done으로 mcp__studio__set_tasks를 불러 바꾼다(목록 전체를 보낸다). doing은 지금 하는 한 항목만 둔다. 하지 않기로 한 항목은 skipped와 이유를 note에 적는다.',
+    '작업 목록은 사용자 화면에 항상 보인다. 계획에 없던 일을 하게 되면 목록에 항목을 더한다. 할 일이 여럿인 큰 작업은 계획 모드가 아니어도 목록을 만들어 진행한다.',
   ].join('\n');
 }
 
@@ -64,6 +67,8 @@ function runtimeContext(sessionId: number): string | null {
   } else {
     lines.push('지금 실행 중인 개발 서버가 없다. 화면 확인이 필요하면 사용자에게 서버 실행을 부탁한다.');
   }
+  const tasks = tasksForContext(sessionId);
+  if (tasks) lines.push(tasks);
   const docs = listDocs(sessionId);
   if (docs.length) {
     lines.push('이 세션의 산출물 (계획서·화면설계서·테스트 결과서, 필요하면 Read로 읽는다):');
@@ -86,7 +91,8 @@ const PLAN_INSTRUCTIONS = [
   '   화면설계서는 실제 화면과 같은 배치의 와이어프레임(HTML/CSS로 그린 것)에 번호 표시를 달고, 옆이나 아래에 번호별 설명 표(항목, 동작, 검증 규칙, 데이터 출처)를 둔다.',
   '   바뀌는 화면이면 지금 화면과 달라지는 부분을 표시한다. 상태(빈 목록, 오류, 로딩, 권한별 차이)가 있으면 함께 그린다.',
   '4. 문서는 한국어로 쓰고, 외부 파일이나 스크립트 없이 CSS를 <style>에 넣은 완결된 HTML로 만든다. 계획서에서 화면설계서를 이름으로 언급한다.',
-  '5. 다 저장했으면 ExitPlanMode로 계획 요약을 보낸다. 사용자가 문서를 보고 승인해야 실행한다. 고쳐 달라는 의견이 오면 문서를 같은 name으로 다시 저장하고 다시 ExitPlanMode를 부른다.',
+  '5. 계획의 실행 단계를 mcp__studio__set_tasks로 작업 목록에 올린다(모두 todo). 한 항목은 확인할 수 있는 한 가지 일로, 보통 3~10개. 사용자가 승인 뒤에도 이 목록으로 진행을 본다. 목록에 없는 준비 작업(확인, 조사)도 해야 하면 그것도 항목으로 넣는다.',
+  '6. 다 저장했으면 ExitPlanMode로 계획 요약을 보낸다. 사용자가 문서를 보고 승인해야 실행한다. 고쳐 달라는 의견이 오면 문서를 같은 name으로 다시 저장하고 다시 ExitPlanMode를 부른다.',
 ].join('\n');
 
 /**
@@ -148,6 +154,25 @@ function studioTools(sessionId: number) {
           reason: z.string().describe('필요한 이유 한 문장'),
         },
         async (args) => text(await requestAccount(sessionId, args.role, args.reason)),
+      ),
+      tool(
+        'set_tasks',
+        '작업 목록을 통째로 바꾼다. 계획을 세우면 단계를 올리고, 진행하면서 상태를 바꿔 다시 보낸다. 사용자 화면 위쪽에 항상 보인다.',
+        {
+          title: z.string().describe('목록 제목. 보통 계획 제목'),
+          tasks: z.array(z.object({
+            title: z.string().describe('한 가지 일. 예: "RegoSellOrderFacade.buyRequest에 수량 검증 추가"'),
+            status: z.enum(['todo', 'doing', 'done', 'skipped']),
+            note: z.string().optional().describe('진행 메모나 하지 않은 이유. 짧게'),
+          })),
+        },
+        async (args) => {
+          const l = setTasks(sessionId, args.title, args.tasks);
+          const done = l.tasks.filter((t) => t.status === 'done').length;
+          return text(`작업 목록을 바꿨습니다 (${done}/${l.tasks.length} 완료).`);
+        },
+        // 저장소를 건드리지 않으므로 계획 모드에서도 쓸 수 있다.
+        { annotations: { readOnlyHint: true } },
       ),
       tool(
         'save_doc',
@@ -236,6 +261,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
     const docs = listDocs(sessionId).filter((d) => saved?.has(d.name)).map((d) => ({ name: d.name, title: d.title, kind: d.kind }));
     const d = await requestPlanApproval(sessionId, plan, docs);
     if (d.approve) {
+      startFirstTask(sessionId);
       const next: PermissionMode = mode === 'plan' ? 'default' : mode;
       return { behavior: 'allow', updatedInput: input, updatedPermissions: [{ type: 'setMode', mode: next, destination: 'session' }] };
     }
@@ -263,7 +289,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
         abortController: abort,
         pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
         mcpServers: { studio: studioTools(sessionId) },
-        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc'],
+        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks'],
       },
     });
 

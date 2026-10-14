@@ -7,15 +7,17 @@ import { DOC_KIND } from './DocsPage';
 import { usableIn, type Account, type Approval, type Session } from '../types';
 
 /** Claude가 프롬프트 중에 요청한 환경값·테스트 계정. 사용자가 확인해야 적용되고, 그동안 Claude는 기다린다. */
-export default function ApprovalCards({ session }: { session: Session }) {
+export default function ApprovalCards({ session, only }: { session: Session; only?: Approval['request']['kind'] }) {
   const [list, setList] = useState<Approval[]>([]);
   const reload = useCallback(() => { api.approvals(session.id).then(setList).catch(() => setList([])); }, [session.id]);
   useEffect(reload, [reload]);
   useServerEvents((e) => { if (e.type === 'approvals.updated' && e.sessionId === session.id) reload(); });
-  if (list.length === 0) return null;
+  const shown = only ? list.filter((a) => a.request.kind === only) : list;
+  if (shown.length === 0) return null;
   return (
     <section className="approvals" aria-label="확인이 필요한 요청">
-      {list.map((a) => (a.request.kind === 'env' ? <EnvCard key={a.id} approval={a} />
+      {shown.map((a) => (a.request.kind === 'env' ? <EnvCard key={a.id} approval={a} />
+        : a.request.kind === 'testdata' ? <TestDataCard key={a.id} approval={a} />
         : a.request.kind === 'plan' ? <PlanCard key={a.id} approval={a} />
         : a.request.kind === 'question' ? <QuestionCard key={a.id} approval={a} />
         : <AccountCard key={a.id} approval={a} workspaceId={session.workspace_id} />))}
@@ -133,6 +135,32 @@ function QuestionCard({ approval }: { approval: Approval }) {
           onClick={() => decide({ approve: true, answers: Object.fromEntries(req.questions.map((q, i) => [q.question, answerOf(i)])) })}>
           답하고 이어서 진행
         </button>
+      </div>
+    </div>
+  );
+}
+
+/** 화면 테스트가 진행할 데이터가 없어 막혔다. 만드는 방법을 확인(필요하면 고쳐서)하고 승인하면 만들고 다시 돌린다. */
+function TestDataCard({ approval }: { approval: Approval }) {
+  const req = approval.request as Extract<Approval['request'], { kind: 'testdata' }>;
+  const [plan, setPlan] = useState(req.plan);
+  const { busy, error, decide } = useDecide(approval.id);
+  return (
+    <div className="approval-card" role="alertdialog" aria-label="테스트 데이터 만들기">
+      <div className="approval-head">
+        <strong>테스트를 진행할 데이터가 없습니다</strong>
+        <span className="muted small">정하기 전까지 테스트가 기다립니다</span>
+      </div>
+      <p className="small approval-reason"><strong>{req.case_title}</strong> — {req.need}</p>
+      <label className="field">
+        <span>만드는 방법{req.role && <span className="muted small"> · {req.role} 계정으로</span>} <span className="muted small">(고칠 수 있음)</span></span>
+        <textarea rows={Math.min(8, Math.max(3, plan.split('\n').length + 1))} value={plan} disabled={busy} onChange={(e) => setPlan(e.target.value)} />
+      </label>
+      <p className="muted small">승인하면 테스트 서버의 데이터가 실제로 만들어집니다.</p>
+      {error && <p className="error-text" role="alert">{error}</p>}
+      <div className="approval-actions">
+        <button className="small-btn" disabled={busy} onClick={() => decide({ approve: false })}>만들지 않기</button>
+        <button className="small-btn primary" disabled={busy || !plan.trim()} onClick={() => decide({ approve: true, plan })}>만들고 다시 실행</button>
       </div>
     </div>
   );

@@ -13,6 +13,7 @@ import { broadcast } from './hub.js';
 import { sendNotification } from './notify.js';
 import { changedDiff, changedFiles, feWorktree } from './screens.js';
 import { saveDoc } from './docs.js';
+import { cancelApprovals, requestTestData } from './approvals.js';
 
 /**
  * 개발한 기능의 테스트 케이스를 만들고, 브라우저로 직접 돌려 보며 화면을 찍는다.
@@ -271,6 +272,16 @@ const RESULT_SCHEMA = {
   },
   required: ['status', 'summary', 'steps'],
 };
+/** 진행할 데이터가 없어 막혔을 때만 채운다. 무엇이 없고, 화면에서 어떻게 만들 수 있는지. */
+const NEEDS_DATA = {
+  type: 'object',
+  properties: { need: { type: 'string' }, plan: { type: 'string' }, role: { type: 'string' } },
+  required: ['need', 'plan', 'role'],
+};
+const RESULT_SCHEMA_WITH_NEEDS = { ...RESULT_SCHEMA, properties: { ...RESULT_SCHEMA.properties, needs_data: NEEDS_DATA } };
+
+type Prep = { need: string; plan: string };
+type CaseResult = { status: TestStatus; summary: string; needs?: { need: string; plan: string; role: string } };
 
 /** 고른 케이스를 차례로 실행한다. 계정이 필요한데 확인되지 않은 케이스가 있으면 시작하지 않는다. */
 export function runTests(sessionId: number, ids?: number[]) {
@@ -293,7 +304,14 @@ export function runTests(sessionId: number, ids?: number[]) {
     let pass = 0, fail = 0;
     for (const t of targets) {
       if (abort.signal.aborted) break;
-      const r = await runCase(sessionId, t, state.app_url!, state.login_path, abort).catch((err) => ({ status: 'error' as const, summary: (err as Error).message }));
+      const go = (prep?: Prep) => runCase(sessionId, t, state.app_url!, state.login_path, abort, prep)
+        .catch((err): CaseResult => ({ status: 'error', summary: (err as Error).message }));
+      let r = await go();
+      // 진행할 데이터가 없어 막혔으면 만들어도 되는지 묻고, 승인하면 그 데이터를 만든 뒤 한 번 더 돌린다.
+      if (r.needs && !abort.signal.aborted) {
+        const plan = await requestTestData(sessionId, { case_id: t.id, case_title: t.title, ...r.needs });
+        if (plan && !abort.signal.aborted) r = await go({ need: r.needs.need, plan });
+      }
       if (r.status === 'pass') pass++; else fail++;
     }
     if (abort.signal.aborted) db.prepare(`UPDATE test_cases SET status = 'draft' WHERE session_id = ? AND status IN ('queued', 'running')`).run(sessionId);
@@ -309,16 +327,26 @@ export function runTests(sessionId: number, ids?: number[]) {
 
 export function stopTests(sessionId: number) {
   running.get(sessionId)?.abort();
+  cancelApprovals(sessionId, 'testdata');
 }
 
-async function runCase(sessionId: number, t: TestCase, appUrl: string, loginPath: string | null, abort: AbortController): Promise<{ status: TestStatus; summary: string }> {
+/** 세션에서 역할마다 확인된 계정. 테스트 데이터를 만들 때 다른 역할로 로그인해야 할 수 있다. */
+function roleAccounts(sessionId: number) {
+  return testState(sessionId).roles.flatMap((r) => {
+    const acc = r.account ? accountOf(sessionId, r.account.id) : null;
+    return acc ? [{ role: r.role, login: acc.login, password: acc.password }] : [];
+  });
+}
+
+async function runCase(sessionId: number, t: TestCase, appUrl: string, loginPath: string | null, abort: AbortController, prep?: Prep): Promise<CaseResult> {
   db.prepare(`UPDATE test_cases SET status = 'running', summary = NULL, results = '[]', shots = '[]' WHERE id = ?`).run(t.id);
   changed(sessionId);
   const dir = path.join(TEST_DIR, String(sessionId), String(t.id));
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
   const account = t.role && t.account_id ? accountOf(sessionId, t.account_id) : null;
-  const secrets = account ? [account.password] : [];
+  const others = roleAccounts(sessionId);
+  const secrets = [...new Set([...(account ? [account.password] : []), ...(prep ? others.map((o) => o.password) : [])])];
   const prompt = [
     '브라우저 도구(mcp__browser__*)로 아래 테스트 케이스를 실행하고 결과를 판정해줘. 코드는 읽거나 고치지 않는다.',
     '',
@@ -327,6 +355,15 @@ async function runCase(sessionId: number, t: TestCase, appUrl: string, loginPath
     account
       ? `로그인 계정: 아이디 ${account.login} / 비밀번호 ${account.password} (역할: ${t.role})${loginPath ? `. 로그인 화면 경로: ${loginPath}` : ''}. 로그인 화면이 나오면 이 계정으로 로그인한다.`
       : '로그인하지 않는다. 로그인 화면으로 보내지면 status=blocked로 판정한다.',
+    ...(prep ? [
+      '',
+      '## 먼저 할 준비 (사용자가 승인함)',
+      `없던 데이터: ${prep.need}`,
+      `만드는 방법: ${prep.plan}`,
+      '케이스 단계를 시작하기 전에 위 방법대로 화면에서 데이터를 만든다. 다른 역할이 필요하면 아래 계정으로 로그인했다가, 다 만들면 로그아웃하고 케이스 계정으로 다시 로그인한다.',
+      ...others.map((o) => `- 역할 ${o.role}: 아이디 ${o.login} / 비밀번호 ${o.password}`),
+      '준비 과정도 steps 앞쪽에 "준비: "로 시작하는 항목으로 적고, 만든 데이터를 알아볼 수 있는 값(번호, 이름)을 note에 남긴다. 준비를 끝내지 못하면 status=blocked.',
+    ] : []),
     '',
     `## 케이스: ${t.title}`,
     '### 단계',
@@ -338,7 +375,14 @@ async function runCase(sessionId: number, t: TestCase, appUrl: string, loginPath
     '- 브라우저는 1440x900 크기다. 단계마다 화면 스냅샷으로 상태를 확인하며 진행한다.',
     '- 확인이 필요한 화면(각 기대 결과를 볼 수 있는 화면, 실패한 화면)은 mcp__browser__browser_take_screenshot으로 찍는다. filename은 "step-<단계번호>.png" 형식으로 준다.',
     '- 기대 결과를 모두 화면에서 확인했으면 status=pass, 하나라도 다르면 fail, 로그인 실패·화면을 찾을 수 없음·서버 오류처럼 확인 자체를 못 하면 blocked.',
-    '- 케이스에 없는 데이터 변경(저장·삭제·승인)은 하지 않는다. 단계에 있으면 한다.',
+    prep
+      ? '- 위 준비와 케이스 단계에 있는 것 말고는 데이터를 바꾸지(저장·삭제·승인) 않는다.'
+      : '- 케이스에 없는 데이터 변경(저장·삭제·승인)은 하지 않는다. 단계에 있으면 한다.',
+    ...(prep ? [] : [
+      `- 단계를 진행할 데이터가 없어서(예: 대기 중인 주문이 없음) 막히면 데이터를 직접 만들지 말고 status=blocked로 두고 needs_data를 채운다.`,
+      `  need: 무엇이 없는지 한 문장. plan: 화면에서 어떻게 만들 수 있는지(어느 역할로 어느 화면에서 무엇을 넣고 누르는지) 짧은 순서. role: 만들 때 쓸 역할(${others.length ? others.map((o) => o.role).join(', ') : '확인된 역할 없음'} 중 하나, 없으면 빈 문자열).`,
+      '  사용자가 승인하면 그 데이터를 만들고 다시 실행한다. 데이터 문제가 아니면(로그인 실패, 화면 오류, 기대와 다름) needs_data를 넣지 않는다.',
+    ]),
     '- steps에는 단계마다 결과를 적고, 찍었으면 screenshot에 파일 이름을, 안 찍었으면 빈 문자열을 넣는다. summary는 판정 이유 한두 문장. 모두 한국어로.',
     '- 비밀번호는 결과 문장에 적지 않는다.',
   ].join('\n');
@@ -363,7 +407,7 @@ async function runCase(sessionId: number, t: TestCase, appUrl: string, loginPath
         maxTurns: 60,
         persistSession: false,
         abortController: abort,
-        outputFormat: { type: 'json_schema', schema: RESULT_SCHEMA },
+        outputFormat: { type: 'json_schema', schema: prep ? RESULT_SCHEMA : RESULT_SCHEMA_WITH_NEEDS },
         pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
       },
     });
@@ -380,7 +424,7 @@ async function runCase(sessionId: number, t: TestCase, appUrl: string, loginPath
     changed(sessionId);
     return { status: 'error', summary };
   }
-  type Res = { status: 'pass' | 'fail' | 'blocked'; summary: string; steps: { step: string; ok: boolean; note: string; screenshot: string }[] };
+  type Res = { status: 'pass' | 'fail' | 'blocked'; summary: string; steps: { step: string; ok: boolean; note: string; screenshot: string }[]; needs_data?: { need: string; plan: string; role: string } };
   const r = structured as Res;
   const results = (r?.steps ?? []).map((s) => ({ step: maskSecrets(s.step, secrets), ok: s.ok, note: maskSecrets(s.note, secrets), shot: shotName(dir, s.screenshot) }));
   const shots = collectShots(dir, results);
@@ -389,7 +433,11 @@ async function runCase(sessionId: number, t: TestCase, appUrl: string, loginPath
   db.prepare(`UPDATE test_cases SET status = ?, summary = ?, results = ?, shots = ?, ran_at = datetime('now') WHERE id = ?`)
     .run(status, summary, JSON.stringify(results), JSON.stringify(shots), t.id);
   changed(sessionId);
-  return { status, summary };
+  const nd = status === 'blocked' && !prep ? r?.needs_data : undefined;
+  const needs = nd?.need?.trim() && nd.plan?.trim()
+    ? { need: maskSecrets(nd.need, secrets), plan: maskSecrets(nd.plan, secrets), role: nd.role ?? '' }
+    : undefined;
+  return { status, summary, needs };
 }
 
 /** 결과에 적힌 파일 이름을 실제 파일과 맞춘다. 에이전트가 경로까지 적어도 이름만 본다. */

@@ -1,4 +1,5 @@
 import type {
+  TaskList,
   Account, Approval, ChangeScope, ArchiveEntry, DocMeta, JiraConfig, JiraIssue, JiraRequiredField, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
   ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, Workspace,
 } from './types';
@@ -70,8 +71,10 @@ export const api = {
   confirmTestAccount: (id: number, role: string, accountId: number) => request('POST', `/api/sessions/${id}/tests/accounts`, { role, account_id: accountId }),
   runTests: (id: number, ids?: number[]) => request('POST', `/api/sessions/${id}/tests/run`, { ids }),
   stopTests: (id: number) => request('POST', `/api/sessions/${id}/tests/stop`),
+  tasks: (id: number) => request<TaskList | null>('GET', `/api/sessions/${id}/tasks`),
+  clearTasks: (id: number) => request('DELETE', `/api/sessions/${id}/tasks`),
   approvals: (id: number) => request<Approval[]>('GET', `/api/sessions/${id}/approvals`),
-  decideApproval: (approvalId: number, body: { approve: false; feedback?: string } | { approve: true; answers?: Record<string, string>; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number }) =>
+  decideApproval: (approvalId: number, body: { approve: false; feedback?: string } | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number }) =>
     request('POST', `/api/approvals/${approvalId}`, body),
   removeQueued: (id: number, queueId: number) => request('DELETE', `/api/sessions/${id}/queue/${queueId}`),
   resumeQueue: (id: number) => request('POST', `/api/sessions/${id}/queue/resume`),

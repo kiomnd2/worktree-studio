@@ -88,6 +88,7 @@ export type ServerEvent =
   | { type: 'cleanup.changed' }
   | { type: 'approvals.updated'; sessionId: number }
   | { type: 'docs.updated'; sessionId: number }
+  | { type: 'tasks.updated'; sessionId: number }
   | { type: 'tests.updated'; sessionId: number };
 
 export type TestCase = {
@@ -112,13 +113,16 @@ export type WorktreeChanges = {
   worktree_id: number; project_name: string; branch: string; base_branch: string; compare_ref: string; files: ChangedFile[]; error: string | null;
 };
 
+export type TaskList = { title: string; tasks: { title: string; status: 'todo' | 'doing' | 'done' | 'skipped'; note: string }[]; updated_at: string };
+
 export type Approval = {
   id: number; session_id: number; reason: string; created_at: number;
   request:
     | { kind: 'env'; project_id: number; project_name: string; profile_name: string; vars: { key: string; value: string; reason: string; secret: boolean; current: string | null }[] }
     | { kind: 'account'; role: string }
     | { kind: 'plan'; plan: string; docs: { name: string; title: string; kind: DocKind }[] }
-    | { kind: 'question'; questions: { question: string; header: string; options: { label: string; description: string }[]; multiSelect: boolean }[] };
+    | { kind: 'question'; questions: { question: string; header: string; options: { label: string; description: string }[]; multiSelect: boolean }[] }
+    | { kind: 'testdata'; case_id: number; case_title: string; need: string; plan: string; role: string };
 };
 
 /** 개발 산출물. plan: 계획서, screen: 화면설계서, test: 테스트 결과서 */

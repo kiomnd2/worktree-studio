@@ -22,18 +22,23 @@ export type PlanRequest = { kind: 'plan'; plan: string; docs: { name: string; ti
 /** 작업 중 Claude가 정해야 할 것을 묻는 것(AskUserQuestion). 답을 받을 때까지 기다린다. */
 export type Question = { question: string; header: string; options: { label: string; description: string }[]; multiSelect: boolean };
 export type QuestionRequest = { kind: 'question'; questions: Question[] };
+/**
+ * 화면 테스트가 진행할 데이터(대기 중인 주문 등)가 없어 막힌 것. 사용자가 승인하면 그 데이터를 화면에서 만들고 케이스를 다시 돌린다.
+ * plan은 만드는 방법이고 사용자가 고쳐서 승인할 수 있다.
+ */
+export type TestDataRequest = { kind: 'testdata'; case_id: number; case_title: string; need: string; plan: string; role: string };
 
 export type Approval = {
   id: number;
   session_id: number;
   reason: string;
-  request: EnvRequest | AccountRequest | PlanRequest | QuestionRequest;
+  request: EnvRequest | AccountRequest | PlanRequest | QuestionRequest | TestDataRequest;
   created_at: number;
 };
 
 export type Decision =
   | { approve: false; feedback?: string }
-  | { approve: true; answers?: Record<string, string>; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number };
+  | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number };
 
 const pending = new Map<number, { approval: Approval; resolve: (text: string) => void }>();
 /** 승인했을 때 실제로 적용하고 Claude에게 돌려줄 문장을 만드는 함수 */
@@ -62,6 +67,8 @@ function ask(sessionId: number, reason: string, request: Approval['request'], ap
       ? '계획을 마쳤습니다. 산출물을 보고 실행할지 정해 주세요.'
       : request.kind === 'question'
       ? `Claude가 묻습니다: ${request.questions[0]?.question ?? ''}`
+      : request.kind === 'testdata'
+      ? `테스트 "${request.case_title}"를 진행할 데이터가 없습니다. 만들지 정해 주세요.`
       : `Claude가 ${request.kind === 'env' ? `${request.project_name} 환경값 ${request.vars.map((v) => v.key).join(', ')}` : `테스트 계정 (${request.role})`}을(를) 요청했습니다.`;
     sendNotification(`${s?.ticket ?? ''} 확인이 필요합니다`, body, sessionId);
   });
@@ -77,10 +84,11 @@ export function decide(approvalId: number, d: Decision) {
   p.resolve(text);
 }
 
-/** 프롬프트가 끝나거나 중단되면 남은 요청은 거절로 끝낸다. */
-export function cancelApprovals(sessionId: number) {
+/** 프롬프트가 끝나거나 중단되면 남은 요청은 거절로 끝낸다. 화면 테스트의 요청은 테스트가 따로 끝낸다. */
+export function cancelApprovals(sessionId: number, kind?: 'testdata') {
   for (const p of [...pending.values()]) {
     if (p.approval.session_id !== sessionId) continue;
+    if ((p.approval.request.kind === 'testdata') !== (kind === 'testdata')) continue;
     decisionHandlers.delete(p.approval.id);
     p.resolve('작업이 끝나 요청이 취소됐습니다.');
   }
@@ -149,6 +157,15 @@ export function requestPlanApproval(sessionId: number, plan: string, docs: PlanR
   let result: { approve: true } | { approve: false; feedback: string } = { approve: false, feedback: '' };
   return ask(sessionId, '', { kind: 'plan', plan, docs }, (d) => {
     result = d.approve ? { approve: true } : { approve: false, feedback: d.feedback?.trim() ?? '' };
+    return '';
+  }).then(() => result);
+}
+
+/** 테스트 데이터를 만들어도 되는지 묻는다. 승인하면 만들 방법(사용자가 고친 것 포함), 아니면 null. */
+export function requestTestData(sessionId: number, request: Omit<TestDataRequest, 'kind'>): Promise<string | null> {
+  let result: string | null = null;
+  return ask(sessionId, '', { kind: 'testdata', ...request }, (d) => {
+    result = d.approve ? (d.plan?.trim() || request.plan) : null;
     return '';
   }).then(() => result);
 }

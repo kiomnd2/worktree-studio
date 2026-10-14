@@ -11,7 +11,8 @@ export type ServerEvent =
   | { type: 'cleanup.changed' }
   | { type: 'approvals.updated'; sessionId: number }
   | { type: 'docs.updated'; sessionId: number }
-  | { type: 'tests.updated'; sessionId: number };
+  | { type: 'tests.updated'; sessionId: number }
+  | { type: 'tasks.updated'; sessionId: number };
 
 export type LogLine = { seq: number; t: number; stream: 'out' | 'err' | 'sys'; level: 'error' | 'warn' | 'info'; text: string };
 

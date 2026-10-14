@@ -604,3 +604,28 @@ a.small-btn { display: inline-flex; align-items: center; text-decoration: none; 
 .question-option.on { border-color: var(--accent); background: var(--accent-soft); }
 .question-option input { min-height: 0; padding: 0; margin: 4px 0 0; flex: none; }
 .question-other { min-height: 34px; }
+
+/* 작업 목록: 대화 위에 늘 붙어 있다 */
+.taskbar { border-bottom: 1px solid var(--rule); background: var(--sheet); padding: 8px 20px; flex-shrink: 0; }
+.taskbar-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.taskbar-toggle { display: flex; align-items: center; gap: 8px; border: 0; background: none; padding: 2px 0; min-height: 0; cursor: pointer; min-width: 0; color: inherit; font: inherit; }
+.taskbar-caret { color: var(--muted); width: 10px; }
+.taskbar-title { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
+.taskbar-count { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
+.taskbar-progress { width: 80px; height: 4px; border-radius: 2px; background: var(--rule); overflow: hidden; flex-shrink: 0; }
+.taskbar-progress > span { display: block; height: 100%; background: var(--accent); }
+.taskbar-now { display: flex; align-items: center; gap: 6px; font-size: 13px; overflow: hidden; white-space: nowrap; flex: 1; min-width: 0; }
+.taskbar-now > * { flex-shrink: 0; }
+.taskbar-now > .taskbar-now-text { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.taskbar-now-label { font-weight: 600; color: var(--accent); }
+.taskbar-head .small-btn { flex-shrink: 0; }
+.task-badge { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; font-size: 12px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 8px; }
+.task-badge .spinner, .taskbar-now .spinner { width: 10px; height: 10px; }
+.taskbar-list { list-style: none; margin: 8px 0 2px; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 24vh; overflow-y: auto; }
+.task { display: flex; gap: 8px; font-size: 14px; line-height: 1.45; }
+.task.doing { background: var(--accent-soft); border-radius: 6px; margin: 0 -6px; padding: 2px 6px; }
+.task-icon { width: 14px; flex-shrink: 0; text-align: center; color: var(--muted); }
+.task.doing .task-icon, .task.doing .task-title { color: var(--accent); font-weight: 600; }
+.task.done .task-icon { color: var(--ok, #137333); }
+.task.done .task-title, .task.skipped .task-title { color: var(--muted); text-decoration: line-through; }
+.task-update { padding: 2px 0; }
