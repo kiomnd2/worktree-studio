@@ -42,3 +42,36 @@ export function useServerEvents(handler: Listener) {
     return () => { listeners.delete(l); };
   }, []);
 }
+
+/** 미리보기 캡처 같은 이미지를 프롬프트 첨부에 넣는다. data는 base64. */
+export function attachToPrompt(image: { mediaType: string; data: string; name: string }) {
+  window.dispatchEvent(new CustomEvent('wts:attach-image', { detail: image }));
+}
+
+/** 오른쪽 패널 미리보기에서 이 경로를 연다. */
+export function openInPreview(path: string) {
+  window.dispatchEvent(new CustomEvent('wts:preview-open', { detail: path }));
+}
+
+let promptMounted = false;
+let pendingInsert: string[] = [];
+
+/** 로그 줄 같은 텍스트를 프롬프트 입력창에 붙인다. 입력창이 없는 화면에서 부르면 입력창이 나타날 때 붙인다. */
+export function insertIntoPrompt(text: string) {
+  if (!promptMounted) { pendingInsert.push(text); return; }
+  window.dispatchEvent(new CustomEvent('wts:insert-prompt', { detail: text }));
+}
+
+/** 프롬프트 입력창이 나타나고 사라질 때 부른다. 기다리던 텍스트를 돌려준다. */
+export function promptInputMounted(mounted: boolean): string[] {
+  promptMounted = mounted;
+  if (!mounted) return [];
+  const out = pendingInsert;
+  pendingInsert = [];
+  return out;
+}
+
+/** 세션의 문서 화면을 연다. name이 있으면 그 문서를 고른다. */
+export function openDoc(name?: string) {
+  window.dispatchEvent(new CustomEvent('wts:open-doc', { detail: name ?? null }));
+}

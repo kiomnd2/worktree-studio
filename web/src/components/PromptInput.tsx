@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { promptInputMounted } from '../events';
 import type { Session } from '../types';
+import AnnotateDialog from './AnnotateDialog';
 
 const ACCEPT = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -26,10 +28,42 @@ export default function PromptInput({ session }: { session: Session }) {
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [editing, setEditing] = useState<Attachment | null>(null);
+  // 계획 먼저: 코드는 고치지 않고 계획서·화면설계서를 만든 뒤 승인을 기다린다. 세션마다 기억한다.
+  const planKey = `wts:plan-first:${session.id}`;
+  const [plan, setPlan] = useState(() => { try { return localStorage.getItem(planKey) === '1'; } catch { return false; } });
+  const togglePlan = () => {
+    const next = !plan;
+    setPlan(next);
+    try { localStorage.setItem(planKey, next ? '1' : '0'); } catch { /* 사생활 보호 모드 등 */ }
+  };
   const fileInput = useRef<HTMLInputElement>(null);
+  const textarea = useRef<HTMLTextAreaElement>(null);
   const running = session.status === 'running';
 
   useEffect(() => () => attachments.forEach((a) => URL.revokeObjectURL(a.preview)), []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const onInsert = (e: Event) => {
+      const add = (e as CustomEvent<string>).detail;
+      setText((prev) => (prev.trim() ? `${prev.replace(/\s+$/, '')}\n\n${add}` : add));
+      textarea.current?.focus();
+    };
+    window.addEventListener('wts:insert-prompt', onInsert);
+    for (const t of promptInputMounted(true)) onInsert(new CustomEvent('wts:insert-prompt', { detail: t }));
+    return () => { window.removeEventListener('wts:insert-prompt', onInsert); promptInputMounted(false); };
+  }, []);
+
+  useEffect(() => {
+    const onAttach = (e: Event) => {
+      const { mediaType, data, name } = (e as CustomEvent<{ mediaType: string; data: string; name: string }>).detail;
+      const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+      addFiles([new File([bytes], name, { type: mediaType })]);
+      textarea.current?.focus();
+    };
+    window.addEventListener('wts:attach-image', onAttach);
+    return () => window.removeEventListener('wts:attach-image', onAttach);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function addFiles(files: FileList | File[]) {
     setError(null);
@@ -57,13 +91,16 @@ export default function PromptInput({ session }: { session: Session }) {
     });
   }
 
+  // 작업 중이거나 앞에 기다리는 프롬프트가 있으면 대기열 끝에 들어간다.
+  const willQueue = running || session.queue.length > 0;
+
   async function send() {
-    if (running || sending) return;
+    if (sending) return;
     if (!text.trim() && attachments.length === 0) { setError('프롬프트를 입력하세요.'); return; }
     setSending(true);
     setError(null);
     try {
-      await api.prompt(session.id, text, attachments.map(({ mediaType, data, name }) => ({ mediaType, data, name })));
+      await api.prompt(session.id, text, attachments.map(({ mediaType, data, name }) => ({ mediaType, data, name })), plan);
       attachments.forEach((a) => URL.revokeObjectURL(a.preview));
       setText('');
       setAttachments([]);
@@ -75,6 +112,34 @@ export default function PromptInput({ session }: { session: Session }) {
   }
 
   return (
+    <>
+    {session.queue.length > 0 && (
+      <section className="prompt-queue" aria-label="대기 중인 프롬프트">
+        <div className="queue-head">
+          <strong>대기 중 {session.queue.length}개</strong>
+          {session.queue_paused ? (
+            <>
+              <span className="warn-text small">{running ? '' : '앞 작업이 중단되거나 오류로 끝나서 멈췄습니다.'}</span>
+              <button type="button" className="small-btn primary" disabled={running} onClick={() => api.resumeQueue(session.id).catch((e) => setError(e.message))}>이어서 실행</button>
+            </>
+          ) : (
+            <span className="muted small">{running ? '지금 작업이 끝나면 순서대로 실행합니다.' : '곧 실행합니다.'}</span>
+          )}
+        </div>
+        <ol>
+          {session.queue.map((q) => (
+            <li key={q.id}>
+              {q.plan && <span className="plan-badge">계획</span>}
+              <span className="queue-text">{q.text || '(이미지만)'}</span>
+              {q.image_count > 0 && <span className="muted small">이미지 {q.image_count}</span>}
+              <button type="button" className="icon" aria-label="대기열에서 빼기" onClick={() => api.removeQueued(session.id, q.id).catch((e) => setError(e.message))}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+              </button>
+            </li>
+          ))}
+        </ol>
+      </section>
+    )}
     <form
       className={`prompt${dragging ? ' dragging' : ''}`}
       onSubmit={(e) => { e.preventDefault(); send(); }}
@@ -88,6 +153,9 @@ export default function PromptInput({ session }: { session: Session }) {
             <li key={a.id} className="chip">
               <img src={a.preview} alt="" />
               <span className="chip-text"><span className="chip-name">{a.name}</span><span className="muted small">{formatSize(a.size)}</span></span>
+              <button type="button" className="icon" aria-label={`${a.name}에 표시하기`} title="화면에 표시하기" onClick={() => setEditing(a)}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+              </button>
               <button type="button" className="icon" aria-label={`${a.name} 첨부 빼기`} onClick={() => remove(a.id)}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
               </button>
@@ -98,9 +166,12 @@ export default function PromptInput({ session }: { session: Session }) {
       <label htmlFor="prompt-text" className="sr-only">프롬프트</label>
       <textarea
         id="prompt-text"
+        ref={textarea}
         rows={3}
         value={text}
-        placeholder="이 워크트리에서 할 일을 적어주세요. 이미지는 끌어다 놓거나 붙여넣을 수 있습니다. (Enter 보내기, Shift+Enter 줄바꿈)"
+        placeholder={willQueue
+          ? `${running ? 'Claude가 작업 중입니다' : '대기열이 멈춰 있습니다'}. 지금 보내면 대기열 끝에 넣고 순서대로 실행합니다. (Enter 추가, Shift+Enter 줄바꿈)`
+          : '이 워크트리에서 할 일을 적어주세요. 이미지는 끌어다 놓거나 붙여넣을 수 있습니다. (Enter 보내기, Shift+Enter 줄바꿈)'}
         onChange={(e) => setText(e.target.value)}
         onPaste={(e) => {
           const files = Array.from(e.clipboardData.files);
@@ -116,14 +187,35 @@ export default function PromptInput({ session }: { session: Session }) {
         <button type="button" className="icon bordered" aria-label="이미지 첨부" onClick={() => fileInput.current?.click()}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12.5l-8.5 8.5a5 5 0 0 1-7-7L14 5.5a3.3 3.3 0 0 1 4.7 4.7L10.2 18.7a1.7 1.7 0 0 1-2.4-2.4L15.5 8.6" /></svg>
         </button>
+        <button type="button" className={`chip-btn${plan ? ' on' : ''}`} aria-pressed={plan} onClick={togglePlan}
+          title="코드를 고치기 전에 계획서와 화면설계서를 HTML로 만들고, 승인한 뒤에 실행합니다">
+          계획 먼저
+        </button>
         <span className="muted small">{session.worktrees.map((w) => w.path.split('/').pop()).join(', ')}</span>
         <div className="spacer" />
-        {running ? (
-          <button type="button" onClick={() => api.stop(session.id).catch((e) => setError(e.message))}>중단</button>
-        ) : (
-          <button type="submit" className="dark" disabled={sending}>{sending ? '보내는 중' : '보내기'}</button>
-        )}
+        {running && <button type="button" onClick={() => api.stop(session.id).catch((e) => setError(e.message))}>중단</button>}
+        <button type="submit" className="dark" disabled={sending}>{sending ? '보내는 중' : willQueue ? '대기열에 추가' : plan ? '계획 세우기' : '보내기'}</button>
       </div>
     </form>
+    {editing && (
+      <AnnotateDialog
+        image={{ data: editing.data, mediaType: editing.mediaType }}
+        title={editing.name}
+        onCancel={() => setEditing(null)}
+        onDone={(r) => {
+          // 표시한 이미지로 그 첨부를 바꾼다.
+          const bytes = Uint8Array.from(atob(r.data), (c) => c.charCodeAt(0));
+          const blob = new Blob([bytes], { type: r.mediaType });
+          setAttachments((prev) => prev.map((x) => {
+            if (x.id !== editing.id) return x;
+            URL.revokeObjectURL(x.preview);
+            return { ...x, data: r.data, mediaType: r.mediaType, name: x.name.replace(/\.\w+$/, '') + '.png', preview: URL.createObjectURL(blob), size: blob.size };
+          }));
+          if (r.note) setText((prev) => (prev.trim() ? `${prev.replace(/\s+$/, '')}\n\n${r.note}` : r.note));
+          setEditing(null);
+        }}
+      />
+    )}
+    </>
   );
 }

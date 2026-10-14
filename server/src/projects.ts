@@ -4,6 +4,7 @@ import { db, type ProjectRow } from './db.js';
 import { expandHome } from './config.js';
 import { currentBranch, isGitRepo, originUrl, repoRoot, worktreeCount } from './git.js';
 import { detectProject } from './detect.js';
+import { guessApiEnvKey, scanEnv } from './envscan.js';
 
 export type ProjectView = ProjectRow & {
   current_branch: string | null;
@@ -40,18 +41,19 @@ export async function addProject(inputPath: string): Promise<ProjectRow> {
   const exists = db.prepare(`SELECT id FROM projects WHERE local_path = ?`).get(root);
   if (exists) throw new Error('이미 등록된 폴더입니다.');
   const d = detectProject(root);
+  const apiKey = d.kind === 'fe' ? guessApiEnvKey(scanEnv(root)) : null;
   const info = db
-    .prepare(`INSERT INTO projects (name, local_path, kind, start_cmd, check_cmd, health_path) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(path.basename(root), root, d.kind, d.startCmd, d.checkCmd, d.healthPath);
+    .prepare(`INSERT INTO projects (name, local_path, kind, start_cmd, check_cmd, health_path, port_env, api_env_key, setup_cmd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(path.basename(root), root, d.kind, d.startCmd, d.checkCmd, d.healthPath, d.portEnv, apiKey, d.setupCmd);
   return getProject(Number(info.lastInsertRowid))!;
 }
 
-export function updateProject(id: number, patch: Partial<Pick<ProjectRow, 'name' | 'kind' | 'start_cmd' | 'check_cmd' | 'health_path'>>) {
+export function updateProject(id: number, patch: Partial<Pick<ProjectRow, 'name' | 'kind' | 'start_cmd' | 'check_cmd' | 'health_path' | 'port_env' | 'api_env_key' | 'baseline_url' | 'login_path' | 'setup_cmd' | 'commit_template'>>) {
   const cur = getProject(id);
   if (!cur) throw new Error('프로젝트가 없습니다.');
   const next = { ...cur, ...patch };
-  db.prepare(`UPDATE projects SET name = ?, kind = ?, start_cmd = ?, check_cmd = ?, health_path = ? WHERE id = ?`)
-    .run(next.name, next.kind, next.start_cmd, next.check_cmd, next.health_path, id);
+  db.prepare(`UPDATE projects SET name = ?, kind = ?, start_cmd = ?, check_cmd = ?, health_path = ?, port_env = ?, api_env_key = ?, baseline_url = ?, login_path = ?, setup_cmd = ?, commit_template = ? WHERE id = ?`)
+    .run(next.name, next.kind, next.start_cmd, next.check_cmd, next.health_path, next.port_env, next.api_env_key, next.baseline_url, next.login_path, next.setup_cmd, next.commit_template, id);
   return getProject(id)!;
 }
 
@@ -61,14 +63,26 @@ export function deleteProject(id: number) {
   db.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
 }
 
-export type WorkspaceView = { id: number; name: string; projects: { id: number; name: string; kind: string }[] };
+export type WorkspaceView = { id: number; name: string; jira_project: string | null; projects: { id: number; name: string; kind: string }[] };
 
 export function listWorkspaces(): WorkspaceView[] {
-  const ws = db.prepare(`SELECT id, name FROM workspaces ORDER BY name`).all() as { id: number; name: string }[];
+  const ws = db.prepare(`SELECT id, name, jira_project FROM workspaces ORDER BY name`).all() as { id: number; name: string; jira_project: string | null }[];
   const rows = db.prepare(`
     SELECT wp.workspace_id, p.id, p.name, p.kind FROM workspace_projects wp
     JOIN projects p ON p.id = wp.project_id ORDER BY wp.position`).all() as { workspace_id: number; id: number; name: string; kind: string }[];
   return ws.map((w) => ({ ...w, projects: rows.filter((r) => r.workspace_id === w.id).map(({ id, name, kind }) => ({ id, name, kind })) }));
+}
+
+export function updateWorkspace(id: number, patch: { jira_project?: string | null }) {
+  if (patch.jira_project !== undefined) {
+    const key = patch.jira_project?.trim().toUpperCase() || null;
+    if (key && !/^[A-Z][A-Z0-9_]*$/.test(key)) throw new Error('Jira 프로젝트 키는 KERE처럼 영문 대문자와 숫자로 넣어 주세요.');
+    db.prepare(`UPDATE workspaces SET jira_project = ? WHERE id = ?`).run(key, id);
+  }
+}
+
+export function getWorkspace(id: number): WorkspaceView | undefined {
+  return listWorkspaces().find((w) => w.id === id);
 }
 
 export function createWorkspace(name: string, projectIds: number[]) {
