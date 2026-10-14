@@ -75,7 +75,7 @@ function runtimeContext(sessionId: number): string | null {
     lines.push(...docs.map((d) => `- ${d.name} "${d.title}" (${KIND_LABEL[d.kind]}, ${d.version}판): ${d.path}`));
   }
   if (accounts.length) {
-    lines.push('화면 확인용 테스트 계정 (이 세션 전용, 역할이 다르면 메모를 보고 골라 쓴다):');
+    lines.push('화면 확인용 테스트 계정 (다른 세션과 같이 쓴다. 역할이 다르면 메모를 보고 골라 쓴다):');
     lines.push(...accounts.map((a) => `- ${a.login} / ${a.password}${a.note ? ` (${a.note})` : ''}`));
   }
   return `<tool_context>\n${lines.join('\n')}\n</tool_context>`;
@@ -148,12 +148,12 @@ function studioTools(sessionId: number) {
       ),
       tool(
         'request_test_account',
-        '지금 배정된 것과 다른 역할의 테스트 계정이 필요할 때 사용자에게 요청한다. 사용자가 계정 풀에서 골라 승인하면 계정과 비밀번호를 돌려준다.',
+        '특정 역할의 테스트 계정을 찾는다. 메모에 그 역할이 적힌 계정과 비밀번호를 돌려주고, 없으면 사용자에게 추가를 부탁하라고 알려 준다.',
         {
           role: z.string().describe('필요한 역할. 예: 사업자, 지자체(광역), 관리자'),
           reason: z.string().describe('필요한 이유 한 문장'),
         },
-        async (args) => text(await requestAccount(sessionId, args.role, args.reason)),
+        async (args) => text(requestAccount(sessionId, args.role)),
       ),
       tool(
         'set_tasks',

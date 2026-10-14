@@ -6,7 +6,6 @@ import { runFile } from './exec.js';
 import { getProject, listProjectRows } from './projects.js';
 import { getSession, listSessions, setSession, type SessionView } from './sessions.js';
 import { serverPorts, stopServers } from './runner.js';
-import { releaseAccount } from './accounts.js';
 import { listPrs, type PullRequestRow } from './pr.js';
 import { deleteSessionScreens, screenDirSize } from './screens.js';
 import { deleteSessionTests } from './tests.js';
@@ -27,13 +26,12 @@ export type CleanupRow = {
   prs: Pick<PullRequestRow, 'id' | 'number' | 'url' | 'state'>[];
   servers: number;
   worktrees: { id: number; project_name: string; path: string; branch: string; exists: boolean; dirty: number; size_kb: number | null }[];
-  accounts: string[];
   screens_kb: number;
   state: CleanupState;
   reason: string;
 };
 
-export type StartupReport = { at: string; orphans_killed: number; pruned: { project: string; lines: string[] }[]; accounts_released: number; missing_worktrees: number };
+export type StartupReport = { at: string; orphans_killed: number; pruned: { project: string; lines: string[] }[]; missing_worktrees: number };
 let startup: StartupReport | null = null;
 
 const sizeCache = new Map<string, { at: number; kb: number | null }>();
@@ -82,21 +80,20 @@ async function rowOf(s: SessionView): Promise<CleanupRow> {
     prs: prs.map((p) => ({ id: p.id, number: p.number, url: p.url, state: p.state })),
     servers: serverPorts(s.id).length,
     worktrees,
-    accounts: s.accounts.map((a) => a.login),
     screens_kb: Math.round(screenDirSize(s.id) / 1024),
     ...classify(s, prs, dirty),
   };
 }
 
-/** 정리 화면 목록. 닫았지만 워크트리 폴더나 계정이 남은 세션도 넣는다. */
+/** 정리 화면 목록. 닫았지만 워크트리 폴더나 스크린샷이 남은 세션도 넣는다. */
 export async function listCleanup(): Promise<{ rows: CleanupRow[]; startup: StartupReport | null }> {
-  const sessions = listSessions(true).filter((s) => !s.closed || s.worktrees.some((w) => fs.existsSync(w.path)) || s.accounts.length > 0 || screenDirSize(s.id) > 0);
+  const sessions = listSessions(true).filter((s) => !s.closed || s.worktrees.some((w) => fs.existsSync(w.path)) || screenDirSize(s.id) > 0);
   return { rows: await Promise.all(sessions.map(rowOf)), startup };
 }
 
 export type CleanStep = { name: string; ok: boolean; detail: string };
 
-/** 서버 종료 → 워크트리 삭제 → 로컬 브랜치 삭제 → (원격 브랜치 삭제) → 계정 반납 → 스크린샷 삭제 → 세션 보관 */
+/** 서버 종료 → 워크트리 삭제 → 로컬 브랜치 삭제 → (원격 브랜치 삭제) → 스크린샷 삭제 → 세션 보관 */
 export async function cleanSession(sessionId: number, opts: { deleteRemote: boolean; force: boolean }): Promise<CleanStep[]> {
   const s = getSession(sessionId);
   if (!s) throw new Error('세션이 없습니다.');
@@ -133,7 +130,6 @@ export async function cleanSession(sessionId: number, opts: { deleteRemote: bool
       });
     }
   }
-  await attempt('계정 반납', async () => { releaseAccount(sessionId); });
   await attempt('스크린샷 삭제', async () => { deleteSessionScreens(sessionId); deleteSessionTests(sessionId); });
   await attempt('세션 기록 보관', async () => { if (!s.closed) setSession(sessionId, { closed: 1 }); });
   broadcast({ type: 'sessions.changed' });
@@ -212,10 +208,9 @@ export async function startupSweep(orphansKilled: number): Promise<StartupReport
     const lines = out.split('\n').filter(Boolean);
     if (lines.length) pruned.push({ project: p.name, lines });
   }
-  const released = db.prepare(`UPDATE test_accounts SET session_id = NULL WHERE session_id IN (SELECT id FROM sessions WHERE closed = 1)`).run().changes;
   const missing = (db.prepare(`SELECT w.path FROM worktrees w JOIN sessions s ON s.id = w.session_id WHERE s.closed = 0`).all() as { path: string }[])
     .filter((w) => !fs.existsSync(w.path)).length;
-  startup = { at: new Date().toISOString(), orphans_killed: orphansKilled, pruned, accounts_released: released, missing_worktrees: missing };
+  startup = { at: new Date().toISOString(), orphans_killed: orphansKilled, pruned, missing_worktrees: missing };
   return startup;
 }
 

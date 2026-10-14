@@ -629,3 +629,13 @@ a.small-btn { display: inline-flex; align-items: center; text-decoration: none; 
 .task.done .task-icon { color: var(--ok, #137333); }
 .task.done .task-title, .task.skipped .task-title { color: var(--muted); text-decoration: line-through; }
 .task-update { padding: 2px 0; }
+
+/* 서버 실행 창: 이 세션 포트에 맞춰 바꿀 설정 제안 */
+.env-suggest { border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.env-suggest-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.env-suggest .spinner { display: inline-block; width: 11px; height: 11px; vertical-align: -1px; margin-right: 4px; }
+.env-suggest-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; max-height: 40vh; overflow-y: auto; }
+.env-suggest-list > li { display: flex; gap: 8px; align-items: flex-start; }
+.env-suggest-list > li > input[type=checkbox] { margin-top: 4px; }
+.env-suggest-body { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.env-suggest-body .mono.muted { overflow-wrap: anywhere; }

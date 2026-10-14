@@ -1,7 +1,7 @@
 import { broadcast } from './hub.js';
 import { getSession } from './sessions.js';
 import { profileVars, resolveEnv, saveSessionEnv, selectedProfile, type EnvVar } from './envstore.js';
-import { accountOf, assignAccount, freeAccountsFor } from './accounts.js';
+import { accountsOf } from './accounts.js';
 import { looksSecret } from './secret.js';
 import { sendNotification } from './notify.js';
 
@@ -16,7 +16,6 @@ export type EnvRequest = {
   profile_name: string;
   vars: { key: string; value: string; reason: string; secret: boolean; current: string | null }[];
 };
-export type AccountRequest = { kind: 'account'; role: string };
 /** 계획 모드에서 Claude가 계획을 마치고 실행해도 되는지 묻는 것. docs는 이번 계획에서 저장한 산출물 이름 */
 export type PlanRequest = { kind: 'plan'; plan: string; docs: { name: string; title: string; kind: string }[] };
 /** 작업 중 Claude가 정해야 할 것을 묻는 것(AskUserQuestion). 답을 받을 때까지 기다린다. */
@@ -32,13 +31,13 @@ export type Approval = {
   id: number;
   session_id: number;
   reason: string;
-  request: EnvRequest | AccountRequest | PlanRequest | QuestionRequest | TestDataRequest;
+  request: EnvRequest | PlanRequest | QuestionRequest | TestDataRequest;
   created_at: number;
 };
 
 export type Decision =
   | { approve: false; feedback?: string }
-  | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number };
+  | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile' };
 
 const pending = new Map<number, { approval: Approval; resolve: (text: string) => void }>();
 /** 승인했을 때 실제로 적용하고 Claude에게 돌려줄 문장을 만드는 함수 */
@@ -69,7 +68,7 @@ function ask(sessionId: number, reason: string, request: Approval['request'], ap
       ? `Claude가 묻습니다: ${request.questions[0]?.question ?? ''}`
       : request.kind === 'testdata'
       ? `테스트 "${request.case_title}"를 진행할 데이터가 없습니다. 만들지 정해 주세요.`
-      : `Claude가 ${request.kind === 'env' ? `${request.project_name} 환경값 ${request.vars.map((v) => v.key).join(', ')}` : `테스트 계정 (${request.role})`}을(를) 요청했습니다.`;
+      : `Claude가 ${request.project_name} 환경값 ${request.vars.map((v) => v.key).join(', ')}을(를) 요청했습니다.`;
     sendNotification(`${s?.ticket ?? ''} 확인이 필요합니다`, body, sessionId);
   });
 }
@@ -135,18 +134,19 @@ export function requestEnv(sessionId: number, projectName: string, vars: { key: 
   });
 }
 
-export function requestAccount(sessionId: number, role: string, reason: string): Promise<string> {
-  const s = getSession(sessionId);
-  if (!s || freeAccountsFor(s.workspace_id).length === 0) {
-    return Promise.resolve('이 워크스페이스에 남은 테스트 계정이 없습니다. 사용자에게 설정의 테스트 계정 풀에 이 워크스페이스 계정을 추가해 달라고 하세요.');
-  }
-  return ask(sessionId, reason, { kind: 'account', role }, (d) => {
-    if (!d.approve || !d.account_id) return '사용자가 테스트 계정 요청을 거절했습니다.';
-    assignAccount(sessionId, d.account_id);
-    const acc = accountOf(sessionId, d.account_id);
-    if (!acc) return '계정을 배정하지 못했습니다.';
-    return `사용자가 승인해 테스트 계정을 배정했습니다: ${acc.login} / ${acc.password}${acc.note ? ` (${acc.note})` : ''}. 이 세션 전용입니다.`;
-  });
+/**
+ * 다른 역할의 계정이 필요하다는 요청. 계정은 세션에 묶이지 않고 워크스페이스 계정을 모두 쓸 수 있으므로,
+ * 메모(역할)가 맞는 계정을 바로 알려 주고, 없으면 사용자에게 풀에 추가해 달라고 하게 한다.
+ */
+export function requestAccount(sessionId: number, role: string): string {
+  const all = accountsOf(sessionId);
+  if (all.length === 0) return '이 워크스페이스에 테스트 계정이 없습니다. 사용자에게 설정의 테스트 계정 풀에 계정을 추가해 달라고 하세요.';
+  const want = role.trim().toLowerCase();
+  const hit = all.filter((a) => want && a.note.toLowerCase().includes(want));
+  const fmt = (a: (typeof all)[number]) => `- ${a.login} / ${a.password}${a.note ? ` (${a.note})` : ''}`;
+  return hit.length
+    ? `"${role}" 역할로 쓸 수 있는 계정:\n${hit.map(fmt).join('\n')}`
+    : `메모에 "${role}"이(가) 적힌 계정이 없습니다. 아래 계정 중 맞는 것이 있으면 쓰고, 없으면 사용자에게 설정의 테스트 계정 풀에 추가해 달라고 하세요.\n${all.map(fmt).join('\n')}`;
 }
 
 /**

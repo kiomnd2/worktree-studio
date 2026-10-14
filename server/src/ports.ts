@@ -9,6 +9,11 @@ function canListen(port: number, host: string): Promise<boolean> {
   });
 }
 
+/** 지금 이 포트를 쓸 수 있는지(IPv4·IPv6 모두). */
+export async function isPortFree(port: number): Promise<boolean> {
+  return (await canListen(port, '127.0.0.1')) && (await canListen(port, '::1')) && (await canListen(port, '0.0.0.0'));
+}
+
 /** IPv4와 IPv6 모두에서 비어 있는 포트를 start부터 찾는다. taken은 이미 배정한 포트. */
 export async function findFreePort(start: number, taken: Set<number>): Promise<number> {
   for (let p = start; p < start + 500; p++) {

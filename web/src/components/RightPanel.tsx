@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { api, missingFrom } from '../api';
 import { attachToPrompt, insertIntoPrompt, openInPreview, useServerEvents } from '../events';
 import { DOC_KIND } from './DocsPage';
-import { usableIn, type Account, type DocMeta, type LogLine, ScreenCheck, ScreenState, ServerView, Session, TestState, WorktreeChanges } from '../types';
+import { type DocMeta, type LogLine, ScreenCheck, ScreenState, ServerView, Session, TestState, WorktreeChanges } from '../types';
 import StartServersDialog from './StartServersDialog';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -23,12 +23,13 @@ export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTe
   useEffect(reload, [reload]);
   useServerEvents((e) => { if (e.type === 'server.updated' && e.sessionId === session.id) reload(); });
 
-  async function act(kind: 'start' | 'stop' | 'restart', worktreeIds?: number[], commands?: Record<number, string>) {
+  async function act(kind: 'start' | 'stop' | 'restart', worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>) {
     setBusy(true);
     setError(null);
     try {
-      const fn = kind === 'start' ? api.startServers : kind === 'stop' ? api.stopServers : api.restartServers;
-      setServers(await fn(session.id, worktreeIds, commands));
+      setServers(await (kind === 'start' ? api.startServers(session.id, worktreeIds, commands, ports)
+        : kind === 'stop' ? api.stopServers(session.id, worktreeIds)
+        : api.restartServers(session.id, worktreeIds, commands, ports)));
     } catch (e) {
       const missing = missingFrom(e);
       if (missing) onOpenEnv(`필수 값이 비어 있습니다: ${missing.map((m) => `${m.project} ${m.keys.join(', ')}`).join(' / ')}`);
@@ -108,12 +109,13 @@ export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTe
 
       {confirm && confirmTargets.length > 0 && (
         <StartServersDialog
+          sessionId={session.id}
           targets={confirmTargets}
           restart={confirm.kind === 'restart'}
           onCancel={() => setConfirm(null)}
-          onConfirm={async (commands) => {
+          onConfirm={async (commands, ports) => {
             setConfirm(null);
-            await act(confirm.kind, confirm.worktreeIds, commands);
+            await act(confirm.kind, confirm.worktreeIds, commands, ports);
           }}
         />
       )}
@@ -654,52 +656,25 @@ function contextAround(all: LogLine[], target: LogLine): string {
   return all.slice(Math.max(0, i - 3), i + 15).map((l) => l.text).join('\n');
 }
 
-/** 세션 계정 목록. 역할이 다른 계정(사업자, 지자체, 관리자 등)을 여러 개 쓸 수 있다. */
+/** 이 세션에서 쓸 수 있는 계정: 워크스페이스 계정과 공용 계정. 다른 세션과 같이 쓴다. */
 function AccountBlock({ session }: { session: Session }) {
-  const [free, setFree] = useState<Account[]>([]);
-  const [pick, setPick] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
-  const loadFree = useCallback(() => {
-    api.accounts().then((r) => setFree(r.accounts.filter((a) => usableIn(a, session.workspace_id)))).catch(() => setFree([]));
-  }, []);
-  useEffect(loadFree, [loadFree, session.accounts.length]);
-
-  const add = async () => {
-    if (pick === '') return;
-    setError(null);
-    try { await api.assignAccount(session.id, pick); setPick(''); loadFree(); } catch (e) { setError((e as Error).message); }
-  };
-
   return (
     <div className="panel-block account">
       <div className="block-head">
         <h2>테스트 계정 {session.accounts.length > 0 && <span className="muted small">{session.accounts.length}개</span>}</h2>
-        <span className="muted small">이 세션 전용</span>
+        <span className="muted small">다른 세션과 같이 씀</span>
       </div>
-      {session.accounts.length === 0 && <p className="muted small">배정된 계정이 없습니다.</p>}
+      {session.accounts.length === 0 && <p className="muted small">이 워크스페이스에 계정이 없습니다. 설정의 테스트 계정 풀에서 추가하세요.</p>}
       <ul className="account-list">
-        {session.accounts.map((a) => <AccountRow key={a.id} session={session} account={a} onError={setError} onReleased={loadFree} />)}
+        {session.accounts.map((a) => <AccountRow key={a.id} account={a} onError={setError} />)}
       </ul>
-      {free.length > 0 ? (
-        <div className="account-add">
-          <label className="sr-only" htmlFor={`acc-add-${session.id}`}>추가할 계정</label>
-          <select id={`acc-add-${session.id}`} value={pick} onChange={(e) => setPick(e.target.value ? Number(e.target.value) : '')}>
-            <option value="">계정 추가 (남은 {free.length}개)</option>
-            {free.map((a) => <option key={a.id} value={a.id}>{a.login}{a.note ? ` · ${a.note}` : ''}</option>)}
-          </select>
-          <button className="small-btn" disabled={pick === ''} onClick={add}>추가</button>
-        </div>
-      ) : (
-        <p className="muted small">남은 계정이 없습니다. 설정의 테스트 계정 풀에서 추가하세요.</p>
-      )}
       {error && <p className="error-text" role="alert">{error}</p>}
     </div>
   );
 }
 
-function AccountRow({ session, account, onError, onReleased }: {
-  session: Session; account: Session['accounts'][number]; onError: (m: string) => void; onReleased: () => void;
-}) {
+function AccountRow({ account, onError }: { account: Session['accounts'][number]; onError: (m: string) => void }) {
   const [password, setPassword] = useState<string | null>(null);
   return (
     <li className="account-row">
@@ -716,10 +691,6 @@ function AccountRow({ session, account, onError, onReleased }: {
       <button className="small-btn" onClick={async () => {
         try { const p = password ?? (await api.accountPassword(account.id)).password; await navigator.clipboard.writeText(p); } catch (e) { onError((e as Error).message); }
       }}>비밀번호 복사</button>
-      <button className="small-btn" onClick={async () => {
-        if (!confirm(`${account.login} 계정을 풀에 돌려줄까요?`)) return;
-        try { await api.releaseAccount(session.id, account.id); onReleased(); } catch (e) { onError((e as Error).message); }
-      }}>반납</button>
     </li>
   );
 }
@@ -730,7 +701,7 @@ function CloseBlock({ session, anyRunning, onClosed }: { session: Session; anyRu
   async function close(removeWorktrees: boolean) {
     const msg = removeWorktrees
       ? '세션을 닫고 워크트리 폴더도 지울까요? 커밋하지 않은 변경은 사라집니다.'
-      : '세션을 닫을까요? 서버는 끄고 계정은 반납하며, 워크트리 폴더는 남겨 둡니다.';
+      : '세션을 닫을까요? 서버는 끄고, 워크트리 폴더는 남겨 둡니다.';
     if (!confirm(msg)) return;
     setBusy(true);
     try { await api.closeSession(session.id, removeWorktrees); onClosed(); } catch (e) { setError((e as Error).message); setBusy(false); }

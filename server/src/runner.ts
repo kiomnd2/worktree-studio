@@ -4,7 +4,7 @@ import { broadcast, type LogLine } from './hub.js';
 import { getProject } from './projects.js';
 import { getSession, type SessionView } from './sessions.js';
 import { missingRequired, resolveEnv } from './envstore.js';
-import { findFreePort } from './ports.js';
+import { findFreePort, isPortFree } from './ports.js';
 import { maskSecrets } from './secret.js';
 import { getSettings } from './settings.js';
 import { sendNotification } from './notify.js';
@@ -233,16 +233,40 @@ export class MissingEnvError extends Error {
   }
 }
 
-async function allocate(kind: string): Promise<number> {
+async function allocate(kind: string, want?: number): Promise<number> {
   const taken = new Set<number>([...servers.values()].map((r) => r.port));
+  // 실행 전에 정해 둔 포트(설정 제안이 그 포트를 기준으로 했다)가 아직 비어 있으면 그대로 쓴다.
+  if (want && !taken.has(want) && (await isPortFree(want))) return want;
   return findFreePort(kind === 'fe' ? 3401 : 8081, taken);
+}
+
+/**
+ * 서버를 띄우기 전에 쓸 포트를 미리 정한다. 이미 실행 중인 서버는 지금 포트, 재시작할 서버는 지금 포트를 그대로,
+ * 새로 띄울 서버는 빈 포트. 설정 제안이 이 포트를 기준으로 하고, 실행할 때 같은 포트를 쓴다.
+ */
+export async function planPorts(sessionId: number, worktreeIds?: number[], restart = false): Promise<Record<number, number>> {
+  const session = getSession(sessionId);
+  if (!session) throw new Error('세션이 없습니다.');
+  const out: Record<number, number> = {};
+  const taken = new Set<number>([...servers.values()].map((r) => r.port));
+  for (const w of session.worktrees) {
+    const r = servers.get(w.id);
+    if (r && (!restart || !worktreeIds || worktreeIds.includes(w.id))) out[w.id] = r.port;
+  }
+  for (const w of session.worktrees) {
+    if (out[w.id] || (worktreeIds && !worktreeIds.includes(w.id))) continue;
+    const p = await findFreePort(w.project_kind === 'fe' ? 3401 : 8081, taken);
+    taken.add(p);
+    out[w.id] = p;
+  }
+  return out;
 }
 
 /**
  * 세션 워크트리의 서버를 띄운다. worktreeIds가 없으면 전부. BE를 먼저 띄워 FE가 BE 주소를 받게 한다.
  * commands에 워크트리 ID별 명령이 있으면 이번 실행에만 프로젝트 실행 명령 대신 쓴다.
  */
-export async function startServers(sessionId: number, worktreeIds?: number[], commands: Record<number, string> = {}) {
+export async function startServers(sessionId: number, worktreeIds?: number[], commands: Record<number, string> = {}, ports: Record<number, number> = {}) {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
   const targets = session.worktrees
@@ -262,7 +286,7 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
 
   for (const w of targets) {
     const p = getProject(w.project_id)!;
-    const port = await allocate(w.project_kind);
+    const port = await allocate(w.project_kind, ports[w.id]);
     const { env, vars } = resolveEnv(sessionId, p.id);
     const secretKeys = new Set(vars.filter((v) => v.secret).map((v) => v.key));
     const auto: Record<string, string> = { PORT: String(port) };

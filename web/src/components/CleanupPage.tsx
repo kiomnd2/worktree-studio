@@ -116,7 +116,6 @@ export default function CleanupPage({ onOpenSession }: { onOpenSession: (id: num
                       ))}
                       {r.screens_kb > 0 && <div className="muted small">스크린샷 {kb(r.screens_kb)}</div>}
                     </td>
-                    <td>{r.accounts.length ? r.accounts.map((a) => <div key={a} className="mono small">{a}</div>) : <span className="muted">없음</span>}</td>
                     <td><span className={`pill ${STATE[r.state].cls}`}>{STATE[r.state].label}</span><div className="muted small">{r.reason}</div></td>
                   </tr>
                 ))}
@@ -125,7 +124,7 @@ export default function CleanupPage({ onOpenSession }: { onOpenSession: (id: num
           </div>
           <div className="cleanup-bar">
             <p className="muted small">
-              순서: 서버 종료 → 워크트리 삭제 → 로컬 브랜치 삭제{deleteRemote ? ' → 원격 브랜치 삭제' : ''} → 계정 반납 → 스크린샷 삭제 → 세션 기록 보관.
+              순서: 서버 종료 → 워크트리 삭제 → 로컬 브랜치 삭제{deleteRemote ? ' → 원격 브랜치 삭제' : ''} → 스크린샷 삭제 → 세션 기록 보관.
               대화 기록은 지우지 않습니다.
             </p>
             <label className="start-check"><input type="checkbox" checked={deleteRemote} onChange={(e) => setDeleteRemote(e.target.checked)} /> 원격 브랜치도 삭제 (PR이 있는 세션만)</label>
@@ -182,7 +181,6 @@ export default function CleanupPage({ onOpenSession }: { onOpenSession: (id: num
             <ul className="startup-list small">
               <li>주인 없는 서버 프로세스 종료: {startup.orphans_killed}개</li>
               <li>폴더 없는 워크트리 기록 정리(git worktree prune): {startup.pruned.length ? startup.pruned.map((p) => `${p.project} ${p.lines.length}건`).join(', ') : '없음'}</li>
-              <li>닫힌 세션에 묶여 있던 계정 반납: {startup.accounts_released}개</li>
               {startup.missing_worktrees > 0 && <li className="warn-text">열린 세션 중 워크트리 폴더가 사라진 것: {startup.missing_worktrees}개 (정리하면 기록이 지워집니다)</li>}
             </ul>
           </section>

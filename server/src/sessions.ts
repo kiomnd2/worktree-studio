@@ -72,8 +72,10 @@ export const isQueuePaused = (sessionId: number) => pausedQueues.has(sessionId);
 // 도구를 다시 켰을 때 남은 대기열이 저절로 돌지 않게 멈춰 둔다.
 for (const r of db.prepare(`SELECT DISTINCT session_id FROM prompt_queue`).all() as { session_id: number }[]) pausedQueues.add(r.session_id);
 
+/** 세션이 쓸 수 있는 계정: 워크스페이스 계정과 공용 계정. 다른 세션과 같이 쓴다. */
 function accountsView(sessionId: number) {
-  return db.prepare(`SELECT id, login, note FROM test_accounts WHERE session_id = ? ORDER BY assigned_at, id`).all(sessionId) as SessionView['accounts'];
+  return db.prepare(`SELECT a.id, a.login, a.note FROM test_accounts a JOIN sessions s ON s.id = ?
+    WHERE a.workspace_id = s.workspace_id OR a.workspace_id IS NULL ORDER BY a.workspace_id IS NULL, a.login`).all(sessionId) as SessionView['accounts'];
 }
 
 function worktreesOf(sessionId: number) {

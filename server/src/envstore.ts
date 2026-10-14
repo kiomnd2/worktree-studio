@@ -130,6 +130,14 @@ export function resolveEnv(sessionId: number, projectId: number): { env: Record<
   return { env, vars, overrides };
 }
 
+/** 이번 세션에만 몇 개 값을 얹는다(나머지는 그대로). */
+export function setSessionValues(sessionId: number, projectId: number, values: Record<string, string>) {
+  const cur = resolveEnv(sessionId, projectId).env;
+  const vars: EnvVar[] = Object.entries({ ...cur, ...values })
+    .map(([key, value]) => ({ key, value, required: false, secret: looksSecret(key), source: 'manual', found_in: null }));
+  saveSessionEnv(sessionId, projectId, 'session', vars);
+}
+
 export function missingRequired(sessionId: number, projectId: number, autoKeys: string[]): string[] {
   const { env, vars } = resolveEnv(sessionId, projectId);
   return vars.filter((v) => v.required && !env[v.key] && !autoKeys.includes(v.key)).map((v) => v.key);

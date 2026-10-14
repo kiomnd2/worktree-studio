@@ -196,11 +196,12 @@ export default function EnvPage({ session, message, onBack, onStarted }: Props) 
       </div>
       {startTargets && (
         <StartServersDialog
+          sessionId={session.id}
           targets={startTargets}
           onCancel={() => setStartTargets(null)}
-          onConfirm={async (commands) => {
+          onConfirm={async (commands, ports) => {
             try {
-              await api.startServers(session.id, undefined, commands);
+              await api.startServers(session.id, undefined, commands, ports);
             } catch (e) {
               const missing = missingFrom(e);
               if (missing) throw new Error(`아직 비어 있는 필수 값: ${missing.map((m) => `${m.project} ${m.keys.join(', ')}`).join(' / ')}`);

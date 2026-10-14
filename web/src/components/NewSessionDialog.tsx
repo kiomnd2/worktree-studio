@@ -58,7 +58,7 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
   // 티켓 없이 하는 작업은 작업 이름을 그 자리에 쓴다.
   const ticket = choice.mode === 'manual' ? choice.key.trim() : choice.mode === 'existing' ? choice.issue?.key ?? '' : choice.mode === 'none' ? choice.name.trim() : '';
   const summary = summaryEdit ?? (choice.mode === 'existing' ? choice.issue?.summary ?? '' : choice.mode === 'new' ? choice.summary : '');
-  // 이 워크스페이스에 배정할 수 있는 남은 계정 수(워크스페이스 전용 + 공용)
+  // 이 워크스페이스에서 쓸 수 있는 계정 수(워크스페이스 전용 + 공용)
   useEffect(() => {
     if (!workspaceId) return;
     api.accounts().then((a) => setFreeAccounts(a.accounts.filter((x) => usableIn(x, workspaceId)).length)).catch(() => setFreeAccounts(null));
@@ -203,8 +203,8 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
             </fieldset>
             <p className="muted small">
               {freeAccounts === null ? '' : freeAccounts > 0
-                ? `테스트 계정은 남은 ${freeAccounts}개 중 하나가 자동으로 배정됩니다.`
-                : '이 워크스페이스에 남은 테스트 계정이 없습니다. 계정 없이 세션을 만들고, 나중에 설정에서 추가할 수 있습니다.'}
+                ? `이 워크스페이스 테스트 계정 ${freeAccounts}개를 다른 세션과 같이 씁니다.`
+                : '이 워크스페이스에 테스트 계정이 없습니다. 나중에 설정에서 추가할 수 있습니다.'}
               {' '}환경값은 프로젝트의 기본 프로필을 쓰고, 세션 화면의 서버 패널에서 바꿀 수 있습니다.
             </p>
             <label className="field">

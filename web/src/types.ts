@@ -60,7 +60,7 @@ export type Session = {
   primary_worktree_id: number | null;
   unread: number;
   updated_at: string;
-  /** 배정한 순서대로. 역할이 다른 계정을 여러 개 쓸 수 있다. */
+  /** 이 세션에서 쓸 수 있는 계정(워크스페이스 계정과 공용 계정). 다른 세션과 같이 쓴다. */
   accounts: { id: number; login: string; note: string }[];
   worktrees: Worktree[];
   queue: { id: number; text: string; image_count: number; plan: boolean; created_at: string }[];
@@ -113,13 +113,15 @@ export type WorktreeChanges = {
   worktree_id: number; project_name: string; branch: string; base_branch: string; compare_ref: string; files: ChangedFile[]; error: string | null;
 };
 
+/** 서버를 띄우기 전에 이 세션 포트에 맞춰 바꾸자고 제안된 환경값 */
+export type EnvSuggestion = { worktree_id: number; project_id: number; project_name: string; key: string; value: string; current: string | null; reason: string; found_in: string };
+
 export type TaskList = { title: string; tasks: { title: string; status: 'todo' | 'doing' | 'done' | 'skipped'; note: string }[]; updated_at: string };
 
 export type Approval = {
   id: number; session_id: number; reason: string; created_at: number;
   request:
     | { kind: 'env'; project_id: number; project_name: string; profile_name: string; vars: { key: string; value: string; reason: string; secret: boolean; current: string | null }[] }
-    | { kind: 'account'; role: string }
     | { kind: 'plan'; plan: string; docs: { name: string; title: string; kind: DocKind }[] }
     | { kind: 'question'; questions: { question: string; header: string; options: { label: string; description: string }[]; multiSelect: boolean }[] }
     | { kind: 'testdata'; case_id: number; case_title: string; need: string; plan: string; role: string };
@@ -160,9 +162,9 @@ export type CleanupRow = {
   session_id: number; ticket: string; summary: string; workspace_name: string; closed: boolean; updated_at: string; idle_days: number;
   prs: { id: number; number: number; url: string; state: PrState }[]; servers: number;
   worktrees: { id: number; project_name: string; path: string; branch: string; exists: boolean; dirty: number; size_kb: number | null }[];
-  accounts: string[]; screens_kb: number; state: CleanupState; reason: string;
+  screens_kb: number; state: CleanupState; reason: string;
 };
-export type StartupReport = { at: string; orphans_killed: number; pruned: { project: string; lines: string[] }[]; accounts_released: number; missing_worktrees: number };
+export type StartupReport = { at: string; orphans_killed: number; pruned: { project: string; lines: string[] }[]; missing_worktrees: number };
 export type CleanResult = { session_id: number; steps: { name: string; ok: boolean; detail: string }[]; error: string | null };
 
 export type LogLine = { seq: number; t: number; stream: 'out' | 'err' | 'sys'; level: 'error' | 'warn' | 'info'; text: string };
@@ -203,11 +205,11 @@ export type ProjectEnvState = {
 };
 
 export type Account = {
-  id: number; login: string; note: string; session_id: number | null; ticket: string | null;
+  id: number; login: string; note: string;
   /** null이면 모든 워크스페이스에서 쓰는 공용 계정 */
   workspace_id: number | null; workspace_name: string | null;
 };
 
-/** 이 워크스페이스 세션에 배정할 수 있는 남은 계정인지: 그 워크스페이스 계정이나 공용 계정 */
-export const usableIn = (a: Account, workspaceId: number) => !a.session_id && (a.workspace_id === null || a.workspace_id === workspaceId);
+/** 이 워크스페이스 세션에서 쓸 수 있는 계정인지: 그 워크스페이스 계정이나 공용 계정. 여러 세션이 같이 쓴다. */
+export const usableIn = (a: Account, workspaceId: number) => a.workspace_id === null || a.workspace_id === workspaceId;
 export type MissingEnv = { projectId: number; project: string; keys: string[] };

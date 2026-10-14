@@ -4,9 +4,9 @@ import remarkGfm from 'remark-gfm';
 import { api } from '../api';
 import { openDoc, useServerEvents } from '../events';
 import { DOC_KIND } from './DocsPage';
-import { usableIn, type Account, type Approval, type Session } from '../types';
+import type { Approval, Session } from '../types';
 
-/** Claude가 프롬프트 중에 요청한 환경값·테스트 계정. 사용자가 확인해야 적용되고, 그동안 Claude는 기다린다. */
+/** Claude가 프롬프트 중에 요청한 환경값, 계획 승인, 질문, 테스트 데이터. 사용자가 확인해야 적용되고, 그동안 Claude는 기다린다. */
 export default function ApprovalCards({ session, only }: { session: Session; only?: Approval['request']['kind'] }) {
   const [list, setList] = useState<Approval[]>([]);
   const reload = useCallback(() => { api.approvals(session.id).then(setList).catch(() => setList([])); }, [session.id]);
@@ -19,8 +19,7 @@ export default function ApprovalCards({ session, only }: { session: Session; onl
       {shown.map((a) => (a.request.kind === 'env' ? <EnvCard key={a.id} approval={a} />
         : a.request.kind === 'testdata' ? <TestDataCard key={a.id} approval={a} />
         : a.request.kind === 'plan' ? <PlanCard key={a.id} approval={a} />
-        : a.request.kind === 'question' ? <QuestionCard key={a.id} approval={a} />
-        : <AccountCard key={a.id} approval={a} workspaceId={session.workspace_id} />))}
+        : <QuestionCard key={a.id} approval={a} />))}
     </section>
   );
 }
@@ -197,43 +196,6 @@ function PlanCard({ approval }: { approval: Approval }) {
         <button className="small-btn" disabled={busy} onClick={() => decide({ approve: false })}>실행 안 함</button>
         <button className="small-btn" disabled={busy || !feedback.trim()} onClick={() => decide({ approve: false, feedback })}>고쳐 달라고 하기</button>
         <button className="small-btn primary" disabled={busy || Boolean(feedback.trim())} title={feedback.trim() ? '적은 고칠 점을 보내거나 지운 뒤 승인하세요' : undefined} onClick={() => decide({ approve: true })}>승인하고 실행</button>
-      </div>
-    </div>
-  );
-}
-
-function AccountCard({ approval, workspaceId }: { approval: Approval; workspaceId: number }) {
-  const req = approval.request as Extract<Approval['request'], { kind: 'account' }>;
-  const [free, setFree] = useState<Account[]>([]);
-  const [pick, setPick] = useState<number | ''>('');
-  const { busy, error, decide } = useDecide(approval.id);
-  useEffect(() => {
-    api.accounts().then((r) => {
-      // 메모가 요청한 역할과 맞는 계정을 앞에 두고 먼저 고른다.
-      const words = req.role.toLowerCase().split(/[\s,()/]+/).filter(Boolean);
-      const score = (a: Account) => words.filter((w) => a.note.toLowerCase().includes(w) || a.login.toLowerCase().includes(w)).length;
-      const list = r.accounts.filter((a) => usableIn(a, workspaceId)).sort((a, b) => score(b) - score(a));
-      setFree(list);
-      if (list[0] && score(list[0]) > 0) setPick(list[0].id);
-    }).catch(() => setFree([]));
-  }, [req.role, workspaceId]);
-  return (
-    <div className="approval-card" role="alertdialog" aria-label="테스트 계정 요청">
-      <div className="approval-head">
-        <strong>Claude가 테스트 계정을 요청했습니다: {req.role}</strong>
-        <span className="muted small">확인하기 전까지 Claude가 기다립니다</span>
-      </div>
-      {approval.reason && <p className="small approval-reason">{approval.reason}</p>}
-      {free.length === 0 ? <p className="muted small">남은 계정이 없습니다. 설정의 테스트 계정 풀에 추가한 뒤 고르거나 거절하세요.</p> : (
-        <select value={pick} onChange={(e) => setPick(e.target.value ? Number(e.target.value) : '')} aria-label="배정할 계정">
-          <option value="">계정을 고르세요</option>
-          {free.map((a) => <option key={a.id} value={a.id}>{a.login}{a.note ? ` · ${a.note}` : ''}</option>)}
-        </select>
-      )}
-      {error && <p className="error-text" role="alert">{error}</p>}
-      <div className="approval-actions">
-        <button className="small-btn" disabled={busy} onClick={() => decide({ approve: false })}>거절</button>
-        <button className="small-btn primary" disabled={busy || pick === ''} onClick={() => decide({ approve: true, account_id: Number(pick) })}>배정하고 알려 주기</button>
       </div>
     </div>
   );

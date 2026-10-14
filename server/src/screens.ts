@@ -234,7 +234,7 @@ export async function launchBrowser(): Promise<Browser> {
   }
 }
 
-/** 로그인 경로가 있으면 배정 계정으로 로그인한다. 아이디·비밀번호 입력란이 하나씩 있는 일반 폼만 처리한다. */
+/** 로그인 경로가 있으면 고른 계정으로 로그인한다. 아이디·비밀번호 입력란이 하나씩 있는 일반 폼만 처리한다. */
 async function login(ctx: BrowserContext, base: string, loginPath: string, account: { login: string; password: string }): Promise<string | null> {
   const page = await ctx.newPage();
   try {
@@ -284,7 +284,7 @@ async function shoot(ctx: BrowserContext, url: string): Promise<Shot> {
   }
 }
 
-/** 미리보기에 띄운 주소를 찍어 프롬프트 첨부용 이미지로 돌려준다. 로그인 경로가 있으면 배정 계정으로 먼저 로그인한다. */
+/** 미리보기에 띄운 주소를 찍어 프롬프트 첨부용 이미지로 돌려준다. 로그인 경로가 있으면 고른 계정으로 먼저 로그인한다. */
 export async function capturePreview(sessionId: number, url: string, accountId?: number): Promise<{ data: string; warning: string | null }> {
   const state = screenState(sessionId);
   if (!state.preview_url || !url.startsWith(state.preview_url)) throw new Error('이 세션의 FE 미리보기 주소만 찍을 수 있습니다.');

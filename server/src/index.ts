@@ -24,12 +24,13 @@ import { chooseSite, createIssue, getIssue, issueTypes, jiraConfigView, required
 import { confirmRoleAccount, deleteCase, generateCases, runTests, saveCase, stopTests, testShotPath, testState } from './tests.js';
 import { getSettings, saveSettings, type Settings } from './settings.js';
 import { sendNotification } from './notify.js';
-import { cleanupOrphans, clearFailure, getLogs, listServers, startServers, stopAll, stopServers } from './runner.js';
+import { cleanupOrphans, clearFailure, getLogs, listServers, planPorts, startServers, stopAll, stopServers } from './runner.js';
+import { suggestServerEnv } from './envsuggest.js';
 import { sessionEnvState } from './envapi.js';
-import { deleteProfile, saveSessionEnv, selectProfile, type EnvVar } from './envstore.js';
+import { deleteProfile, saveSessionEnv, selectProfile, setSessionValues, type EnvVar } from './envstore.js';
 import { analyzeEnvWithAI, parseDotenv, scanEnv } from './envscan.js';
 import {
-  accountPassword, addAccount, assignAccount, deleteAccount, freeAccountCount, listAccounts, releaseAccount, releaseAccountById, updateAccount,
+  accountPassword, accountsForWorkspace, addAccount, deleteAccount, listAccounts, updateAccount,
 } from './accounts.js';
 import { githubStatus } from './github.js';
 import { getProject as projectById } from './projects.js';
@@ -159,7 +160,6 @@ app.post('/api/sessions', async (req) => {
     firstPromptPlan: z.boolean().default(false),
   }).parse(req.body);
   const created = await createSession(body);
-  assignAccount(created.id);
   const session = getSession(created.id)!;
   if (body.firstPrompt?.trim()) submitPrompt(session.id, body.firstPrompt, [], { plan: body.firstPromptPlan });
   return session;
@@ -199,7 +199,6 @@ app.post('/api/sessions/:id/close', async (req) => {
   const { removeWorktrees } = z.object({ removeWorktrees: z.boolean().default(false) }).parse(req.body ?? {});
   await stopServers(id);
   await closeSession(id, removeWorktrees);
-  releaseAccount(id);
   return { ok: true };
 });
 
@@ -262,12 +261,34 @@ app.get('/api/sessions/:id/servers', async (req) => {
 const startBody = z.object({
   worktreeIds: z.array(z.number().int()).optional(),
   commands: z.record(z.string(), z.string()).optional(),
+  /** 실행 전에 정해 둔 포트(설정 제안의 기준). 비어 있으면 그대로 쓴다. */
+  ports: z.record(z.string(), z.number().int()).optional(),
 });
 const commandMap = (c?: Record<string, string>) => Object.fromEntries(Object.entries(c ?? {}).map(([k, v]) => [Number(k), v]));
+const portMap = (c?: Record<string, number>) => Object.fromEntries(Object.entries(c ?? {}).map(([k, v]) => [Number(k), v]));
+// 서버를 띄우기 전: 쓸 포트를 정하고, 그 포트로 FE·BE가 맞물리게 바꿔야 할 환경값을 제안받는다.
+app.post('/api/sessions/:id/servers/plan', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const b = z.object({ worktreeIds: z.array(z.number().int()).optional(), restart: z.boolean().default(false) }).parse(req.body ?? {});
+  return { ports: await planPorts(id, b.worktreeIds, b.restart) };
+});
+app.post('/api/sessions/:id/servers/suggest-env', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const { ports } = z.object({ ports: z.record(z.string(), z.number().int()) }).parse(req.body);
+  return suggestServerEnv(id, portMap(ports));
+});
+app.post('/api/sessions/:id/env/apply', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const { items } = z.object({ items: z.array(z.object({ project_id: z.number().int(), key: z.string().min(1), value: z.string() })).min(1) }).parse(req.body);
+  const byProject = new Map<number, Record<string, string>>();
+  for (const it of items) byProject.set(it.project_id, { ...byProject.get(it.project_id), [it.key.trim()]: it.value });
+  for (const [projectId, values] of byProject) setSessionValues(id, projectId, values);
+  return { ok: true };
+});
 app.post('/api/sessions/:id/servers/start', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { worktreeIds, commands } = startBody.parse(req.body ?? {});
-  await startServers(id, worktreeIds, commandMap(commands));
+  const { worktreeIds, commands, ports } = startBody.parse(req.body ?? {});
+  await startServers(id, worktreeIds, commandMap(commands), portMap(ports));
   return listServers(getSession(id)!);
 });
 app.post('/api/sessions/:id/servers/stop', async (req) => {
@@ -278,9 +299,9 @@ app.post('/api/sessions/:id/servers/stop', async (req) => {
 });
 app.post('/api/sessions/:id/servers/restart', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { worktreeIds, commands } = startBody.parse(req.body ?? {});
+  const { worktreeIds, commands, ports } = startBody.parse(req.body ?? {});
   await stopServers(id, worktreeIds);
-  await startServers(id, worktreeIds, commandMap(commands));
+  await startServers(id, worktreeIds, commandMap(commands), portMap(ports));
   return listServers(getSession(id)!);
 });
 // 계획 산출물(계획서·화면설계서). HTML은 스크립트를 막은 별도 출처로 보여 준다.
@@ -387,7 +408,7 @@ app.get('/api/worktrees/:id/logs', async (req) => getLogs(idParam.parse(req.para
 // 테스트 계정 풀
 app.get('/api/accounts', async (req) => {
   const { workspace } = z.object({ workspace: z.coerce.number().int().optional() }).parse(req.query);
-  return { accounts: listAccounts(), free: freeAccountCount(workspace) };
+  return { accounts: workspace ? accountsForWorkspace(workspace) : listAccounts() };
 });
 app.post('/api/accounts', async (req) => {
   const b = z.object({ login: z.string(), password: z.string(), note: z.string().default(''), workspace_id: z.number().int().nullable().default(null) }).parse(req.body);
@@ -404,21 +425,6 @@ app.delete('/api/accounts/:id', async (req) => {
   return { ok: true };
 });
 app.get('/api/accounts/:id/password', async (req) => ({ password: accountPassword(idParam.parse(req.params).id) }));
-app.post('/api/sessions/:id/account/assign', async (req) => {
-  const { accountId } = z.object({ accountId: z.number().int().optional() }).parse(req.body ?? {});
-  return { account: assignAccount(idParam.parse(req.params).id, accountId) };
-});
-app.post('/api/accounts/:id/release', async (req) => {
-  releaseAccountById(idParam.parse(req.params).id);
-  return { ok: true };
-});
-app.post('/api/sessions/:id/account/release', async (req) => {
-  const { id } = idParam.parse(req.params);
-  const { accountId } = z.object({ accountId: z.number().int().optional() }).parse(req.body ?? {});
-  releaseAccount(id, accountId);
-  setSession(id, {});
-  return { ok: true };
-});
 
 app.get('/api/github/status', async () => githubStatus());
 

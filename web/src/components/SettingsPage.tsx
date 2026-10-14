@@ -292,20 +292,19 @@ function AccountsSection({ accounts, workspaces, run }: { accounts: Account[]; w
   // 새 계정은 기본으로 첫 워크스페이스 것. ''는 공용.
   const [wsId, setWsId] = useState<number | ''>('');
   useEffect(() => { if (wsId === '' && workspaces[0] && accounts.length === 0) setWsId(workspaces[0].id); }, [workspaces]); // eslint-disable-line react-hooks/exhaustive-deps
-  const used = accounts.filter((a) => a.session_id).length;
   return (
     <section className="card">
       <div className="card-head">
         <div>
-          <h2>테스트 계정 풀 <span className="muted small">{accounts.length}개 중 {used}개 사용 중</span></h2>
-          <p className="muted small">계정은 워크스페이스마다 따로 씁니다. 세션에는 그 워크스페이스 계정과 공용 계정만 배정됩니다. 세션을 만들면 비어 있는 계정이 하나 배정되고, 역할이 다른 계정이 더 필요하면 세션 화면에서 추가합니다. 메모에 역할(사업자, 지자체, 관리자 등)을 적어 두면 Claude와 화면 촬영에서 골라 씁니다. 세션을 닫으면 돌아옵니다. 같은 계정으로 두 곳에 로그인해 세션이 끊기는 일을 막습니다. 비밀번호는 암호화해 저장합니다.</p>
+          <h2>테스트 계정 풀 <span className="muted small">{accounts.length}개</span></h2>
+          <p className="muted small">세션은 자기 워크스페이스 계정과 공용 계정을 모두 쓸 수 있고, 여러 세션이 같은 계정을 같이 씁니다. 메모에 역할(사업자, 지자체, 관리자 등)을 적어 두면 Claude와 화면 테스트에서 골라 씁니다. 비밀번호는 암호화해 저장합니다.</p>
         </div>
       </div>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>워크스페이스</th><th>계정</th><th>메모</th><th>상태</th><th>사용 세션</th><th><span className="sr-only">작업</span></th></tr></thead>
+          <thead><tr><th>워크스페이스</th><th>계정</th><th>메모</th><th><span className="sr-only">작업</span></th></tr></thead>
           <tbody>
-            {accounts.length === 0 && <tr><td colSpan={6} className="muted">등록된 계정이 없습니다.</td></tr>}
+            {accounts.length === 0 && <tr><td colSpan={4} className="muted">등록된 계정이 없습니다.</td></tr>}
             {accounts.map((a) => (
               <tr key={a.id}>
                 <td>
@@ -316,10 +315,7 @@ function AccountsSection({ accounts, workspaces, run }: { accounts: Account[]; w
                 </td>
                 <td className="mono">{a.login}</td>
                 <td className="muted">{a.note}</td>
-                <td><span className={`pill ${a.session_id ? 'accent' : 'ok'}`}>{a.session_id ? '사용 중' : '대기'}</span></td>
-                <td>{a.ticket ?? <span className="muted">없음</span>}</td>
                 <td className="actions">
-                  {a.session_id && <button onClick={run(() => api.releaseAccountById(a.id), '계정을 반납했습니다.')}>반납</button>}
                   <button className="danger" onClick={() => { if (confirm(`${a.login} 계정을 풀에서 지울까요?`)) run(() => api.deleteAccount(a.id))(); }}>삭제</button>
                 </td>
               </tr>

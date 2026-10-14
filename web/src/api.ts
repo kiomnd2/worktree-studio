@@ -1,4 +1,5 @@
 import type {
+  EnvSuggestion,
   TaskList,
   Account, Approval, ChangeScope, ArchiveEntry, DocMeta, JiraConfig, JiraIssue, JiraRequiredField, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
   ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, Workspace,
@@ -90,20 +91,20 @@ export const api = {
   deleteProfile: (profileId: number) => request('DELETE', `/api/env-profiles/${profileId}`),
 
   servers: (id: number) => request<ServerView[]>('GET', `/api/sessions/${id}/servers`),
-  startServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/start`, { worktreeIds, commands }),
+  startServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/start`, { worktreeIds, commands, ports }),
+  planPorts: (id: number, worktreeIds?: number[], restart = false) => request<{ ports: Record<number, number> }>('POST', `/api/sessions/${id}/servers/plan`, { worktreeIds, restart }),
+  suggestServerEnv: (id: number, ports: Record<number, number>) => request<{ suggestions: EnvSuggestion[]; note: string }>('POST', `/api/sessions/${id}/servers/suggest-env`, { ports }),
+  applySessionEnv: (id: number, items: { project_id: number; key: string; value: string }[]) => request('POST', `/api/sessions/${id}/env/apply`, { items }),
   stopServers: (id: number, worktreeIds?: number[]) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/stop`, { worktreeIds }),
-  restartServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/restart`, { worktreeIds, commands }),
+  restartServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/restart`, { worktreeIds, commands, ports }),
   dismissFailure: (id: number, worktreeId: number) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/${worktreeId}/dismiss`),
   logs: (worktreeId: number) => request<LogLine[]>('GET', `/api/worktrees/${worktreeId}/logs`),
 
-  accounts: () => request<{ accounts: Account[]; free: number }>('GET', '/api/accounts'),
+  accounts: () => request<{ accounts: Account[] }>('GET', '/api/accounts'),
   addAccount: (login: string, password: string, note: string, workspaceId: number | null) => request('POST', '/api/accounts', { login, password, note, workspace_id: workspaceId }),
   updateAccount: (id: number, patch: { note?: string; workspace_id?: number | null }) => request('PATCH', `/api/accounts/${id}`, patch),
   deleteAccount: (id: number) => request('DELETE', `/api/accounts/${id}`),
   accountPassword: (id: number) => request<{ password: string }>('GET', `/api/accounts/${id}/password`),
-  assignAccount: (sessionId: number, accountId?: number) => request('POST', `/api/sessions/${sessionId}/account/assign`, { accountId }),
-  releaseAccount: (sessionId: number, accountId?: number) => request('POST', `/api/sessions/${sessionId}/account/release`, { accountId }),
-  releaseAccountById: (accountId: number) => request('POST', `/api/accounts/${accountId}/release`),
   githubStatus: () => request<{ installed: boolean; loggedIn: boolean; account: string | null }>('GET', '/api/github/status'),
 
   pr: (id: number) => request<{ job: PrJob | null; prs: PullRequest[] }>('GET', `/api/sessions/${id}/pr`),

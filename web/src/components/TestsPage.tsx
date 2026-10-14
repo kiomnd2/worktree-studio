@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { attachToPrompt, insertIntoPrompt, useServerEvents } from '../events';
 import ApprovalCards from './ApprovalCards';
-import { usableIn, type Account, type Session, type TestCase, type TestState } from '../types';
+import { type Session, type TestCase, type TestState } from '../types';
 
 const STATUS: Record<TestCase['status'], { label: string; cls: string }> = {
   draft: { label: '실행 전', cls: '' },
@@ -190,15 +190,13 @@ async function sendToPrompt(c: TestCase) {
 
 /** 역할마다 쓸 계정을 사용자가 고른다. 고르기 전에는 그 역할의 케이스를 실행하지 않는다. */
 function RoleAccounts({ session, state, onError, onDone }: { session: Session; state: TestState; onError: (m: string) => void; onDone: () => void }) {
-  const [free, setFree] = useState<Account[]>([]);
-  useEffect(() => { api.accounts().then((r) => setFree(r.accounts.filter((a) => usableIn(a, session.workspace_id)))).catch(() => setFree([])); }, [session.accounts.length, session.workspace_id]);
   const unconfirmed = state.roles.filter((r) => !r.account).length;
   return (
     <section className={`card role-accounts${unconfirmed ? ' needs' : ''}`}>
       <div className="card-head">
         <div>
           <h2>테스트에 쓸 계정 {unconfirmed > 0 && <span className="pill warn">확인 필요 {unconfirmed}</span>}</h2>
-          <p className="muted small">케이스마다 필요한 역할의 계정을 고르세요. 고른 계정으로 로그인해서 테스트하고, 남은 계정을 고르면 이 세션에 배정합니다.</p>
+          <p className="muted small">케이스마다 필요한 역할의 계정을 고르세요. 고른 계정으로 로그인해서 테스트합니다. 계정은 다른 세션과 같이 씁니다.</p>
         </div>
       </div>
       <ul className="role-list">
@@ -215,22 +213,13 @@ function RoleAccounts({ session, state, onError, onDone }: { session: Session; s
               }}
             >
               <option value="">계정을 고르세요</option>
-              {session.accounts.length > 0 && (
-                <optgroup label="이 세션 계정">
-                  {session.accounts.map((a) => <option key={a.id} value={a.id}>{a.login}{a.note ? ` · ${a.note}` : ''}</option>)}
-                </optgroup>
-              )}
-              {free.length > 0 && (
-                <optgroup label="남은 계정 (고르면 이 세션에 배정)">
-                  {free.map((a) => <option key={a.id} value={a.id}>{a.login}{a.note ? ` · ${a.note}` : ''}</option>)}
-                </optgroup>
-              )}
+              {session.accounts.map((a) => <option key={a.id} value={a.id}>{a.login}{a.note ? ` · ${a.note}` : ''}</option>)}
             </select>
             {r.account ? <span className="pill ok">확인됨</span> : <span className="pill warn">확인 필요</span>}
           </li>
         ))}
       </ul>
-      {session.accounts.length === 0 && free.length === 0 && <p className="muted small" style={{ padding: '0 20px 14px' }}>고를 계정이 없습니다. 설정의 테스트 계정 풀에 계정을 추가하세요.</p>}
+      {session.accounts.length === 0 && <p className="muted small" style={{ padding: '0 20px 14px' }}>고를 계정이 없습니다. 설정의 테스트 계정 풀에 계정을 추가하세요.</p>}
     </section>
   );
 }

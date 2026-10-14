@@ -7,7 +7,7 @@ import { db } from './db.js';
 import { getProject } from './projects.js';
 import { getSession, listMessages } from './sessions.js';
 import { listServers } from './runner.js';
-import { accountOf, assignAccount, listAccounts } from './accounts.js';
+import { accountOf, checkAccountUsable, listAccounts } from './accounts.js';
 import { maskSecrets } from './secret.js';
 import { broadcast } from './hub.js';
 import { sendNotification } from './notify.js';
@@ -239,13 +239,11 @@ export function deleteCase(sessionId: number, id: number) {
 }
 
 /**
- * 역할에 쓸 계정을 사용자가 정한다. 풀에서 고른 계정이면 세션에 배정한 뒤 그 역할의 모든 케이스에 건다.
+ * 역할에 쓸 계정을 사용자가 정한다. 고른 계정을 그 역할의 모든 케이스에 건다.
  * 계정 확인은 이 함수로만 한다. 실행할 때 계정을 추측해서 고르지 않는다.
  */
 export function confirmRoleAccount(sessionId: number, role: string, accountId: number) {
-  if (!accountOf(sessionId, accountId) || accountOf(sessionId, accountId)!.id !== accountId) assignAccount(sessionId, accountId);
-  const acc = accountOf(sessionId, accountId);
-  if (!acc || acc.id !== accountId) throw new Error('계정을 배정하지 못했습니다.');
+  checkAccountUsable(sessionId, accountId);
   db.prepare(`UPDATE test_cases SET account_id = ? WHERE session_id = ? AND role = ?`).run(accountId, sessionId, role);
   changed(sessionId);
 }
