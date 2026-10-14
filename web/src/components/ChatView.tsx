@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../api';
-import { useServerEvents } from '../events';
+import { openDoc, useServerEvents } from '../events';
 import type { Session, StoredMessage } from '../types';
 import PromptInput from './PromptInput';
 import ApprovalCards from './ApprovalCards';
@@ -115,6 +115,7 @@ function MessageItem({ message, toolResults }: { message: StoredMessage; toolRes
             ))}
           </div>
         )}
+        {p.plan && <span className="plan-badge">계획 먼저</span>}
         {p.text && <div className="bubble">{p.text}</div>}
       </div>
     );
@@ -133,6 +134,19 @@ function MessageItem({ message, toolResults }: { message: StoredMessage; toolRes
             return (
               <div key={i} className={`markdown${p.error ? ' error-text' : ''}`}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{b.text}</ReactMarkdown>
+              </div>
+            );
+          }
+          if (b.type === 'tool_use' && b.name === 'mcp__studio__save_doc') {
+            const r = toolResults.get(b.id);
+            const kind = b.input?.kind === 'plan' ? '계획서' : b.input?.kind === 'screen' ? '화면설계서' : '문서';
+            return (
+              <div key={i} className="doc-card">
+                <div className="doc-card-text">
+                  <strong>{b.input?.title ?? b.input?.name}</strong>
+                  <span className={`small ${r?.isError ? 'error-text' : 'muted'}`}>{!r ? `${kind} 저장 중` : r.isError ? r.text : `${kind} 저장함`}</span>
+                </div>
+                {r && !r.isError && <button className="small-btn" onClick={() => openDoc(b.input?.name)}>열기</button>}
               </div>
             );
           }

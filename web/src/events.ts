@@ -53,7 +53,25 @@ export function openInPreview(path: string) {
   window.dispatchEvent(new CustomEvent('wts:preview-open', { detail: path }));
 }
 
-/** 로그 줄 같은 텍스트를 프롬프트 입력창에 붙인다. */
+let promptMounted = false;
+let pendingInsert: string[] = [];
+
+/** 로그 줄 같은 텍스트를 프롬프트 입력창에 붙인다. 입력창이 없는 화면에서 부르면 입력창이 나타날 때 붙인다. */
 export function insertIntoPrompt(text: string) {
+  if (!promptMounted) { pendingInsert.push(text); return; }
   window.dispatchEvent(new CustomEvent('wts:insert-prompt', { detail: text }));
+}
+
+/** 프롬프트 입력창이 나타나고 사라질 때 부른다. 기다리던 텍스트를 돌려준다. */
+export function promptInputMounted(mounted: boolean): string[] {
+  promptMounted = mounted;
+  if (!mounted) return [];
+  const out = pendingInsert;
+  pendingInsert = [];
+  return out;
+}
+
+/** 세션의 문서 화면을 연다. name이 있으면 그 문서를 고른다. */
+export function openDoc(name?: string) {
+  window.dispatchEvent(new CustomEvent('wts:open-doc', { detail: name ?? null }));
 }

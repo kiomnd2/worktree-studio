@@ -74,7 +74,7 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
       setBusy(true);
       setStage('Jira 티켓 만드는 중');
       try {
-        const created = await api.createJiraIssue(workspaceId, { summary: choice.summary, description: choice.description, issuetype_id: choice.issuetype_id });
+        const created = await api.createJiraIssue(workspaceId, { summary: choice.summary, description: choice.description, issuetype_id: choice.issuetype_id, fields: choice.fields });
         // 하려는 일을 적어 뒀으면 첫 프롬프트로 이어서 쓴다.
         if (!firstPrompt.trim() && choice.prompt.trim()) setFirstPrompt(choice.prompt.trim());
         // 이전으로 돌아가도 다시 만들지 않게 만든 티켓을 고른 상태로 바꾼다.

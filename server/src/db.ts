@@ -145,6 +145,8 @@ addColumn('test_accounts', 'workspace_id', 'workspace_id INTEGER REFERENCES work
 }
 // 워크스페이스마다 쓰는 Jira 프로젝트 키(예: KERE, DRMS). 세션을 만들 때 이 프로젝트에서 티켓을 고르거나 만든다.
 addColumn('workspaces', 'jira_project', 'jira_project TEXT');
+// 계획 모드로 실행할 프롬프트
+addColumn('prompt_queue', 'plan', 'plan INTEGER NOT NULL DEFAULT 0');
 addColumn('sessions', 'stale_notified', 'stale_notified INTEGER NOT NULL DEFAULT 0');
 
 db.exec(`

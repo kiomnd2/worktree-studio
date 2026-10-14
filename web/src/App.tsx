@@ -12,6 +12,8 @@ import PrDialog from './components/PrDialog';
 import CleanupPage from './components/CleanupPage';
 import ChangesPage from './components/ChangesPage';
 import TestsPage from './components/TestsPage';
+import DocsPage from './components/DocsPage';
+import ArchivePage from './components/ArchivePage';
 import type { PullRequest, ServerView } from './types';
 
 type View =
@@ -20,7 +22,10 @@ type View =
   | { kind: 'cleanup' }
   | { kind: 'env'; id: number; message?: string }
   | { kind: 'changes'; id: number }
-  | { kind: 'tests'; id: number };
+  | { kind: 'tests'; id: number }
+  | { kind: 'docs'; id: number; name: string | null }
+  | { kind: 'archive' }
+  | { kind: 'archive-docs'; id: number; ticket: string; name: string | null };
 
 function initialView(): View {
   // Jira 로그인 뒤 설정 화면으로 돌아온다(?view=settings&jira=connected).
@@ -43,7 +48,7 @@ export default function App() {
   }, []);
   useEffect(reload, [reload]);
 
-  const selectedId = view.kind === 'session' || view.kind === 'env' || view.kind === 'changes' || view.kind === 'tests' ? view.id : null;
+  const selectedId = view.kind === 'session' || view.kind === 'env' || view.kind === 'changes' || view.kind === 'tests' || view.kind === 'docs' ? view.id : null;
   const [servers, setServers] = useState<ServerView[]>([]);
   const reloadServers = useCallback(() => {
     if (selectedId) api.servers(selectedId).then(setServers).catch(() => setServers([]));
@@ -85,6 +90,13 @@ export default function App() {
     document.title = unread ? `(${unread}) Worktree Studio` : 'Worktree Studio';
   }, [sessions, selectedId]);
 
+  // 대화나 승인 카드에서 문서를 열면 그 세션의 문서 화면으로 간다.
+  useEffect(() => {
+    const onOpen = (e: Event) => { if (selectedId) setView({ kind: 'docs', id: selectedId, name: (e as CustomEvent<string | null>).detail }); };
+    window.addEventListener('wts:open-doc', onOpen);
+    return () => window.removeEventListener('wts:open-doc', onOpen);
+  }, [selectedId]);
+
   useServerEvents((e) => {
     if (e.type === 'sessions.changed' || e.type === 'session.updated') reload();
     if (e.type === 'server.updated' && e.sessionId === selectedId) reloadServers();
@@ -101,7 +113,7 @@ export default function App() {
           </svg>
           Worktree Studio
         </div>
-        {selected && view.kind !== 'settings' && view.kind !== 'cleanup' && (
+        {selected && view.kind !== 'settings' && view.kind !== 'cleanup' && view.kind !== 'archive' && view.kind !== 'archive-docs' && (
           <>
             <div className="topbar-session">
               <strong>{selected.ticket}</strong> <span>{selected.summary}</span>
@@ -144,16 +156,24 @@ export default function App() {
           selectedId={selectedId}
           settingsOpen={view.kind === 'settings'}
           cleanupOpen={view.kind === 'cleanup'}
+          archiveOpen={view.kind === 'archive' || view.kind === 'archive-docs'}
           cleanupCount={cleanupCount}
           onSelect={(id) => setView({ kind: 'session', id })}
           onNew={() => setCreating(true)}
           onSettings={() => setView({ kind: 'settings' })}
           onCleanup={() => setView({ kind: 'cleanup' })}
+          onArchive={() => setView({ kind: 'archive' })}
         />
         {view.kind === 'settings' ? (
           <main className="main scroll"><SettingsPage /></main>
         ) : view.kind === 'cleanup' ? (
           <CleanupPage onOpenSession={(id) => setView({ kind: 'session', id })} />
+        ) : view.kind === 'archive' ? (
+          <ArchivePage onOpen={(e, name) => setView({ kind: 'archive-docs', id: e.session_id, ticket: e.ticket, name: name ?? null })} />
+        ) : view.kind === 'archive-docs' ? (
+          <DocsPage key={`a-${view.id}`} sessionId={view.id} ticket={view.ticket} initial={view.name} backLabel="보관함으로" onBack={() => setView({ kind: 'archive' })} />
+        ) : view.kind === 'docs' && selected ? (
+          <DocsPage key={selected.id} sessionId={selected.id} ticket={selected.ticket} live initial={view.name} backLabel="세션 화면으로" onBack={() => setView({ kind: 'session', id: selected.id })} />
         ) : view.kind === 'tests' && selected ? (
           <TestsPage key={selected.id} session={selected} onBack={() => setView({ kind: 'session', id: selected.id })} />
         ) : view.kind === 'changes' && selected ? (
@@ -175,6 +195,7 @@ export default function App() {
               onOpenEnv={(message) => setView({ kind: 'env', id: selected.id, message })}
               onOpenChanges={() => setView({ kind: 'changes', id: selected.id })}
               onOpenTests={() => setView({ kind: 'tests', id: selected.id })}
+              onOpenDocs={(name) => setView({ kind: 'docs', id: selected.id, name: name ?? null })}
               onClosed={() => { setView({ kind: 'session', id: null }); reload(); }}
             />
           </>

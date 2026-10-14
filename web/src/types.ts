@@ -21,6 +21,15 @@ export type Project = {
 
 export type Workspace = { id: number; name: string; jira_project: string | null; projects: { id: number; name: string; kind: ProjectKind }[] };
 
+/** 새 티켓을 만들 때 프로젝트가 필수로 요구하는 칸(스프린트 등) */
+export type JiraRequiredField = {
+  key: string;
+  name: string;
+  kind: 'sprint' | 'select' | 'multiselect' | 'text' | 'number';
+  options: { id: string; name: string; hint?: string }[];
+  default_id: string | null;
+};
+
 export type JiraIssue = {
   key: string; summary: string; status: string; status_category: string; type: string; assignee: string | null; url: string; updated: string;
 };
@@ -54,7 +63,7 @@ export type Session = {
   /** 배정한 순서대로. 역할이 다른 계정을 여러 개 쓸 수 있다. */
   accounts: { id: number; login: string; note: string }[];
   worktrees: Worktree[];
-  queue: { id: number; text: string; image_count: number; created_at: string }[];
+  queue: { id: number; text: string; image_count: number; plan: boolean; created_at: string }[];
   queue_paused: boolean;
 };
 
@@ -78,6 +87,7 @@ export type ServerEvent =
   | { type: 'screens.updated'; sessionId: number }
   | { type: 'cleanup.changed' }
   | { type: 'approvals.updated'; sessionId: number }
+  | { type: 'docs.updated'; sessionId: number }
   | { type: 'tests.updated'; sessionId: number };
 
 export type TestCase = {
@@ -104,7 +114,16 @@ export type Approval = {
   id: number; session_id: number; reason: string; created_at: number;
   request:
     | { kind: 'env'; project_id: number; project_name: string; profile_name: string; vars: { key: string; value: string; reason: string; secret: boolean; current: string | null }[] }
-    | { kind: 'account'; role: string };
+    | { kind: 'account'; role: string }
+    | { kind: 'plan'; plan: string; docs: { name: string; title: string; kind: DocKind }[] };
+};
+
+/** 개발 산출물. plan: 계획서, screen: 화면설계서, test: 테스트 결과서 */
+export type DocKind = 'plan' | 'screen' | 'test' | 'other';
+export type DocMeta = { name: string; title: string; kind: DocKind; version: number; updated_at: string; path: string };
+export type ArchiveEntry = {
+  session_id: number; ticket: string; summary: string; workspace_name: string; closed: boolean; updated_at: string;
+  branches: string[]; prs: { number: number; url: string; title: string; state: string }[]; docs: DocMeta[]; dir: string;
 };
 
 export type PrState = 'OPEN' | 'MERGED' | 'CLOSED';

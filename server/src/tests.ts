@@ -12,6 +12,7 @@ import { maskSecrets } from './secret.js';
 import { broadcast } from './hub.js';
 import { sendNotification } from './notify.js';
 import { changedDiff, changedFiles, feWorktree } from './screens.js';
+import { saveDoc } from './docs.js';
 
 /**
  * 개발한 기능의 테스트 케이스를 만들고, 브라우저로 직접 돌려 보며 화면을 찍는다.
@@ -282,7 +283,10 @@ export function runTests(sessionId: number, ids?: number[]) {
     running.delete(sessionId);
     changed(sessionId);
     const s = getSession(sessionId);
-    if (!abort.signal.aborted) sendNotification(`${s?.ticket ?? ''} 테스트 끝`, `통과 ${pass}개, 실패·확인 불가 ${fail}개`, sessionId);
+    if (!abort.signal.aborted) {
+      try { archiveTestReport(sessionId, targets.map((t) => t.id)); } catch (err) { console.warn('[tests] 결과서를 보관하지 못했습니다:', (err as Error).message); }
+      sendNotification(`${s?.ticket ?? ''} 테스트 끝`, `통과 ${pass}개, 실패·확인 불가 ${fail}개`, sessionId);
+    }
   })();
 }
 
@@ -397,4 +401,47 @@ export function testShotPath(sessionId: number, caseId: number, file: string): s
 export function deleteSessionTests(sessionId: number) {
   fs.rmSync(path.join(TEST_DIR, String(sessionId)), { recursive: true, force: true });
   db.prepare(`DELETE FROM test_cases WHERE session_id = ?`).run(sessionId);
+}
+
+const STATUS_LABEL: Record<TestStatus, string> = { draft: '실행 전', queued: '대기', running: '실행 중', pass: '통과', fail: '실패', blocked: '확인 불가', error: '오류' };
+const escHtml = (t: string) => t.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+
+/**
+ * 테스트를 돌릴 때마다 결과서를 산출물 보관함에 남긴다. 스크린샷을 파일 안에 넣어 한 파일로 완결되게 하고,
+ * 케이스를 다시 만들거나 리소스를 정리해 원본 스크린샷이 지워져도 남는다. 실행할 때마다 새 판이 된다.
+ */
+export function archiveTestReport(sessionId: number, ranIds: number[]) {
+  const s = getSession(sessionId);
+  const cases = listCases(sessionId).filter((c) => ranIds.includes(c.id) && c.ran_at);
+  if (!s || cases.length === 0) return;
+  const count = (st: TestStatus[]) => cases.filter((c) => st.includes(c.status)).length;
+  const img = (caseId: number, file: string) => {
+    const full = testShotPath(sessionId, caseId, file);
+    if (!full) return '';
+    const type = /\.png$/i.test(file) ? 'image/png' : 'image/jpeg';
+    return `data:${type};base64,${fs.readFileSync(full).toString('base64')}`;
+  };
+  const body = cases.map((c) => {
+    const acc = c.account_id ? accountOf(sessionId, c.account_id) : null;
+    const steps = c.results.length
+      ? c.results.map((r, i) => `<tr><td>${i + 1}</td><td>${escHtml(r.step)}</td><td class="${r.ok ? 'ok' : 'bad'}">${r.ok ? '통과' : '실패'}</td><td>${escHtml(r.note)}</td></tr>`).join('')
+      : c.steps.map((st, i) => `<tr><td>${i + 1}</td><td>${escHtml(st)}</td><td>-</td><td></td></tr>`).join('');
+    const shots = c.shots.map((sh) => { const src = img(c.id, sh.file); return src ? `<figure><img src="${src}" alt=""><figcaption>${escHtml(sh.caption || sh.file)}</figcaption></figure>` : ''; }).join('');
+    return `<section><h2><span class="st ${c.status}">${STATUS_LABEL[c.status]}</span> ${escHtml(c.title)}</h2>
+<p class="m">역할 ${escHtml(c.role || '로그인 없음')}${acc ? ` · 계정 ${escHtml(acc.login)}` : ''} · 시작 화면 <code>${escHtml(c.start_path)}</code> · ${new Date(`${c.ran_at!.replace(' ', 'T')}Z`).toLocaleString('ko-KR')}</p>
+${c.summary ? `<p>${escHtml(c.summary)}</p>` : ''}
+<table><thead><tr><th>#</th><th>단계</th><th>결과</th><th>메모</th></tr></thead><tbody>${steps}</tbody></table>
+<h3>기대 결과</h3><ul>${c.expected.map((e) => `<li>${escHtml(e)}</li>`).join('')}</ul>
+${shots ? `<div class="shots">${shots}</div>` : ''}</section>`;
+  }).join('');
+  const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${escHtml(s.ticket)} 테스트 결과서</title>
+<style>body{font-family:-apple-system,system-ui,sans-serif;margin:32px;color:#1b2230;max-width:1100px}h1{font-size:22px;margin:0 0 6px}h2{font-size:17px;margin:0 0 4px}h3{font-size:14px;margin:12px 0 4px}.m{color:#6b7280;font-size:13px;margin:0 0 8px}
+section{border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:16px 0}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #e5e7eb;padding:6px 8px;text-align:left;font-size:13.5px;vertical-align:top}th{background:#f6f7f9}td:nth-child(1){width:24px}td:nth-child(2){width:34%}td:nth-child(3),th:nth-child(3){white-space:nowrap}
+.st{font-size:12px;padding:2px 8px;border-radius:999px;background:#e5e7eb;margin-right:6px}.st.pass,.ok{color:#137333}.st.pass{background:#e6f4ea}.st.fail,.st.error,.bad{color:#b3261e}.st.fail,.st.error{background:#fce8e6}.st.blocked{background:#fef7e0;color:#8a5a00}
+.shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;margin-top:12px}figure{margin:0}img{width:100%;border:1px solid #e5e7eb;border-radius:6px}figcaption{font-size:12.5px;color:#6b7280;margin-top:4px}</style></head>
+<body><h1>${escHtml(s.ticket)} 테스트 결과서</h1>
+<p class="m">${escHtml(s.summary)} · ${s.worktrees.map((w) => `${escHtml(w.project_name)} <code>${escHtml(w.branch)}</code>`).join(', ')}</p>
+<p>케이스 ${cases.length}개 · 통과 ${count(['pass'])} · 실패 ${count(['fail'])} · 확인 불가·오류 ${count(['blocked', 'error'])}</p>
+${body}</body></html>`;
+  saveDoc(sessionId, { name: 'test-report', title: '화면 테스트 결과서', kind: 'test', html }, { maxBytes: 60 * 1024 * 1024 });
 }

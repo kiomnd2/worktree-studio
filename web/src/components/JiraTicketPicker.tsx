@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import type { JiraIssue, JiraStatus, Workspace } from '../types';
+import type { JiraIssue, JiraRequiredField, JiraStatus, Workspace } from '../types';
 
 export type TicketChoice =
   | { mode: 'existing'; issue: JiraIssue | null }
   /** prompt: 하려는 일을 자유롭게 적은 것. 이걸로 제목·설명을 제안받는다. drafted: 제안을 받았거나 직접 쓰기로 했는지 */
-  | { mode: 'new'; prompt: string; drafted: boolean; summary: string; description: string; issuetype_id: string }
+  /** fields: 프로젝트가 필수로 요구하는 칸(스프린트 등)의 값. 키는 Jira 필드 키 */
+  | { mode: 'new'; prompt: string; drafted: boolean; summary: string; description: string; issuetype_id: string; fields: Record<string, string> }
   | { mode: 'manual'; key: string };
 
 type Props = { workspace: Workspace; jira: JiraStatus | null; value: TicketChoice; onChange: (v: TicketChoice) => void };
@@ -22,6 +23,28 @@ export default function JiraTicketPicker({ workspace, jira, value, onChange }: P
   const [error, setError] = useState<string | null>(null);
   const [drafting, setDrafting] = useState(false);
   const [draftNote, setDraftNote] = useState<string | null>(null);
+  const [required, setRequired] = useState<JiraRequiredField[]>([]);
+  const [requiredError, setRequiredError] = useState<string | null>(null);
+  const issuetypeId = value.mode === 'new' ? value.issuetype_id : '';
+  const latest = useRef(value);
+  latest.current = value;
+
+  // 유형마다 필수 칸이 다르다. 유형이 정해지면 받아 오고, 비어 있는 칸은 기본값(진행 중 스프린트 등)으로 채운다.
+  useEffect(() => {
+    if (!ready || !issuetypeId) { setRequired([]); return; }
+    let alive = true;
+    setRequiredError(null);
+    api.jiraRequiredFields(workspace.id, issuetypeId).then((fs) => {
+      if (!alive) return;
+      setRequired(fs);
+      const cur = latest.current;
+      if (cur.mode !== 'new') return;
+      const fields: Record<string, string> = {};
+      for (const f of fs) fields[f.key] = cur.fields[f.key] ?? f.default_id ?? '';
+      onChange({ ...cur, fields });
+    }).catch((e) => { if (alive) { setRequired([]); setRequiredError(e.message); } });
+    return () => { alive = false; };
+  }, [ready, workspace.id, issuetypeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** 적은 내용으로 제목·유형·설명을 제안받아 채운다. 채운 뒤에도 고칠 수 있다. */
   async function propose() {
@@ -81,7 +104,7 @@ export default function JiraTicketPicker({ workspace, jira, value, onChange }: P
       <div className="segmented" role="group" aria-label="티켓 고르기 방식">
         <button type="button" aria-pressed={value.mode === 'existing'} className={value.mode === 'existing' ? 'on' : ''} onClick={() => onChange({ mode: 'existing', issue: null })}>이미 있는 티켓</button>
         <button type="button" aria-pressed={value.mode === 'new'} className={value.mode === 'new' ? 'on' : ''}
-          onClick={() => onChange({ mode: 'new', prompt: '', drafted: false, summary: '', description: '', issuetype_id: (types.find((x) => x.name === '작업') ?? types[0])?.id ?? '' })}>새로 만들기</button>
+          onClick={() => onChange({ mode: 'new', prompt: '', drafted: false, summary: '', description: '', fields: {}, issuetype_id: (types.find((x) => x.name === '작업') ?? types[0])?.id ?? '' })}>새로 만들기</button>
       </div>
 
       {value.mode === 'existing' && (
@@ -139,6 +162,24 @@ export default function JiraTicketPicker({ workspace, jira, value, onChange }: P
                   </select>
                 </label>
               </div>
+              {required.length > 0 && (
+                <div className="grid2">
+                  {required.map((f) => (
+                    <label key={f.key} className="field">
+                      <span>{f.name} <span className="muted small">(필수)</span></span>
+                      {f.options.length || f.kind === 'sprint' ? (
+                        <select value={value.fields[f.key] ?? ''} disabled={drafting} onChange={(e) => onChange({ ...value, fields: { ...value.fields, [f.key]: e.target.value } })}>
+                          <option value="">{f.options.length ? '고르세요' : '열린 스프린트가 없습니다'}</option>
+                          {f.options.map((o) => <option key={o.id} value={o.id}>{o.name}{o.hint ? ` (${o.hint})` : ''}</option>)}
+                        </select>
+                      ) : (
+                        <input type={f.kind === 'number' ? 'number' : 'text'} value={value.fields[f.key] ?? ''} disabled={drafting} onChange={(e) => onChange({ ...value, fields: { ...value.fields, [f.key]: e.target.value } })} />
+                      )}
+                    </label>
+                  ))}
+                </div>
+              )}
+              {requiredError && <p className="error-text">필수 항목을 불러오지 못했습니다: {requiredError}</p>}
               <label className="field">
                 <span>설명 <span className="muted small">(Markdown)</span></span>
                 <textarea rows={value.description ? 12 : 4} value={value.description} disabled={drafting} onChange={(e) => onChange({ ...value, description: e.target.value })} />

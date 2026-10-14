@@ -10,7 +10,7 @@ export type SessionView = SessionRow & {
   accounts: { id: number; login: string; note: string }[];
   worktrees: (WorktreeRow & { project_name: string; project_kind: string })[];
   /** 지금 작업이 끝나면 차례로 실행할 프롬프트 */
-  queue: { id: number; text: string; image_count: number; created_at: string }[];
+  queue: { id: number; text: string; image_count: number; plan: boolean; created_at: string }[];
   /** 중단·오류로 대기열을 멈췄는지. 멈추면 사용자가 이어서 실행해야 다음 프롬프트가 돈다. */
   queue_paused: boolean;
 };
@@ -28,19 +28,19 @@ export function getSession(id: number): SessionView | undefined {
   return r ? { ...r, accounts: accountsView(r.id), worktrees: worktreesOf(r.id), ...queueView(r.id) } : undefined;
 }
 
-export type QueuedPrompt = { id: number; session_id: number; text: string; images: string; created_at: string };
+export type QueuedPrompt = { id: number; session_id: number; text: string; images: string; plan: number; created_at: string };
 const pausedQueues = new Set<number>();
 
 function queueView(sessionId: number) {
-  const rows = db.prepare(`SELECT id, text, images, created_at FROM prompt_queue WHERE session_id = ? ORDER BY id`).all(sessionId) as QueuedPrompt[];
+  const rows = db.prepare(`SELECT id, text, images, plan, created_at FROM prompt_queue WHERE session_id = ? ORDER BY id`).all(sessionId) as QueuedPrompt[];
   return {
-    queue: rows.map((r) => ({ id: r.id, text: r.text, image_count: (JSON.parse(r.images) as unknown[]).length, created_at: r.created_at })),
+    queue: rows.map((r) => ({ id: r.id, text: r.text, image_count: (JSON.parse(r.images) as unknown[]).length, plan: Boolean(r.plan), created_at: r.created_at })),
     queue_paused: rows.length > 0 && pausedQueues.has(sessionId),
   };
 }
 
-export function enqueuePrompt(sessionId: number, text: string, images: unknown[]): number {
-  db.prepare(`INSERT INTO prompt_queue (session_id, text, images) VALUES (?, ?, ?)`).run(sessionId, text, JSON.stringify(images));
+export function enqueuePrompt(sessionId: number, text: string, images: unknown[], plan = false): number {
+  db.prepare(`INSERT INTO prompt_queue (session_id, text, images, plan) VALUES (?, ?, ?, ?)`).run(sessionId, text, JSON.stringify(images), plan ? 1 : 0);
   broadcast({ type: 'session.updated', sessionId });
   return (db.prepare(`SELECT COUNT(*) AS n FROM prompt_queue WHERE session_id = ?`).get(sessionId) as { n: number }).n;
 }

@@ -213,8 +213,7 @@ td.actions button + button { margin-left: 6px; }
 .log-send { min-height: 22px; padding: 0 7px; font-size: 11px; border: 1px solid currentColor; background: transparent; color: #F4A3A3; border-radius: 4px; flex-shrink: 0; font-weight: 400; }
 .log-line.warn .log-send { color: #F0B27A; }
 .account-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.worktree-info summary { cursor: pointer; font-weight: 500; }
-.worktree-info[open] { gap: 10px; }
+.worktree-info { gap: 10px; }
 
 /* Phase 2: 환경값 화면 */
 .page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
@@ -538,3 +537,45 @@ body.resizing iframe { pointer-events: none; }
 .wizard-steps li.done span { background: var(--ok); color: #fff; }
 .ticket-card { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft); }
 .ticket-title { font-weight: 500; }
+
+/* 계획 문서 */
+a.small-btn { display: inline-flex; align-items: center; text-decoration: none; color: inherit; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); }
+.doc-item { grid-template-columns: minmax(0, 1fr) auto; }
+.doc-area { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.doc-area .diff-head .row { gap: 6px; }
+.doc-area .diff-head .small-btn { margin-left: 0; }
+.doc-frame { width: 100%; height: calc(100vh - 230px); min-height: 480px; border: 1px solid var(--rule); border-radius: 6px; background: #fff; }
+.plan-badge { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: var(--ink); color: #fff; }
+.plan-summary { max-height: 260px; overflow-y: auto; border: 1px solid var(--rule); border-radius: 6px; padding: 8px 12px; background: var(--ground); }
+.plan-docs { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.plan-feedback { width: 100%; min-height: 64px; }
+.doc-card { display: flex; align-items: center; gap: 10px; border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; background: var(--sheet); }
+.doc-card .doc-card-text { display: flex; flex-direction: column; min-width: 0; }
+.doc-card .small-btn { margin-left: auto; }
+.docs-summary { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.docs-summary button { width: 100%; min-height: 0; padding: 4px 6px; border: 0; background: transparent; text-align: left; font-weight: 400; display: flex; justify-content: space-between; gap: 8px; border-radius: 6px; }
+.docs-summary button:hover { background: var(--soft); }
+
+/* 패널 맨 위 메뉴 */
+.panel-menus { position: sticky; top: -14px; z-index: 15; margin: -14px -14px 0; padding: 10px 14px; background: var(--soft); border-bottom: 1px solid var(--rule); }
+.panel-menu-bar { display: flex; flex-wrap: wrap; gap: 6px; }
+.panel-menu-btn { min-height: 32px; padding: 0 10px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+.panel-menu-btn.on { border-color: var(--accent); background: var(--accent-soft); }
+.panel-menu-btn svg { transition: transform 0.15s; }
+.panel-menu-btn.on svg { transform: rotate(180deg); }
+.panel-menu-count { font-size: 11.5px; padding: 0 6px; border-radius: 999px; background: var(--rule); color: var(--muted); font-weight: 500; }
+.panel-pop { position: absolute; left: 14px; right: 14px; top: calc(100% + 6px); max-height: 70vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 10px; background: var(--soft); border: 1px solid var(--rule-strong); border-radius: 10px; box-shadow: 0 12px 32px rgba(27, 34, 48, 0.18); }
+.panel-pop[hidden] { display: none; }
+
+/* 산출물 보관함 */
+.archive-search { width: 100%; max-width: 520px; min-height: 38px; margin-bottom: 16px; }
+.archive-group h2 { font-size: 14px; color: var(--muted); margin: 18px 0 8px; }
+.archive-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.archive-item { padding: 12px 16px; display: flex; flex-direction: column; gap: 6px; }
+.archive-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.archive-head .small-btn { margin-left: 0; }
+.archive-title { text-align: left; font-size: 15px; }
+.archive-badge { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: var(--soft); border: 1px solid var(--rule); color: var(--muted); }
+.archive-item .branch { margin-right: 6px; }
+.archive-docs { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.archive-docs .small-btn { margin-left: 0; }

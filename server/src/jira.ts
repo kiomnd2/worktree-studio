@@ -261,12 +261,87 @@ export async function issueTypes(projectKey: string): Promise<{ id: string; name
   return (r.issueTypes ?? []).filter((t) => !t.subtask).map((t) => ({ id: t.id, name: t.name }));
 }
 
+export type RequiredField = {
+  key: string;
+  name: string;
+  /** sprint: 스프린트 id(숫자), select: 고른 값의 id, text/number: 직접 입력 */
+  kind: 'sprint' | 'select' | 'multiselect' | 'text' | 'number';
+  options: { id: string; name: string; hint?: string }[];
+  default_id: string | null;
+};
+
+/** 화면에서 따로 받는 칸은 빼고, 프로젝트가 필수로 요구하는 나머지 칸 */
+const BUILTIN = new Set(['project', 'summary', 'issuetype', 'description', 'reporter', 'assignee', 'parent']);
+
+type RawField = {
+  key: string;
+  fieldId?: string;
+  name: string;
+  required: boolean;
+  hasDefaultValue?: boolean;
+  schema?: { type?: string; items?: string; custom?: string };
+  allowedValues?: { id?: string; name?: string; value?: string; key?: string }[];
+};
+
+/** 프로젝트에서 아직 끝나지 않은 스프린트. 진행 중인 것을 먼저, 그다음 예정된 것. 스프린트에 든 이슈에서 모은다. */
+async function openSprints(projectKey: string, fieldKey: string): Promise<{ id: string; name: string; state: string }[]> {
+  type S = { id: number; name: string; state: string; startDate?: string };
+  type N = { fields: Record<string, S[] | null | undefined> };
+  const r = await tool<{ issues?: N[] | { nodes?: N[] } }>('searchJiraIssuesUsingJql', {
+    cloudId: cloud(),
+    jql: `project = ${jqlString(projectKey)} AND (sprint in openSprints() OR sprint in futureSprints()) ORDER BY updated DESC`,
+    fields: [fieldKey],
+    maxResults: 100,
+  });
+  const seen = new Map<number, S>();
+  for (const n of nodesOf(r)) for (const sp of n.fields[fieldKey] ?? []) if (sp.state !== 'closed') seen.set(sp.id, sp);
+  return [...seen.values()]
+    .sort((a, b) => (a.state === b.state ? (a.startDate ?? '').localeCompare(b.startDate ?? '') : a.state === 'active' ? -1 : 1))
+    .map((sp) => ({ id: String(sp.id), name: sp.name, state: sp.state }));
+}
+
+/** 이 유형으로 티켓을 만들 때 채워야 하는 칸(기본값이 있는 칸은 뺀다) */
+export async function requiredFields(projectKey: string, issuetypeId: string): Promise<RequiredField[]> {
+  const r = await tool<{ fields?: RawField[] }>('getJiraIssueTypeMetaWithFields', { cloudId: cloud(), projectIdOrKey: projectKey, issueTypeId: issuetypeId, requiredFieldsOnly: true });
+  const out: RequiredField[] = [];
+  for (const f of r.fields ?? []) {
+    const key = f.fieldId ?? f.key;
+    if (!f.required || f.hasDefaultValue || BUILTIN.has(key)) continue;
+    if (f.schema?.custom === 'com.pyxis.greenhopper.jira:gh-sprint') {
+      const sprints = await openSprints(projectKey, key);
+      out.push({ key, name: f.name, kind: 'sprint', options: sprints.map((s) => ({ id: s.id, name: s.name, hint: s.state === 'active' ? '진행 중' : '예정' })), default_id: sprints.find((s) => s.state === 'active')?.id ?? sprints[0]?.id ?? null });
+    } else if (f.allowedValues?.length) {
+      const options = f.allowedValues.map((v) => ({ id: String(v.id ?? v.key ?? v.value ?? v.name), name: String(v.name ?? v.value ?? v.key ?? v.id) }));
+      out.push({ key, name: f.name, kind: f.schema?.type === 'array' ? 'multiselect' : 'select', options, default_id: options.length === 1 ? options[0].id : null });
+    } else {
+      out.push({ key, name: f.name, kind: f.schema?.type === 'number' ? 'number' : 'text', options: [], default_id: null });
+    }
+  }
+  return out;
+}
+
+/** 화면에서 받은 값을 Jira 필드 모양으로 바꾼다. 형식을 모르는 칸은 받은 글자 그대로 넘긴다. */
+function fieldValues(fields: RequiredField[], values: Record<string, string>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const f of fields) {
+    const v = values[f.key]?.trim();
+    if (!v) throw new Error(`"${f.name}" 칸을 채워 주세요.`);
+    if (f.kind === 'sprint') out[f.key] = Number(v);
+    else if (f.kind === 'select') out[f.key] = { id: v };
+    else if (f.kind === 'multiselect') out[f.key] = [{ id: v }];
+    else if (f.kind === 'number') out[f.key] = Number(v);
+    else out[f.key] = v;
+  }
+  return out;
+}
+
 /** 이슈를 만들고 나에게 배정한다. 유형은 화면에서 고른 id를 이름으로 바꿔 넘긴다. */
-export async function createIssue(projectKey: string, input: { summary: string; description: string; issuetype_id: string }): Promise<JiraIssue> {
+export async function createIssue(projectKey: string, input: { summary: string; description: string; issuetype_id: string; fields?: Record<string, string> }): Promise<JiraIssue> {
   if (!input.summary.trim()) throw new Error('티켓 제목을 넣어 주세요.');
   const type = (await issueTypes(projectKey)).find((t) => t.id === input.issuetype_id);
   if (!type) throw new Error('티켓 유형을 다시 고르세요.');
   const me = load().user?.account_id;
+  const extra = fieldValues(await requiredFields(projectKey, type.id), input.fields ?? {});
   const created = await tool<{ key?: string }>('createJiraIssue', {
     cloudId: cloud(),
     projectKey,
@@ -274,6 +349,7 @@ export async function createIssue(projectKey: string, input: { summary: string; 
     summary: input.summary.trim(),
     ...(input.description.trim() ? { description: input.description.trim(), contentFormat: 'markdown' } : {}),
     ...(me ? { assignee_account_id: me } : {}),
+    ...(Object.keys(extra).length ? { additional_fields: extra } : {}),
   });
   const key = created.key ?? (typeof created === 'string' ? (created as string).match(/[A-Z][A-Z0-9_]*-\d+/)?.[0] : undefined);
   if (!key) throw new Error('티켓은 만들었지만 키를 읽지 못했습니다. Jira에서 확인하세요.');

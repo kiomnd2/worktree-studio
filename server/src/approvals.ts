@@ -17,17 +17,19 @@ export type EnvRequest = {
   vars: { key: string; value: string; reason: string; secret: boolean; current: string | null }[];
 };
 export type AccountRequest = { kind: 'account'; role: string };
+/** 계획 모드에서 Claude가 계획을 마치고 실행해도 되는지 묻는 것. docs는 이번 계획에서 저장한 산출물 이름 */
+export type PlanRequest = { kind: 'plan'; plan: string; docs: { name: string; title: string; kind: string }[] };
 
 export type Approval = {
   id: number;
   session_id: number;
   reason: string;
-  request: EnvRequest | AccountRequest;
+  request: EnvRequest | AccountRequest | PlanRequest;
   created_at: number;
 };
 
 export type Decision =
-  | { approve: false }
+  | { approve: false; feedback?: string }
   | { approve: true; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number };
 
 const pending = new Map<number, { approval: Approval; resolve: (text: string) => void }>();
@@ -53,8 +55,10 @@ function ask(sessionId: number, reason: string, request: Approval['request'], ap
     });
     changed(sessionId);
     const s = getSession(sessionId);
-    const what = request.kind === 'env' ? `${request.project_name} 환경값 ${request.vars.map((v) => v.key).join(', ')}` : `테스트 계정 (${request.role})`;
-    sendNotification(`${s?.ticket ?? ''} 확인이 필요합니다`, `Claude가 ${what}을(를) 요청했습니다.`, sessionId);
+    const body = request.kind === 'plan'
+      ? '계획을 마쳤습니다. 산출물을 보고 실행할지 정해 주세요.'
+      : `Claude가 ${request.kind === 'env' ? `${request.project_name} 환경값 ${request.vars.map((v) => v.key).join(', ')}` : `테스트 계정 (${request.role})`}을(를) 요청했습니다.`;
+    sendNotification(`${s?.ticket ?? ''} 확인이 필요합니다`, body, sessionId);
   });
 }
 
@@ -130,4 +134,16 @@ export function requestAccount(sessionId: number, role: string, reason: string):
     if (!acc) return '계정을 배정하지 못했습니다.';
     return `사용자가 승인해 테스트 계정을 배정했습니다: ${acc.login} / ${acc.password}${acc.note ? ` (${acc.note})` : ''}. 이 세션 전용입니다.`;
   });
+}
+
+/**
+ * 계획 승인. 승인하면 true(이어서 실행), 고쳐 달라고 하면 그 내용을 돌려준다.
+ * 프롬프트가 끝나거나 중단돼 취소되면 거절로 본다.
+ */
+export function requestPlanApproval(sessionId: number, plan: string, docs: PlanRequest['docs']): Promise<{ approve: true } | { approve: false; feedback: string }> {
+  let result: { approve: true } | { approve: false; feedback: string } = { approve: false, feedback: '' };
+  return ask(sessionId, '', { kind: 'plan', plan, docs }, (d) => {
+    result = d.approve ? { approve: true } : { approve: false, feedback: d.feedback?.trim() ?? '' };
+    return '';
+  }).then(() => result);
 }

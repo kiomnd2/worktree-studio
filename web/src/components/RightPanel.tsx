@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, missingFrom } from '../api';
 import { attachToPrompt, insertIntoPrompt, openInPreview, useServerEvents } from '../events';
-import { usableIn, type Account, type LogLine, ScreenCheck, ScreenState, ServerView, Session, TestState, WorktreeChanges } from '../types';
+import { DOC_KIND } from './DocsPage';
+import { usableIn, type Account, type DocMeta, type LogLine, ScreenCheck, ScreenState, ServerView, Session, TestState, WorktreeChanges } from '../types';
 import StartServersDialog from './StartServersDialog';
 
 const STATUS_LABEL: Record<string, string> = {
   idle: '꺼짐', starting: '시작 중', running: '실행 중', unhealthy: '응답 없음', failed: '멈춤', stopped: '꺼짐',
 };
 
-type Props = { session: Session; onOpenEnv: (message?: string) => void; onOpenChanges: () => void; onOpenTests: () => void; onClosed: () => void };
+type Props = { session: Session; onOpenEnv: (message?: string) => void; onOpenChanges: () => void; onOpenTests: () => void; onOpenDocs: (name?: string) => void; onClosed: () => void };
 
-export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTests, onClosed }: Props) {
+export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTests, onOpenDocs, onClosed }: Props) {
   const [servers, setServers] = useState<ServerView[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,6 +51,15 @@ export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTe
     <>
     <PanelResizer />
     <section className="panel" aria-label="서버, 미리보기, 로그">
+      <PanelMenus
+        session={session}
+        anyRunning={anyRunning}
+        onOpenChanges={onOpenChanges}
+        onOpenTests={onOpenTests}
+        onOpenDocs={onOpenDocs}
+        onClosed={onClosed}
+      />
+
       <div className="panel-block">
         <div className="block-head">
           <h2>서버</h2>
@@ -87,12 +97,6 @@ export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTe
         {error && <p className="error-text" role="alert">{error}</p>}
       </div>
 
-      <ChangesBlock session={session} onOpen={onOpenChanges} />
-
-      <ScreensBlock session={session} />
-
-      <TestsBlock session={session} onOpen={onOpenTests} />
-
       {fe ? <Preview key={fe.url} sessionId={session.id} baseUrl={fe.url!} ready={fe.status === 'running'} /> : (
         <div className="placeholder">
           <strong>미리보기</strong>
@@ -101,10 +105,6 @@ export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTe
       )}
 
       <Logs servers={servers} />
-
-      <AccountBlock session={session} />
-
-      <CloseBlock session={session} anyRunning={anyRunning} onClosed={onClosed} />
 
       {confirm && confirmTargets.length > 0 && (
         <StartServersDialog
@@ -210,14 +210,111 @@ function isLive(s: ServerView) {
   return s.status === 'starting' || s.status === 'running' || s.status === 'unhealthy';
 }
 
+type MenuKey = 'changes' | 'docs' | 'tests' | 'session';
+
+/**
+ * 패널 맨 위의 메뉴. 변경 파일·계획 문서·화면 테스트·세션은 필요할 때만 펼쳐 보고,
+ * 패널 본문에는 서버, 미리보기, 로그만 둔다. 숫자를 보여 주려고 내용은 닫혀 있어도 그려 둔다.
+ */
+function PanelMenus({ session, anyRunning, onOpenChanges, onOpenTests, onOpenDocs, onClosed }: {
+  session: Session; anyRunning: boolean; onOpenChanges: () => void; onOpenTests: () => void; onOpenDocs: (name?: string) => void; onClosed: () => void;
+}) {
+  const [open, setOpen] = useState<MenuKey | null>(null);
+  const [changes, setChanges] = useState<number | null>(null);
+  const [docs, setDocs] = useState(0);
+  const box = useRef<HTMLDivElement>(null);
+
+  // 바깥을 누르거나 Esc를 누르면 닫는다.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => { if (box.current && !box.current.contains(e.target as Node)) setOpen(null); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(null); };
+    document.addEventListener('pointerdown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('pointerdown', onDown); window.removeEventListener('keydown', onKey); };
+  }, [open]);
+
+  const menus: { key: MenuKey; label: string; count?: string }[] = [
+    { key: 'changes', label: '변경 파일', count: changes === null ? undefined : String(changes) },
+    { key: 'docs', label: '산출물', count: String(docs) },
+    { key: 'tests', label: '화면 테스트', count: session.accounts.length ? `계정 ${session.accounts.length}` : undefined },
+    { key: 'session', label: '세션' },
+  ];
+  const close = () => setOpen(null);
+
+  return (
+    <div className="panel-menus" ref={box}>
+      <div className="panel-menu-bar" role="toolbar" aria-label="세션 메뉴">
+        {menus.map((m) => (
+          <button
+            key={m.key}
+            type="button"
+            className={`panel-menu-btn${open === m.key ? ' on' : ''}`}
+            aria-expanded={open === m.key}
+            aria-controls={`panel-menu-${m.key}`}
+            onClick={() => setOpen(open === m.key ? null : m.key)}
+          >
+            {m.label}
+            {m.count !== undefined && <span className="panel-menu-count">{m.count}</span>}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+          </button>
+        ))}
+      </div>
+      <div id="panel-menu-changes" className="panel-pop" hidden={open !== 'changes'}>
+        <ChangesBlock session={session} onOpen={() => { close(); onOpenChanges(); }} onCount={setChanges} />
+        <ScreensBlock session={session} />
+      </div>
+      <div id="panel-menu-docs" className="panel-pop" hidden={open !== 'docs'}>
+        <DocsBlock session={session} onOpen={(name) => { close(); onOpenDocs(name); }} onCount={setDocs} />
+      </div>
+      <div id="panel-menu-tests" className="panel-pop" hidden={open !== 'tests'}>
+        <TestsBlock session={session} onOpen={() => { close(); onOpenTests(); }} />
+        <AccountBlock session={session} />
+      </div>
+      <div id="panel-menu-session" className="panel-pop" hidden={open !== 'session'}>
+        <CloseBlock session={session} anyRunning={anyRunning} onClosed={onClosed} />
+      </div>
+    </div>
+  );
+}
+
+/** 산출물(계획서·화면설계서·테스트 결과서) 목록. 없으면 숨긴다. */
+function DocsBlock({ session, onOpen, onCount }: { session: Session; onOpen: (name?: string) => void; onCount: (n: number) => void }) {
+  const [docs, setDocs] = useState<DocMeta[]>([]);
+  const reload = useCallback(() => { api.docs(session.id).then(setDocs).catch(() => setDocs([])); }, [session.id]);
+  useEffect(reload, [reload]);
+  useServerEvents((e) => { if (e.type === 'docs.updated' && e.sessionId === session.id) reload(); });
+  useEffect(() => onCount(docs.length), [docs.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div className="panel-block">
+      <div className="block-head">
+        <h2>산출물 <span className="muted small">{docs.length}개</span></h2>
+        <button className="small-btn primary" disabled={docs.length === 0} onClick={() => onOpen()}>문서 보기</button>
+      </div>
+      {docs.length === 0 && <p className="muted small">아직 없습니다. "계획 먼저"로 보내면 계획서·화면설계서가, 화면 테스트를 돌리면 테스트 결과서가 쌓입니다. 세션을 닫아도 산출물 보관함에 남습니다.</p>}
+      <ul className="docs-summary">
+        {docs.map((d) => (
+          <li key={d.name}>
+            <button onClick={() => onOpen(d.name)}>
+              <span>{d.title}</span>
+              <span className="muted small">{DOC_KIND[d.kind]} · {d.version}판</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /** 기준 브랜치와 달라진 파일 수 요약. 자세한 비교는 변경 파일 화면에서 한다. */
-function ChangesBlock({ session, onOpen }: { session: Session; onOpen: () => void }) {
+function ChangesBlock({ session, onOpen, onCount }: { session: Session; onOpen: () => void; onCount: (n: number | null) => void }) {
   const [data, setData] = useState<WorktreeChanges[] | null>(null);
   const reload = useCallback(() => { api.changes(session.id, 'base').then(setData).catch(() => setData(null)); }, [session.id]);
   useEffect(reload, [reload]);
   // Claude 작업이 끝나면(세션 상태가 바뀌면) 다시 센다.
   useServerEvents((e) => { if (e.type === 'session.updated' && e.sessionId === session.id) reload(); });
   const total = data?.reduce((n, w) => n + w.files.length, 0) ?? 0;
+  useEffect(() => onCount(data ? total : null), [data, total]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="panel-block">
       <div className="block-head">
@@ -639,8 +736,8 @@ function CloseBlock({ session, anyRunning, onClosed }: { session: Session; anyRu
     try { await api.closeSession(session.id, removeWorktrees); onClosed(); } catch (e) { setError((e as Error).message); setBusy(false); }
   }
   return (
-    <details className="panel-block worktree-info">
-      <summary>워크트리와 세션 닫기</summary>
+    <div className="panel-block worktree-info">
+      <div className="block-head"><h2>워크트리</h2></div>
       <ul className="worktrees">
         {session.worktrees.map((w) => (
           <li key={w.id}>
@@ -656,6 +753,6 @@ function CloseBlock({ session, anyRunning, onClosed }: { session: Session; anyRu
         <button disabled={busy || session.status === 'running'} onClick={() => close(false)}>세션 닫기</button>
         <button className="danger" disabled={busy || session.status === 'running'} onClick={() => close(true)}>닫고 워크트리 삭제</button>
       </div>
-    </details>
+    </div>
   );
 }

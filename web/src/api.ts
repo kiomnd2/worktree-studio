@@ -1,5 +1,5 @@
 import type {
-  Account, Approval, ChangeScope, JiraConfig, JiraIssue, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
+  Account, Approval, ChangeScope, ArchiveEntry, DocMeta, JiraConfig, JiraIssue, JiraRequiredField, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
   ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, Workspace,
 } from './types';
 
@@ -41,7 +41,9 @@ export const api = {
   jiraIssueTypes: (workspaceId: number) => request<{ id: string; name: string }[]>('GET', `/api/jira/issuetypes?workspace=${workspaceId}`),
   draftJiraIssue: (workspaceId: number, prompt: string) =>
     request<{ title: string; issuetype_id: string; description: string; examples: string[]; examples_mine: boolean }>('POST', '/api/jira/draft', { workspace: workspaceId, prompt }),
-  createJiraIssue: (workspaceId: number, body: { summary: string; description: string; issuetype_id: string }) =>
+  jiraRequiredFields: (workspaceId: number, issuetypeId: string) =>
+    request<JiraRequiredField[]>('GET', `/api/jira/fields?${new URLSearchParams({ workspace: String(workspaceId), issuetype: issuetypeId })}`),
+  createJiraIssue: (workspaceId: number, body: { summary: string; description: string; issuetype_id: string; fields: Record<string, string> }) =>
     request<JiraIssue>('POST', '/api/jira/issues', { workspace: workspaceId, ...body }),
   deleteWorkspace: (id: number) => request('DELETE', `/api/workspaces/${id}`),
 
@@ -52,8 +54,12 @@ export const api = {
     branches: { projectId: number; base: string; branch: string }[]; firstPrompt?: string;
   }) => request<Session>('POST', '/api/sessions', body),
   messages: (id: number) => request<StoredMessage[]>('GET', `/api/sessions/${id}/messages`),
-  prompt: (id: number, text: string, images: { mediaType: string; data: string; name?: string }[]) =>
-    request<{ queued: boolean; position: number }>('POST', `/api/sessions/${id}/prompt`, { text, images }),
+  prompt: (id: number, text: string, images: { mediaType: string; data: string; name?: string }[], plan = false) =>
+    request<{ queued: boolean; position: number }>('POST', `/api/sessions/${id}/prompt`, { text, images, plan }),
+  docs: (id: number) => request<DocMeta[]>('GET', `/api/sessions/${id}/docs`),
+  archive: () => request<ArchiveEntry[]>('GET', '/api/artifacts'),
+  revealArchive: (sessionId?: number) => request('POST', '/api/artifacts/reveal', { session: sessionId }),
+  deleteDoc: (id: number, name: string) => request('DELETE', `/api/sessions/${id}/docs/${encodeURIComponent(name)}`),
   changes: (id: number, scope: ChangeScope) => request<WorktreeChanges[]>('GET', `/api/sessions/${id}/changes?scope=${scope}`),
   diff: (id: number, worktreeId: number, path: string, scope: ChangeScope, full: boolean, ignoreWhitespace: boolean) =>
     request<{ patch: string; binary: boolean }>('GET', `/api/sessions/${id}/diff?${new URLSearchParams({ worktree: String(worktreeId), path, scope, full: full ? '1' : '0', ws: ignoreWhitespace ? '1' : '0' })}`),
@@ -65,7 +71,7 @@ export const api = {
   runTests: (id: number, ids?: number[]) => request('POST', `/api/sessions/${id}/tests/run`, { ids }),
   stopTests: (id: number) => request('POST', `/api/sessions/${id}/tests/stop`),
   approvals: (id: number) => request<Approval[]>('GET', `/api/sessions/${id}/approvals`),
-  decideApproval: (approvalId: number, body: { approve: false } | { approve: true; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number }) =>
+  decideApproval: (approvalId: number, body: { approve: false; feedback?: string } | { approve: true; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number }) =>
     request('POST', `/api/approvals/${approvalId}`, body),
   removeQueued: (id: number, queueId: number) => request('DELETE', `/api/sessions/${id}/queue/${queueId}`),
   resumeQueue: (id: number) => request('POST', `/api/sessions/${id}/queue/resume`),
@@ -119,3 +125,7 @@ export const api = {
   saveSettings: (s: Settings) => request<Settings>('PUT', '/api/settings', s),
   testNotify: () => request('POST', '/api/notify/test'),
 };
+
+/** 문서 HTML 주소. 서버가 스크립트를 막은 채로 돌려준다. */
+export const docUrl = (sessionId: number, name: string, version?: number) =>
+  `/api/sessions/${sessionId}/docs/${encodeURIComponent(name)}${version ? `?v=${version}` : ''}`;

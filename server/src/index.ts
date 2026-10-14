@@ -16,9 +16,10 @@ import { listBranches } from './git.js';
 import { closeSession, createSession, getSession, listMessages, listSessions, removeQueued, setSession } from './sessions.js';
 import { resumeQueue, runPrompt, stopPrompt, submitPrompt } from './claude.js';
 import { decide, listApprovals } from './approvals.js';
+import { deleteDoc, docHtml, listArchive, listDocs, revealArchive } from './docs.js';
 import { fileDiff, sessionChanges } from './changes.js';
 import { draftTicket } from './ticketdraft.js';
-import { chooseSite, createIssue, getIssue, issueTypes, jiraConfigView, jiraLogout, jiraStatus, oauthCallback, oauthStart, searchIssues } from './jira.js';
+import { chooseSite, createIssue, getIssue, issueTypes, jiraConfigView, requiredFields, jiraLogout, jiraStatus, oauthCallback, oauthStart, searchIssues } from './jira.js';
 import { confirmRoleAccount, deleteCase, generateCases, runTests, saveCase, stopTests, testShotPath, testState } from './tests.js';
 import { getSettings, saveSettings, type Settings } from './settings.js';
 import { sendNotification } from './notify.js';
@@ -130,8 +131,12 @@ app.post('/api/jira/draft', async (req) => {
   const b = z.object({ workspace: z.number().int(), prompt: z.string() }).parse(req.body);
   return draftTicket(b.workspace, b);
 });
+app.get('/api/jira/fields', async (req) => {
+  const q = z.object({ workspace: z.coerce.number().int(), issuetype: z.string().min(1) }).parse(req.query);
+  return requiredFields(jiraProjectOf(q.workspace), q.issuetype);
+});
 app.post('/api/jira/issues', async (req) => {
-  const b = z.object({ workspace: z.number().int(), summary: z.string(), description: z.string().default(''), issuetype_id: z.string() }).parse(req.body);
+  const b = z.object({ workspace: z.number().int(), summary: z.string(), description: z.string().default(''), issuetype_id: z.string(), fields: z.record(z.string(), z.string()).default({}) }).parse(req.body);
   return createIssue(jiraProjectOf(b.workspace), b);
 });
 
@@ -167,9 +172,10 @@ app.post('/api/sessions/:id/prompt', async (req) => {
   const body = z.object({
     text: z.string().default(''),
     images: z.array(z.object({ mediaType: z.string(), data: z.string(), name: z.string().optional() })).max(10).default([]),
+    plan: z.boolean().default(false),
   }).parse(req.body);
   // 실행은 백그라운드로 두고, 진행 상황은 WebSocket으로 보낸다. 작업 중이면 대기열에 넣는다.
-  return submitPrompt(id, body.text, body.images);
+  return submitPrompt(id, body.text, body.images, { plan: body.plan });
 });
 app.delete('/api/sessions/:id/queue/:qid', async (req) => {
   const { id, qid } = z.object({ id: z.coerce.number().int(), qid: z.coerce.number().int() }).parse(req.params);
@@ -274,11 +280,32 @@ app.post('/api/sessions/:id/servers/restart', async (req) => {
   await startServers(id, worktreeIds, commandMap(commands));
   return listServers(getSession(id)!);
 });
+// 계획 산출물(계획서·화면설계서). HTML은 스크립트를 막은 별도 출처로 보여 준다.
+app.get('/api/sessions/:id/docs', async (req) => listDocs(idParam.parse(req.params).id));
+app.get('/api/sessions/:id/docs/:name', async (req, reply) => {
+  const { id, name } = z.object({ id: z.coerce.number().int(), name: z.string() }).parse(req.params);
+  const { v } = z.object({ v: z.coerce.number().int().positive().optional() }).parse(req.query);
+  reply.header('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:");
+  reply.type('text/html; charset=utf-8');
+  return docHtml(id, name, v);
+});
+// 산출물 보관함: 닫은 세션까지 모든 세션의 산출물
+app.get('/api/artifacts', async () => listArchive());
+app.post('/api/artifacts/reveal', async (req) => {
+  const { session } = z.object({ session: z.number().int().optional() }).parse(req.body ?? {});
+  revealArchive(session);
+  return { ok: true };
+});
+app.delete('/api/sessions/:id/docs/:name', async (req) => {
+  const { id, name } = z.object({ id: z.coerce.number().int(), name: z.string() }).parse(req.params);
+  deleteDoc(id, name);
+  return { ok: true };
+});
 // Claude가 프롬프트 중에 요청한 환경값·테스트 계정 확인
 app.get('/api/sessions/:id/approvals', async (req) => listApprovals(idParam.parse(req.params).id));
 app.post('/api/approvals/:id', async (req) => {
   const d = z.union([
-    z.object({ approve: z.literal(false) }),
+    z.object({ approve: z.literal(false), feedback: z.string().max(4000).optional() }),
     z.object({
       approve: z.literal(true),
       vars: z.array(z.object({ key: z.string(), value: z.string() })).optional(),

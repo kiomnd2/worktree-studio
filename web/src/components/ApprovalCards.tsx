@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { api } from '../api';
-import { useServerEvents } from '../events';
+import { openDoc, useServerEvents } from '../events';
+import { DOC_KIND } from './DocsPage';
 import { usableIn, type Account, type Approval, type Session } from '../types';
 
 /** Claude가 프롬프트 중에 요청한 환경값·테스트 계정. 사용자가 확인해야 적용되고, 그동안 Claude는 기다린다. */
@@ -12,7 +15,9 @@ export default function ApprovalCards({ session }: { session: Session }) {
   if (list.length === 0) return null;
   return (
     <section className="approvals" aria-label="확인이 필요한 요청">
-      {list.map((a) => (a.request.kind === 'env' ? <EnvCard key={a.id} approval={a} /> : <AccountCard key={a.id} approval={a} workspaceId={session.workspace_id} />))}
+      {list.map((a) => (a.request.kind === 'env' ? <EnvCard key={a.id} approval={a} />
+        : a.request.kind === 'plan' ? <PlanCard key={a.id} approval={a} />
+        : <AccountCard key={a.id} approval={a} workspaceId={session.workspace_id} />))}
     </section>
   );
 }
@@ -77,6 +82,42 @@ function EnvCard({ approval }: { approval: Approval }) {
           onClick={() => decide({ approve: true, target, vars: chosen.map((r) => ({ key: r.key, value: r.value })) })}>
           {chosen.length}개 승인
         </button>
+      </div>
+    </div>
+  );
+}
+
+/** 계획 모드를 마친 Claude가 실행해도 되는지 묻는다. 산출물을 열어 보고 승인하거나 고칠 점을 적어 돌려보낸다. */
+function PlanCard({ approval }: { approval: Approval }) {
+  const req = approval.request as Extract<Approval['request'], { kind: 'plan' }>;
+  const [feedback, setFeedback] = useState('');
+  const { busy, error, decide } = useDecide(approval.id);
+  return (
+    <div className="approval-card" role="alertdialog" aria-label="계획 승인">
+      <div className="approval-head">
+        <strong>Claude가 계획을 마쳤습니다</strong>
+        <span className="muted small">승인하면 코드를 고치기 시작합니다</span>
+      </div>
+      {req.docs.length > 0 ? (
+        <ul className="plan-docs" aria-label="계획 문서">
+          {req.docs.map((d) => (
+            <li key={d.name}><button className="small-btn" onClick={() => openDoc(d.name)}>{DOC_KIND[d.kind]} · {d.title}</button></li>
+          ))}
+        </ul>
+      ) : <p className="warn-text small">저장한 문서가 없습니다. 고칠 점에 "계획서와 화면설계서를 문서로 저장해 줘"라고 적어 돌려보낼 수 있습니다.</p>}
+      {req.plan.trim() && (
+        <details className="plan-summary">
+          <summary className="small">계획 요약</summary>
+          <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{req.plan}</ReactMarkdown></div>
+        </details>
+      )}
+      <label className="sr-only" htmlFor={`plan-fb-${approval.id}`}>고칠 점</label>
+      <textarea id={`plan-fb-${approval.id}`} className="plan-feedback" placeholder="고칠 점이 있으면 적고 '고쳐 달라고 하기'를 누르세요. 문서를 고쳐 다시 묻습니다." value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+      {error && <p className="error-text" role="alert">{error}</p>}
+      <div className="approval-actions">
+        <button className="small-btn" disabled={busy} onClick={() => decide({ approve: false })}>실행 안 함</button>
+        <button className="small-btn" disabled={busy || !feedback.trim()} onClick={() => decide({ approve: false, feedback })}>고쳐 달라고 하기</button>
+        <button className="small-btn primary" disabled={busy || Boolean(feedback.trim())} title={feedback.trim() ? '적은 고칠 점을 보내거나 지운 뒤 승인하세요' : undefined} onClick={() => decide({ approve: true })}>승인하고 실행</button>
       </div>
     </div>
   );
