@@ -34,7 +34,7 @@ import { githubStatus } from './github.js';
 import { getProject as projectById } from './projects.js';
 import { assertNewWork, closePr, continueIgnoringChecks, getPrJob, listPrs, preparePr, startPr } from './pr.js';
 import { addScreen, capturePreview, detectScreens, removeScreen, screenState, setScreenChecked } from './screens.js';
-import { cleanSession, listCleanup, refreshPrStates, scheduleCleanupPoll, startupSweep } from './cleanup.js';
+import { cleanSession, listCleanup, refreshPrStates, refreshSessionPrsSoon, scheduleCleanupPoll, startupSweep } from './cleanup.js';
 
 const app = Fastify({ logger: { level: 'info' }, bodyLimit: 40 * 1024 * 1024 });
 await app.register(cors, { origin: [/^http:\/\/localhost(:\d+)?$/, /^http:\/\/127\.0\.0\.1(:\d+)?$/] });
@@ -418,6 +418,8 @@ app.get('/api/github/status', async () => githubStatus());
 // 푸시와 PR
 app.get('/api/sessions/:id/pr', async (req) => {
   const { id } = idParam.parse(req.params);
+  // 머지·닫힘을 바로 반영하도록 열린 PR이 있으면 뒤에서 확인한다. 바뀌면 pr.updated로 다시 불러온다.
+  refreshSessionPrsSoon(id);
   return { job: getPrJob(id), prs: listPrs(id) };
 });
 app.post('/api/sessions/:id/pr/prepare', async (req) => preparePr(idParam.parse(req.params).id));

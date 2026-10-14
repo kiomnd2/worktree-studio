@@ -141,9 +141,24 @@ export async function cleanSession(sessionId: number, opts: { deleteRemote: bool
   return steps;
 }
 
-/** gh로 열린 PR 상태를 확인하고, 머지·닫힘이 되면 정리 대기로 알린다. */
-export async function refreshPrStates(): Promise<number> {
-  const open = db.prepare(`SELECT * FROM pull_requests WHERE state = 'OPEN'`).all() as PullRequestRow[];
+const lastSessionCheck = new Map<number, number>();
+
+/**
+ * 세션 화면을 열 때 그 세션의 열린 PR 상태를 바로 확인한다. 주기 확인(기본 10분)만으로는
+ * 방금 머지한 PR이 한참 "열림"으로 남는다. gh를 너무 자주 부르지 않게 세션마다 30초에 한 번만.
+ */
+export function refreshSessionPrsSoon(sessionId: number) {
+  const last = lastSessionCheck.get(sessionId) ?? 0;
+  if (Date.now() - last < 30_000) return;
+  lastSessionCheck.set(sessionId, Date.now());
+  refreshPrStates(sessionId).catch(() => {});
+}
+
+/** gh로 열린 PR 상태를 확인하고, 머지·닫힘이 되면 정리 대기로 알린다. sessionId를 주면 그 세션만 본다. */
+export async function refreshPrStates(sessionId?: number): Promise<number> {
+  const open = (sessionId
+    ? db.prepare(`SELECT * FROM pull_requests WHERE state = 'OPEN' AND session_id = ?`).all(sessionId)
+    : db.prepare(`SELECT * FROM pull_requests WHERE state = 'OPEN'`).all()) as PullRequestRow[];
   let changedCount = 0;
   const touched = new Set<number>();
   for (const pr of open) {
@@ -152,7 +167,10 @@ export async function refreshPrStates(): Promise<number> {
       const state = (JSON.parse(out) as { state: string }).state;
       db.prepare(`UPDATE pull_requests SET checked_at = datetime('now'), state = ? WHERE id = ?`).run(state, pr.id);
       if (state !== 'OPEN') { changedCount++; touched.add(pr.session_id); }
-    } catch { /* 오프라인이거나 gh 로그인이 풀렸으면 다음에 다시 본다 */ }
+    } catch (err) {
+      // 오프라인이거나 gh 로그인이 풀렸으면 다음에 다시 본다.
+      console.warn(`[pr] #${pr.number} 상태를 확인하지 못했습니다:`, (err as Error).message);
+    }
   }
   const settings = getSettings();
   for (const sessionId of touched) {

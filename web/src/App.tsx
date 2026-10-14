@@ -62,6 +62,13 @@ export default function App() {
     else setPrs([]);
   }, [selectedId]);
   useEffect(reloadPrs, [reloadPrs]);
+  // GitHub에서 머지하고 돌아오면 PR 상태를 다시 확인한다.
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === 'visible') reloadPrs(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => { document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('focus', onVisible); };
+  }, [reloadPrs]);
 
   const reloadCleanup = useCallback(() => {
     api.cleanup().then((r) => setCleanupCount(r.rows.filter((x) => x.state === 'ready').length)).catch(() => {});

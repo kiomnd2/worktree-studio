@@ -579,3 +579,7 @@ a.small-btn { display: inline-flex; align-items: center; text-decoration: none; 
 .archive-item .branch { margin-right: 6px; }
 .archive-docs { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .archive-docs .small-btn { margin-left: 0; }
+
+/* 테스트를 실행할 수 없는 이유 */
+.test-blockers { border: 1px solid var(--warn-ink); border-radius: 8px; padding: 8px 12px; color: var(--warn-ink); background: var(--warn-soft); }
+.test-blockers ul { margin: 4px 0 0; padding-left: 18px; }

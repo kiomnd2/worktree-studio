@@ -41,6 +41,10 @@ export default function TestsPage({ session, onBack }: { session: Session; onBac
   const cases = state.cases;
   const unconfirmed = state.roles.filter((r) => !r.account);
   const busy = state.generating || state.running;
+  // 실행할 수 없는 이유. 있으면 실행 버튼을 막고 이유를 보여 준다.
+  const blocked = state.blockers.length > 0;
+  const roleMissing = (c: TestCase) => Boolean(c.role) && !state.roles.find((r) => r.role === c.role)?.account;
+  const runAllReason = blocked ? state.blockers[0] : unconfirmed.length ? `역할별 계정을 먼저 확인하세요: ${unconfirmed.map((r) => r.role).join(', ')}` : undefined;
   const counts = { pass: cases.filter((c) => c.status === 'pass').length, bad: cases.filter((c) => ['fail', 'blocked', 'error'].includes(c.status)).length };
 
   return (
@@ -71,14 +75,21 @@ export default function TestsPage({ session, onBack }: { session: Session; onBac
             {state.running ? (
               <button className="danger" onClick={run(() => api.stopTests(session.id))}>중지</button>
             ) : (
-              <button className="primary" disabled={busy || cases.length === 0 || unconfirmed.length > 0 || !state.app_url}
-                title={!state.app_url ? 'FE 서버를 먼저 실행하세요' : unconfirmed.length ? '역할별 계정을 먼저 확인하세요' : undefined}
+              <button className="primary" disabled={busy || Boolean(runAllReason)} title={runAllReason}
                 onClick={run(() => api.runTests(session.id), '테스트를 시작했습니다.')}>
                 전체 실행
               </button>
             )}
           </div>
-          {!state.app_url && <p className="warn-text small">FE 서버가 꺼져 있습니다. 세션 화면에서 서버를 실행한 뒤 테스트하세요.</p>}
+          {!state.running && (blocked || unconfirmed.length > 0) && (
+            <div className="test-blockers" role="status">
+              <strong className="small">아직 실행할 수 없습니다</strong>
+              <ul className="small">
+                {state.blockers.map((b) => <li key={b}>{b}</li>)}
+                {unconfirmed.length > 0 && <li>역할별 계정을 확인하지 않았습니다: {unconfirmed.map((r) => r.role).join(', ')}. 아래에서 역할마다 쓸 계정을 고르세요.</li>}
+              </ul>
+            </div>
+          )}
         </div>
 
         {state.roles.length > 0 && <RoleAccounts session={session} state={state} onError={setError} onDone={reload} />}
@@ -104,7 +115,9 @@ export default function TestsPage({ session, onBack }: { session: Session; onBac
                 </div>
                 <div className="row">
                   <span className={`pill ${STATUS[c.status].cls}`}>{c.status === 'running' && <span className="spinner" aria-hidden="true" />} {STATUS[c.status].label}</span>
-                  <button className="small-btn" disabled={busy || (!!c.role && !state.roles.find((r) => r.role === c.role)?.account) || !state.app_url} onClick={run(() => api.runTests(session.id, [c.id]))}>이것만 실행</button>
+                  <button className="small-btn" disabled={busy || blocked || roleMissing(c)}
+                    title={blocked ? state.blockers[0] : roleMissing(c) ? `${c.role} 역할의 계정을 먼저 확인하세요` : undefined}
+                    onClick={run(() => api.runTests(session.id, [c.id]))}>이것만 실행</button>
                   <button className="small-btn" disabled={busy} onClick={() => setEditing(c)}>고치기</button>
                   <button className="small-btn danger" disabled={busy} onClick={() => { if (confirm(`"${c.title}" 케이스를 지울까요?`)) run(() => api.deleteTest(session.id, c.id))(); }}>삭제</button>
                 </div>

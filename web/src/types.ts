@@ -99,6 +99,8 @@ export type TestCase = {
 export type TestState = {
   cases: TestCase[]; fe_project: { id: number; name: string } | null; app_url: string | null; login_path: string | null;
   generating: boolean; running: boolean; roles: { role: string; account: { id: number; login: string; note: string } | null }[];
+  /** 지금 실행하면 안 되는 이유. 비어 있어야 실행할 수 있다(역할 계정 확인은 케이스마다 따로 본다). */
+  blockers: string[];
 };
 
 export type ChangeScope = 'base' | 'uncommitted';

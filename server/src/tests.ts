@@ -74,10 +74,26 @@ export function testState(sessionId: number) {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
   const fe = feWorktree(session);
-  const server = fe ? listServers(session).find((s) => s.worktree_id === fe.id && s.url) : undefined;
+  const all = listServers(session);
+  const server = fe ? all.find((s) => s.worktree_id === fe.id && s.url) : undefined;
   const cases = listCases(sessionId);
   const roles = [...new Set(cases.map((c) => c.role).filter(Boolean))];
+  /**
+   * 지금 실행하면 안 되는 이유. 하나라도 있으면 실행 버튼을 막는다.
+   * 화면은 BE도 불러오므로 실행 명령이 있는 서버는 모두 떠 있어야 한다. 역할 계정 확인은 케이스마다 따로 본다.
+   */
+  const SERVER_STATE: Record<string, string> = { starting: '시작 중입니다', unhealthy: '응답하지 않습니다', failed: '멈췄습니다' };
+  const blockers: string[] = [];
+  if (!fe) blockers.push('이 세션에 FE 프로젝트가 없습니다.');
+  for (const sv of all.filter((x) => x.can_start && x.status !== 'running')) {
+    blockers.push(`${sv.project_name} 서버가 ${SERVER_STATE[sv.status] ?? '꺼져 있습니다'}. 세션 화면에서 서버를 실행하고 헬스체크가 통과할 때까지 기다리세요.`);
+  }
+  if (fe && !all.find((x) => x.worktree_id === fe.id)?.can_start) blockers.push(`${fe.project_name}에 실행 명령이 없습니다. 설정에서 실행 명령을 넣으세요.`);
+  if (session.status === 'running') blockers.push('Claude가 작업 중입니다. 코드가 바뀌는 중이라 끝난 뒤에 실행하세요.');
+  if (generating.has(sessionId)) blockers.push('테스트 케이스를 만드는 중입니다.');
+  if (cases.length === 0) blockers.push('실행할 테스트 케이스가 없습니다.');
   return {
+    blockers,
     cases,
     fe_project: fe ? { id: fe.project_id, name: fe.project_name } : null,
     app_url: server?.status === 'running' ? server.url : null,
@@ -260,6 +276,7 @@ const RESULT_SCHEMA = {
 export function runTests(sessionId: number, ids?: number[]) {
   const state = testState(sessionId);
   if (running.has(sessionId)) throw new Error('이미 테스트를 실행하는 중입니다.');
+  if (state.blockers.length) throw new Error(state.blockers.join(' '));
   if (!state.app_url) throw new Error('FE 서버가 실행 중이 아닙니다. 서버를 띄우고 헬스체크가 통과한 뒤 실행하세요.');
   const targets = state.cases.filter((c) => !ids || ids.includes(c.id));
   if (targets.length === 0) throw new Error('실행할 테스트 케이스가 없습니다.');
