@@ -7,7 +7,7 @@ import { db } from './db.js';
 import { git, refExists } from './git.js';
 import { runFile, runShell } from './exec.js';
 import { getProject } from './projects.js';
-import { getSession, listMessages, type SessionView } from './sessions.js';
+import { getSession, isJiraKey, listMessages, type SessionView } from './sessions.js';
 import { resolveEnv } from './envstore.js';
 import { accountsOf } from './accounts.js';
 import { maskSecrets } from './secret.js';
@@ -297,8 +297,8 @@ async function collectEach(session: SessionView): Promise<RepoFacts[]> {
       pr_mode: mode,
       pr_note: note,
       style_examples: examples.map(({ number, title, author, mine }) => ({ number, title, author, mine })),
-      commit_message: `${session.ticket} ${session.summary}`.trim(),
-      title: `[${session.ticket}] ${session.summary || w.branch}`.trim(),
+      commit_message: isJiraKey(session.ticket) ? `${session.ticket} ${session.summary}`.trim() : session.summary || session.ticket,
+      title: isJiraKey(session.ticket) ? `[${session.ticket}] ${session.summary || w.branch}`.trim() : session.summary || w.branch,
       body: template ?? '',
     };
     return {
@@ -324,15 +324,18 @@ export async function preparePr(sessionId: number): Promise<{ drafts: PrDraft[];
 
   const secrets = sessionSecrets(session);
   const mask = (s: string) => maskSecrets(s, secrets);
+  const jiraKey = isJiraKey(session.ticket);
   const prompt = [
-    `티켓 ${session.ticket}${session.summary ? ` (${session.summary})` : ''}의 PR 제목, 본문, 커밋 메시지를 레포별로 써줘.`,
+    `${jiraKey ? '티켓' : 'Jira 티켓이 없는 작업'} ${session.ticket}${session.summary ? ` (${session.summary})` : ''}의 PR 제목, 본문, 커밋 메시지를 레포별로 써줘.`,
     '형식 우선순위: (1) 레포마다 붙인 "최근 머지된 PR" 예시가 있으면 그 형식을 따른다. 제목의 접두어·이모지·티켓 표기 위치, 본문 섹션 구성과 제목, 문체와 길이를 맞춘다. "내 PR"로 표시된 예시를 가장 우선한다.',
     '  예시의 내용은 다른 작업이니 내용을 베끼지 말고 형식만 따른다. (2) 예시가 없으면 레포의 PR 템플릿 항목을 채운다. (3) 둘 다 없으면 "## 개요", "## 변경", "## 확인"으로 쓴다.',
     '커밋 메시지: 레포에 "커밋 메시지 템플릿"이 붙어 있으면 그 Format을 그대로 따른다(이모지·type은 템플릿 표에서 고르고, 본문 목록과 Jira 줄까지).',
-    `  Jira 줄의 이슈 키는 ${session.ticket}을 쓴다. 템플릿의 주의사항을 지키고, Co-Authored-By 같은 꼬리말은 쓰지 않는다. 템플릿이 없으면 "최근 커밋 제목" 형식의 한 줄로 쓴다.`,
+    `  ${jiraKey ? `Jira 줄의 이슈 키는 ${session.ticket}을 쓴다.` : '이 작업은 Jira 티켓이 없으니 Jira 줄은 빼고 이슈 키를 지어내지 않는다.'} 템플릿의 주의사항을 지키고, Co-Authored-By 같은 꼬리말은 쓰지 않는다. 템플릿이 없으면 "최근 커밋 제목" 형식의 한 줄로 쓴다.`,
     '내용은 diff와 대화에서 실제로 바뀐 것만 적고 추측하지 마. 확인하지 못한 것은 확인했다고 쓰지 마.',
     '레포가 둘 이상이면 도구가 본문 끝에 관련 PR 링크를 붙이니 따로 쓰지 마. 비밀번호, 토큰 같은 값은 절대 넣지 마. 모두 한국어로.',
-    `티켓 번호 ${session.ticket}은 예시가 티켓을 표기하는 방식대로 제목에 넣는다.`,
+    jiraKey
+      ? `티켓 번호 ${session.ticket}은 예시가 티켓을 표기하는 방식대로 제목에 넣는다.`
+      : `Jira 티켓이 없으니 제목에 티켓 번호를 넣지 않고, "${session.ticket}"(작업 이름)도 제목에 넣지 않는다.`,
     '',
     `## 대화 기록 (요약 재료)\n${mask(conversationDigest(sessionId)) || '(없음)'}`,
     ...targets.map((f) => [

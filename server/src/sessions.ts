@@ -91,8 +91,11 @@ export function setSession(id: number, patch: Partial<Pick<SessionRow, 'status' 
   broadcast({ type: 'session.updated', sessionId: id });
 }
 
+/** KERE-370 같은 Jira 이슈 키인지. 아니면 티켓 없이 작업 이름으로 만든 세션이다. */
+export const isJiraKey = (ticket: string) => /^[A-Z][A-Z0-9]+-\d+$/.test(ticket.trim());
+
 function ticketSlug(ticket: string) {
-  const digits = ticket.match(/\d+/g)?.join('-');
+  const digits = isJiraKey(ticket) ? ticket.match(/\d+/g)?.join('-') : undefined;
   return (digits ?? ticket).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'work';
 }
 

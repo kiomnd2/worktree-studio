@@ -7,13 +7,18 @@ export type TicketChoice =
   /** prompt: 하려는 일을 자유롭게 적은 것. 이걸로 제목·설명을 제안받는다. drafted: 제안을 받았거나 직접 쓰기로 했는지 */
   /** fields: 프로젝트가 필수로 요구하는 칸(스프린트 등)의 값. 키는 Jira 필드 키 */
   | { mode: 'new'; prompt: string; drafted: boolean; summary: string; description: string; issuetype_id: string; fields: Record<string, string> }
-  | { mode: 'manual'; key: string };
+  | { mode: 'manual'; key: string }
+  /** Jira 티켓 없이 하는 작업. name은 세션 이름이자 브랜치·워크트리 폴더 이름이 된다. */
+  | { mode: 'none'; name: string };
+
+/** 티켓 없이 하는 작업의 이름. 브랜치와 폴더 이름에 그대로 쓰므로 영문·숫자·하이픈만 받는다. */
+export const WORK_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,59}$/;
 
 type Props = { workspace: Workspace; jira: JiraStatus | null; value: TicketChoice; onChange: (v: TicketChoice) => void; onDrafting?: (drafting: boolean) => void };
 
 /**
  * 세션의 출발점인 Jira 티켓. 워크스페이스의 Jira 프로젝트에서 이미 있는 티켓을 고르거나 새로 만든다.
- * Jira가 연결되지 않았거나 프로젝트 키가 없으면 티켓 번호를 직접 넣는다.
+ * Jira가 연결되지 않았거나 프로젝트 키가 없으면 티켓 번호를 직접 넣는다. 티켓 없이 작업 이름만으로 시작할 수도 있다.
  */
 export default function JiraTicketPicker({ workspace, jira, value, onChange, onDrafting }: Props) {
   const ready = Boolean(jira?.connected && workspace.jira_project);
@@ -61,14 +66,27 @@ export default function JiraTicketPicker({ workspace, jira, value, onChange, onD
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // 방식을 오가도 적던 내용이 사라지지 않게 방식마다 마지막 상태를 기억해 두고 돌아오면 되살린다.
-  const kept = useRef<Partial<Record<'existing' | 'new', TicketChoice>>>({});
-  function switchMode(mode: 'existing' | 'new') {
+  const kept = useRef<Partial<Record<'existing' | 'new' | 'none', TicketChoice>>>({});
+  function switchMode(mode: 'existing' | 'new' | 'none') {
     if (value.mode === mode) return;
-    if (value.mode === 'existing' || value.mode === 'new') kept.current[value.mode] = value;
+    if (value.mode !== 'manual') kept.current[value.mode] = value;
     onChange(kept.current[mode] ?? (mode === 'existing'
       ? { mode: 'existing', issue: null }
-      : { mode: 'new', prompt: '', drafted: false, summary: '', description: '', fields: {}, issuetype_id: (types.find((x) => x.name === '작업') ?? types[0])?.id ?? '' }));
+      : mode === 'none'
+        ? { mode: 'none', name: '' }
+        : { mode: 'new', prompt: '', drafted: false, summary: '', description: '', fields: {}, issuetype_id: (types.find((x) => x.name === '작업') ?? types[0])?.id ?? '' }));
   }
+
+  const noTicket = value.mode === 'none' && (
+    <div className="jira-new">
+      <label className="field">
+        <span>작업 이름 <span className="muted small">(영문·숫자·하이픈)</span></span>
+        <input autoFocus className="mono" placeholder="fix-login-redirect" value={value.name} onChange={(e) => onChange({ mode: 'none', name: e.target.value.replace(/\s+/g, '-') })} />
+      </label>
+      {value.name.trim() && !WORK_NAME.test(value.name.trim()) && <p className="error-text">영문으로 시작하고 영문·숫자·하이픈·점·밑줄만 쓸 수 있습니다.</p>}
+      <p className="muted small">Jira 티켓을 만들지 않습니다. 이 이름이 세션 이름이 되고, 브랜치는 <code>feature/{value.name.trim() || '작업이름'}</code>으로 만듭니다.</p>
+    </div>
+  );
 
   // 검색어가 바뀌면 잠깐 기다렸다가 찾는다. 비우면 내게 배정된 진행 중 티켓.
   useEffect(() => {
@@ -98,6 +116,12 @@ export default function JiraTicketPicker({ workspace, jira, value, onChange, onD
     return (
       <fieldset className="box jira-picker">
         <legend>Jira 티켓</legend>
+        <div className="segmented" role="group" aria-label="티켓 고르기 방식">
+          <button type="button" aria-pressed={value.mode !== 'none'} className={value.mode !== 'none' ? 'on' : ''} onClick={() => value.mode === 'none' && onChange({ mode: 'manual', key: '' })}>티켓 번호</button>
+          <button type="button" aria-pressed={value.mode === 'none'} className={value.mode === 'none' ? 'on' : ''} onClick={() => value.mode !== 'none' && onChange({ mode: 'none', name: '' })}>티켓 없이</button>
+        </div>
+        {noTicket}
+        {value.mode !== 'none' && <>
         <label className="field">
           <span>티켓 번호</span>
           <input autoFocus placeholder={workspace.jira_project ? `${workspace.jira_project}-424` : 'DRMS-424'} value={value.mode === 'manual' ? value.key : ''} onChange={(e) => onChange({ mode: 'manual', key: e.target.value })} />
@@ -107,6 +131,7 @@ export default function JiraTicketPicker({ workspace, jira, value, onChange, onD
             ? `Jira가 연결되지 않아 티켓 번호를 직접 넣습니다.${jira?.error ? ` (${jira.error})` : ''} 설정에서 "Jira로 로그인"을 누르면 티켓을 고르거나 바로 만들 수 있습니다.`
             : `${workspace.name} 워크스페이스에 Jira 프로젝트 키가 없어 티켓 번호를 직접 넣습니다. 설정의 워크스페이스에서 키(예: KERE)를 넣으면 고르거나 만들 수 있습니다.`}
         </p>
+        </>}
       </fieldset>
     );
   }
@@ -117,7 +142,9 @@ export default function JiraTicketPicker({ workspace, jira, value, onChange, onD
       <div className="segmented" role="group" aria-label="티켓 고르기 방식">
         <button type="button" aria-pressed={value.mode === 'existing'} className={value.mode === 'existing' ? 'on' : ''} disabled={drafting} onClick={() => switchMode('existing')}>이미 있는 티켓</button>
         <button type="button" aria-pressed={value.mode === 'new'} className={value.mode === 'new' ? 'on' : ''} disabled={drafting} onClick={() => switchMode('new')}>새로 만들기</button>
+        <button type="button" aria-pressed={value.mode === 'none'} className={value.mode === 'none' ? 'on' : ''} disabled={drafting} onClick={() => switchMode('none')}>티켓 없이</button>
       </div>
+      {noTicket}
 
       {value.mode === 'existing' && (
         <>

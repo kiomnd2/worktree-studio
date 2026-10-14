@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { usableIn, type JiraStatus, type Session, type Workspace } from '../types';
-import JiraTicketPicker, { type TicketChoice } from './JiraTicketPicker';
+import JiraTicketPicker, { WORK_NAME, type TicketChoice } from './JiraTicketPicker';
 
 type Row = { projectId: number; name: string; branches: string[]; base: string; branch: string; touched: boolean };
 
@@ -27,7 +27,7 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
   // 바깥을 누르거나 Esc를 잘못 눌러 적던 내용(하려는 일, 제안받은 제목·설명, 첫 프롬프트)을 잃지 않게 한 번 묻는다.
   const dirty = step === 2 || Boolean(firstPrompt.trim())
     || (choice.mode === 'new' && Boolean(choice.prompt.trim() || choice.summary.trim() || choice.description.trim()))
-    || (choice.mode === 'manual' && Boolean(choice.key.trim()));
+    || (choice.mode === 'manual' && Boolean(choice.key.trim())) || (choice.mode === 'none' && Boolean(choice.name.trim()));
   function requestClose() {
     if (busy || drafting) return;
     if (dirty && !confirm('작성 중인 내용이 사라집니다. 창을 닫을까요?')) return;
@@ -55,7 +55,8 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
     setSummaryEdit(null);
   }, [jiraReady, workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
   // 브랜치 이름과 세션 이름에 쓸 티켓 번호와 요약. 새 티켓은 만들기 전이라 아직 번호가 없다.
-  const ticket = choice.mode === 'manual' ? choice.key.trim() : choice.mode === 'existing' ? choice.issue?.key ?? '' : '';
+  // 티켓 없이 하는 작업은 작업 이름을 그 자리에 쓴다.
+  const ticket = choice.mode === 'manual' ? choice.key.trim() : choice.mode === 'existing' ? choice.issue?.key ?? '' : choice.mode === 'none' ? choice.name.trim() : '';
   const summary = summaryEdit ?? (choice.mode === 'existing' ? choice.issue?.summary ?? '' : choice.mode === 'new' ? choice.summary : '');
   // 이 워크스페이스에 배정할 수 있는 남은 계정 수(워크스페이스 전용 + 공용)
   useEffect(() => {
@@ -83,6 +84,7 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
     if (choice.mode === 'existing' && !choice.issue) { setError('Jira 티켓을 고르세요.'); return; }
     if (choice.mode === 'new' && !choice.summary.trim()) { setError(choice.drafted ? '새 티켓 제목을 넣어 주세요.' : '"제목·내용 제안 받기"를 누르거나 직접 써 주세요.'); return; }
     if (choice.mode === 'manual' && !choice.key.trim()) { setError('티켓 번호를 넣어 주세요.'); return; }
+    if (choice.mode === 'none' && !WORK_NAME.test(choice.name.trim())) { setError(choice.name.trim() ? '작업 이름은 영문으로 시작하고 영문·숫자·하이픈만 쓸 수 있습니다.' : '작업 이름을 넣어 주세요.'); return; }
     setError(null);
     if (choice.mode === 'new') {
       setBusy(true);
@@ -153,7 +155,8 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
                 onChange={(e) => {
                   // 워크스페이스를 바꾸면 고른 티켓과 적던 티켓 내용이 지워진다.
                   const filled = (choice.mode === 'new' && Boolean(choice.prompt.trim() || choice.summary.trim() || choice.description.trim()))
-                    || (choice.mode === 'existing' && Boolean(choice.issue)) || (choice.mode === 'manual' && Boolean(choice.key.trim()));
+                    || (choice.mode === 'existing' && Boolean(choice.issue)) || (choice.mode === 'manual' && Boolean(choice.key.trim()))
+                    || (choice.mode === 'none' && Boolean(choice.name.trim()));
                   if (filled && !confirm('워크스페이스를 바꾸면 고른 티켓과 적던 내용이 지워집니다. 바꿀까요?')) return;
                   setWorkspaceId(Number(e.target.value));
                 }}>
@@ -168,6 +171,7 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
               <span className="mono strong">{ticket}</span>
               <span className="ticket-title">{picked?.summary ?? ''}</span>
               {picked && <span className="muted small">{picked.type} · {picked.status}</span>}
+              {choice.mode === 'none' && <span className="muted small">Jira 티켓 없음</span>}
               <span className="spacer" />
               {picked?.url && <a className="btn-link" href={picked.url} target="_blank" rel="noreferrer">Jira에서 보기</a>}
             </div>
@@ -195,7 +199,7 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
                   </div>
                 ))}
               </div>
-              <p className="muted small">워크트리는 각 클론 폴더 옆에 <code>폴더이름-티켓번호</code>로 만들어집니다.</p>
+              <p className="muted small">워크트리는 각 클론 폴더 옆에 <code>{choice.mode === 'none' ? '폴더이름-작업이름' : '폴더이름-티켓번호'}</code>로 만들어집니다.</p>
             </fieldset>
             <p className="muted small">
               {freeAccounts === null ? '' : freeAccounts > 0
