@@ -143,7 +143,7 @@ export async function generateCases(sessionId: number): Promise<number> {
   if (!fe) throw new Error('이 세션에는 FE 워크트리가 없어 화면 테스트를 만들 수 없습니다.');
   if (generating.has(sessionId)) throw new Error('이미 테스트 케이스를 만드는 중입니다.');
   if (running.has(sessionId)) throw new Error('테스트를 실행하는 중입니다.');
-  const repos = await Promise.all(session.worktrees.map(async (w) => ({ w, files: await changedFiles(w), diff: await changedDiff(w) })));
+  const repos = await Promise.all(session.repos.map(async (w) => ({ w, files: await changedFiles(w), diff: await changedDiff(w) })));
   if (repos.every((r) => r.files.length === 0)) throw new Error('기준 브랜치와 달라진 파일이 없습니다.');
 
   generating.add(sessionId);
@@ -179,7 +179,7 @@ export async function generateCases(sessionId: number): Promise<number> {
       prompt,
       options: {
         cwd: fe.path,
-        additionalDirectories: session.worktrees.filter((w) => w.id !== fe.id).map((w) => w.path),
+        additionalDirectories: session.repos.filter((w) => w.path !== fe.path).map((w) => w.path),
         tools: ['Read', 'Grep', 'Glob'],
         allowedTools: ['Read', 'Grep', 'Glob'],
         // 사용자 플러그인·훅을 불러오지 않는다. 훅이 작업 폴더에 상태 파일을 만들면 커밋에 섞인다.
@@ -524,7 +524,7 @@ section{border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:16px 0}ta
 .st{font-size:12px;padding:2px 8px;border-radius:999px;background:#e5e7eb;margin-right:6px}.st.pass,.ok{color:#137333}.st.pass{background:#e6f4ea}.st.fail,.st.error,.bad{color:#b3261e}.st.fail,.st.error{background:#fce8e6}.st.blocked{background:#fef7e0;color:#8a5a00}
 .shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;margin-top:12px}figure{margin:0}img{width:100%;border:1px solid #e5e7eb;border-radius:6px}figcaption{font-size:12.5px;color:#6b7280;margin-top:4px}</style></head>
 <body><h1>${escHtml(s.ticket)} 테스트 결과서</h1>
-<p class="m">${escHtml(s.summary)} · ${s.worktrees.map((w) => `${escHtml(w.project_name)} <code>${escHtml(w.branch)}</code>`).join(', ')}</p>
+<p class="m">${escHtml(s.summary)} · ${s.repos.map((w) => `${escHtml(w.project_name)} <code>${escHtml(w.branch)}</code>`).join(', ')}</p>
 <p>케이스 ${cases.length}개 · 통과 ${count(['pass'])} · 실패 ${count(['fail'])} · 확인 불가·오류 ${count(['blocked', 'error'])}</p>
 ${body}</body></html>`;
   saveDoc(sessionId, { name: 'test-report', title: '화면 테스트 결과서', kind: 'test', html }, { maxBytes: 60 * 1024 * 1024 });

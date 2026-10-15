@@ -165,7 +165,7 @@ export default function ChatView({ session }: { session: Session }) {
         ) : (
           <div className="stream-empty">
             <p>이 세션의 워크트리에서 할 일을 적어 보내세요.</p>
-            <ul>{session.worktrees.map((w) => <li key={w.id}><code>{w.path}</code></li>)}</ul>
+            <ul>{[...new Set(session.worktrees.map((w) => w.path))].map((p) => <li key={p}><code>{p}</code></li>)}</ul>
           </div>
         ))}
         {messages.map((m) => <MessageItem key={m.id} message={m} toolResults={toolResults} now={runStart !== null && atOf(m.created_at) >= runStart ? now : null} />)}

@@ -94,6 +94,20 @@ npm start
 # 브라우저에서 http://localhost:4317
 ```
 
+### macOS 앱 (.dmg)
+
+```bash
+npm run package:mac
+# desktop/release/Worktree Studio-<버전>-arm64.dmg 와 .zip
+```
+
+- 앱을 열면 이미 4317에 Worktree Studio가 떠 있으면(개발 서버 등) 그 서버에 창만 붙입니다. 없으면 앱에 든 서버를 띄웁니다. 같은 데이터(`~/.worktree-studio`)를 두 서버가 동시에 다루지 않게 하려는 것입니다.
+- Dock에서 연 앱은 터미널 PATH를 받지 못하므로, 시작할 때 로그인 셸에서 PATH를 읽어 git, gh, claude, 프로젝트 실행 도구(java, gradle, node 등)를 찾습니다.
+- 창을 닫아도 서버와 알림은 계속 돌고, ⌘Q로 끄면 앱이 띄운 서버와 개발 서버도 함께 꺼집니다. 서버 로그는 `~/.worktree-studio/logs/desktop-server.log`.
+- 알림은 앱 알림으로 뜨고, 누르면 앱 창에서 그 세션을 엽니다. PR·Jira 같은 바깥 링크와 미리보기의 새 창은 기본 브라우저로 엽니다.
+- Apple 개발자 서명 없이 ad-hoc으로 서명합니다. 빌드한 Mac에서는 바로 열리고, 다른 Mac에 나눠 주면 처음 한 번 우클릭 → 열기로 허용해야 합니다. 서명하려면 `CSC_NAME="Developer ID Application: …"`을 주고 빌드합니다(공증은 따로).
+- 지금은 Apple Silicon(arm64)용만 만듭니다. 앱은 git, gh 로그인, Claude Code 로그인, Chrome, 프로젝트 빌드 도구를 따로 설치해 두어야 합니다.
+
 ## 처음 쓰는 순서
 
 1. 왼쪽 아래 **프로젝트와 설정**에서 클론 폴더 경로를 넣어 등록합니다. 예: `~/IdeaProjects/be-drms`

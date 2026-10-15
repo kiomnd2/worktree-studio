@@ -52,6 +52,12 @@ export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTe
     <>
     <PanelResizer />
     <section className="panel" aria-label="서버, 미리보기, 로그">
+      {session.worktrees.some((w) => w.missing) && (
+        <p className="banner error" role="alert">
+          이 세션의 워크트리 폴더가 없습니다: {[...new Set(session.worktrees.filter((w) => w.missing).map((w) => w.path))].join(', ')}.
+          지워진 워크트리는 되살릴 수 없어 서버와 Claude 작업이 동작하지 않습니다. 리소스 정리에서 이 세션을 정리하고 새 세션을 만드세요.
+        </p>
+      )}
       <PanelMenus
         session={session}
         anyRunning={anyRunning}
@@ -732,7 +738,7 @@ function CloseBlock({ session, anyRunning, onClosed }: { session: Session; anyRu
     <div className="panel-block worktree-info">
       <div className="block-head"><h2>워크트리</h2></div>
       <ul className="worktrees">
-        {session.worktrees.map((w) => (
+        {session.worktrees.filter((w, i, a) => a.findIndex((x) => x.path === w.path) === i).map((w) => (
           <li key={w.id}>
             <div className="wt-head"><strong>{w.project_name}</strong><span className={`kind ${w.project_kind}`}>{w.project_kind.toUpperCase()}</span></div>
             <code className="path">{w.path}</code>

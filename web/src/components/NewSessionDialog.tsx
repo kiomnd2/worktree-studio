@@ -3,7 +3,8 @@ import { api } from '../api';
 import { usableIn, type JiraStatus, type Session, type Workspace } from '../types';
 import JiraTicketPicker, { WORK_NAME, type TicketChoice } from './JiraTicketPicker';
 
-type Row = { projectId: number; name: string; branches: string[]; base: string; branch: string; touched: boolean };
+/** sharedWith: 같은 저장소의 앞 앱 이름. 그 앱과 워크트리·브랜치를 같이 쓴다(모노레포). */
+type Row = { projectId: number; name: string; branches: string[]; base: string; branch: string; touched: boolean; repo: string; sharedWith: string | null };
 
 const defaultBranch = (ticket: string) => (ticket.trim() ? `feature/${ticket.trim()}` : '');
 
@@ -67,9 +68,11 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
   useEffect(() => {
     if (!workspace) { setRows([]); return; }
     let cancelled = false;
-    Promise.all(workspace.projects.map(async (p) => {
-      const branches = await api.branches(p.id).catch(() => [] as string[]);
-      return { projectId: p.id, name: p.name, branches, base: branches[0] ?? 'develop', branch: '', touched: false };
+    Promise.all(workspace.projects.map(async (p, i) => {
+      const first = workspace.projects.find((x) => x.repo_root === p.repo_root);
+      const sharedWith = first && workspace.projects.indexOf(first) < i ? first.name : null;
+      const branches = sharedWith ? [] : await api.branches(p.id).catch(() => [] as string[]);
+      return { projectId: p.id, name: p.name, branches, base: branches[0] ?? 'develop', branch: '', touched: false, repo: p.repo_root, sharedWith };
     })).then((r) => { if (!cancelled) setRows(r); });
     return () => { cancelled = true; };
   }, [workspace]);
@@ -123,7 +126,11 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
         summary,
         firstPrompt: firstPrompt.trim() || undefined,
         firstPromptPlan: firstPlan,
-        branches: rows.map((r) => ({ projectId: r.projectId, base: r.base, branch: r.touched ? r.branch : defaultBranch(ticket) })),
+        // 같은 저장소의 앱은 앞 앱의 브랜치를 쓴다(서버도 저장소마다 워크트리를 하나만 만든다).
+        branches: rows.map((r) => {
+          const owner = rows.find((x) => x.repo === r.repo) ?? r;
+          return { projectId: r.projectId, base: owner.base, branch: owner.touched ? owner.branch : defaultBranch(ticket) };
+        }),
       });
       onCreated(s);
     } catch (err) {
@@ -183,7 +190,12 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
               <legend>브랜치</legend>
               <div className="branch-grid">
                 <span className="muted small">프로젝트</span><span className="muted small">기준 브랜치</span><span className="muted small">새 브랜치</span>
-                {rows.map((r, i) => (
+                {rows.map((r, i) => r.sharedWith ? (
+                  <div key={r.projectId} className="branch-row">
+                    <strong>{r.name}</strong>
+                    <span className="muted small branch-shared">{r.sharedWith}와 같은 저장소라 워크트리·브랜치를 같이 씁니다</span>
+                  </div>
+                ) : (
                   <div key={r.projectId} className="branch-row">
                     <strong>{r.name}</strong>
                     <select aria-label={`${r.name} 기준 브랜치`} value={r.base} onChange={(e) => update(i, { base: e.target.value })}>

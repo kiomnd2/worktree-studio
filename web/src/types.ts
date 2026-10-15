@@ -3,7 +3,10 @@ export type ProjectKind = 'be' | 'fe' | 'full' | 'unknown';
 export type Project = {
   id: number;
   name: string;
+  /** 앱 폴더. 모노레포의 하위 앱이면 저장소 안의 하위 폴더 */
   local_path: string;
+  repo_root: string;
+  subdir: string;
   kind: ProjectKind;
   start_cmd: string | null;
   check_cmd: string | null;
@@ -19,7 +22,7 @@ export type Project = {
   missing: boolean;
 };
 
-export type Workspace = { id: number; name: string; jira_project: string | null; projects: { id: number; name: string; kind: ProjectKind }[] };
+export type Workspace = { id: number; name: string; jira_project: string | null; projects: { id: number; name: string; kind: ProjectKind; repo_root: string }[] };
 
 /** 새 티켓을 만들 때 프로젝트가 필수로 요구하는 칸(스프린트 등) */
 export type JiraRequiredField = {
@@ -41,6 +44,8 @@ export type JiraConfig = {
 
 export type Worktree = {
   id: number;
+  /** 워크트리 폴더가 지워짐 */
+  missing?: boolean;
   project_id: number;
   project_name: string;
   project_kind: ProjectKind;

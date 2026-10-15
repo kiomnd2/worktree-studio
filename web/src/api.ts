@@ -27,7 +27,7 @@ export function missingFrom(e: unknown): MissingEnv[] | null {
 
 export const api = {
   projects: () => request<Project[]>('GET', '/api/projects'),
-  addProject: (path: string) => request<Project>('POST', '/api/projects', { path }),
+  addProject: (path: string) => request<(Project & { note?: string | null })[]>('POST', '/api/projects', { path }),
   updateProject: (id: number, patch: Partial<Project>) => request<Project>('PATCH', `/api/projects/${id}`, patch),
   deleteProject: (id: number) => request('DELETE', `/api/projects/${id}`),
   branches: (id: number) => request<string[]>('GET', `/api/projects/${id}/branches`),

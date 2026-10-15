@@ -18,15 +18,17 @@ export type ServerEvent =
 
 export type LogLine = { seq: number; t: number; stream: 'out' | 'err' | 'sys'; level: 'error' | 'warn' | 'info'; text: string };
 
-type Client = { socket: WebSocket; viewing: number | null; visible: boolean };
+/** desktop: 데스크톱 앱(Electron 메인 프로세스)의 연결. 화면이 아니라 알림을 받는 곳이다. */
+type Client = { socket: WebSocket; viewing: number | null; visible: boolean; desktop: boolean };
 const clients = new Set<Client>();
 
 export function addClient(socket: WebSocket) {
-  const client: Client = { socket, viewing: null, visible: true };
+  const client: Client = { socket, viewing: null, visible: false, desktop: false };
   clients.add(client);
   socket.on('message', (raw) => {
     try {
       const msg = JSON.parse(String(raw));
+      if (msg.type === 'hello' && msg.desktop) client.desktop = true;
       if (msg.type === 'focus') {
         client.viewing = typeof msg.sessionId === 'number' ? msg.sessionId : null;
         client.visible = Boolean(msg.visible);
@@ -41,6 +43,16 @@ export function broadcast(event: ServerEvent) {
   for (const c of clients) {
     if (c.socket.readyState === c.socket.OPEN) c.socket.send(data);
   }
+}
+
+/** 데스크톱 앱이 연결돼 있으면 알림을 앱으로 보낸다. 보냈으면 true */
+export function sendToDesktop(payload: { title: string; message: string; url: string; sound: boolean }): boolean {
+  const data = JSON.stringify({ type: 'notify', ...payload });
+  let sent = false;
+  for (const c of clients) {
+    if (c.desktop && c.socket.readyState === c.socket.OPEN) { c.socket.send(data); sent = true; }
+  }
+  return sent;
 }
 
 /** 사용자가 이 세션을 지금 화면에 띄워 보고 있는지 */

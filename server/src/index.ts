@@ -55,7 +55,8 @@ const idParam = z.object({ id: z.coerce.number().int().positive() });
 app.get('/api/projects', async () => Promise.all(listProjectRows().map(describeProject)));
 app.post('/api/projects', async (req) => {
   const { path: p } = z.object({ path: z.string().min(1) }).parse(req.body);
-  return describeProject(await addProject(p));
+  // 모노레포면 앱 여러 개가 한 번에 등록된다.
+  return Promise.all((await addProject(p)).map(async (row) => ({ ...(await describeProject(row)), note: row.note })));
 });
 app.patch('/api/projects/:id', async (req) => {
   const { id } = idParam.parse(req.params);
@@ -248,7 +249,7 @@ app.post('/api/sessions/:id/env/analyze', async (req) => {
   const wt = s?.worktrees.find((w) => w.project_id === body.projectId);
   const project = projectById(body.projectId);
   if (!s || !wt || !project) throw new Error('세션이나 프로젝트를 찾을 수 없습니다.');
-  const scanned = scanEnv(wt.path, project.local_path);
+  const scanned = scanEnv(wt.app_path, project.local_path);
   if (!body.ai) return scanned;
   const ai = await analyzeEnvWithAI(wt.path, [...new Set([...body.known, ...scanned.map((v) => v.key)])]);
   // AI 판단을 앞에 두고, AI가 놓친 정적 분석 결과를 덧붙인다.

@@ -2,7 +2,7 @@ import notifier from 'node-notifier';
 import { spawn } from 'node:child_process';
 import { HOST, PORT } from './config.js';
 import { getSettings } from './settings.js';
-import { isViewing } from './hub.js';
+import { isViewing, sendToDesktop } from './hub.js';
 
 function openUrl(url: string) {
   const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
@@ -14,6 +14,13 @@ export function sendNotification(title: string, message: string, sessionId?: num
   const s = getSettings();
   if (!s.notify.os) return;
   const url = `http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/${sessionId ? `?session=${sessionId}` : ''}`;
+  // 데스크톱 앱이 켜져 있으면(이 서버에 붙어 있든 앱이 띄운 서버든) 앱이 알림을 띄운다.
+  // 누르면 브라우저 대신 앱 창에서 그 세션을 연다. terminal-notifier는 최근 macOS에서 권한 때문에 안 뜨는 경우가 많다.
+  if (sendToDesktop({ title, message, url, sound: s.notify.sound })) return;
+  if (process.env.WTS_DESKTOP && process.send) {
+    process.send({ type: 'notify', title, message, url, sound: s.notify.sound });
+    return;
+  }
   notifier.notify({ title, message, sound: s.notify.sound, wait: true }, () => {});
   notifier.once('click', () => openUrl(url));
 }

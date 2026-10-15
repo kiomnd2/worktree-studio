@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { db } from './db.js';
 import { broadcast, type LogLine } from './hub.js';
@@ -26,6 +27,8 @@ type Running = {
   pending: LogLine[];
   flushTimer: NodeJS.Timeout | null;
   healthTimer: NodeJS.Timeout | null;
+  /** 끝난 서버를 정리한다(한 번만). exit이 오지 않는 경우에도 부를 수 있다. */
+  finish?: (code: number | null, signal: NodeJS.Signals | null) => void;
   secrets: string[];
 };
 
@@ -274,6 +277,11 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
     .sort((a, b) => Number(a.project_kind === 'fe') - Number(b.project_kind === 'fe'));
   if (targets.length === 0) return;
 
+  // 워크트리 폴더가 지워졌으면 띄울 수 없다(spawn이 'ENOENT'로만 실패해 원인을 알기 어렵다).
+  const gone = targets.filter((w) => !fs.existsSync(w.app_path));
+  if (gone.length) {
+    throw new Error(`워크트리 폴더가 없습니다: ${gone.map((w) => w.app_path).join(', ')}. 지워진 워크트리는 되살릴 수 없으니, 리소스 정리에서 이 세션을 정리하고 새 세션을 만드세요.`);
+  }
   const missing: { projectId: number; project: string; keys: string[] }[] = [];
   for (const w of targets) {
     const p = getProject(w.project_id)!;
@@ -300,7 +308,8 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
     const setup = p.setup_cmd && !w.setup_done ? p.setup_cmd : null;
     const cmd = setup ? `${setup} && ${startCmd}` : startCmd;
     const child = spawn(cmd, {
-      cwd: w.path,
+      // 모노레포면 앱 폴더(frontend/ 등)에서 띄운다.
+      cwd: w.app_path,
       shell: true,
       detached: process.platform !== 'win32',
       env: { ...process.env, ...env, ...auto, FORCE_COLOR: '0' },
@@ -336,8 +345,10 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
       }
     }, 1500);
 
-    child.on('error', (err) => pushLine(r, 'sys', `실행 실패: ${err.message}`));
-    child.on('exit', (code, signal) => {
+    let finished = false;
+    const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (finished) return;
+      finished = true;
       if (r.healthTimer) clearInterval(r.healthTimer);
       r.exitCode = code;
       const status: ServerStatus = r.stopping ? 'stopped' : 'failed';
@@ -354,7 +365,11 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
       if (!r.stopping && getSettings().notify.onServerFail) {
         sendNotification(`${session.ticket} ${p.name} 서버가 멈췄습니다`, `${failures.get(w.id)?.summary ?? `종료 코드 ${code ?? signal}`}\n로그를 확인하세요.`, sessionId);
       }
-    });
+    };
+    r.finish = finish;
+    // 실행 자체가 실패하면(셸·폴더 없음 등) exit이 오지 않을 수 있어 여기서 끝낸다. 안 그러면 '시작 중'으로 남고 끌 수도 없다.
+    child.on('error', (err) => { pushLine(r, 'sys', `실행 실패: ${err.message}`); if (child.pid === undefined || child.exitCode !== null) finish(child.exitCode, null); });
+    child.on('exit', (code, signal) => finish(code, signal));
   }
 }
 
@@ -362,11 +377,18 @@ export async function stopServers(sessionId: number, worktreeIds?: number[]) {
   const list = [...servers.values()].filter((r) => r.sessionId === sessionId && (!worktreeIds || worktreeIds.includes(r.worktreeId)));
   await Promise.all(list.map((r) => new Promise<void>((resolve) => {
     r.stopping = true;
+    // 뜨지도 못했거나 이미 끝난 프로세스는 기다릴 것이 없다.
+    if (r.child.pid === undefined || r.child.exitCode !== null || r.child.signalCode !== null) {
+      r.finish?.(r.child.exitCode, r.child.signalCode);
+      resolve();
+      return;
+    }
     pushLine(r, 'sys', '서버를 끄는 중');
     const done = () => { clearTimeout(force); resolve(); };
     r.child.once('exit', done);
     killGroup(r.child, 'SIGTERM');
-    const force = setTimeout(() => { killGroup(r.child, 'SIGKILL'); setTimeout(resolve, 500); }, 6000);
+    // SIGKILL 뒤에도 exit이 오지 않으면 목록에서 직접 정리해 '끄는 중'으로 남지 않게 한다.
+    const force = setTimeout(() => { killGroup(r.child, 'SIGKILL'); setTimeout(() => { r.finish?.(null, 'SIGKILL'); resolve(); }, 1500); }, 6000);
   })));
 }
 

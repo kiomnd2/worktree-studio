@@ -7,7 +7,7 @@ import { db } from './db.js';
 import { git, refExists } from './git.js';
 import { runFile, runShell } from './exec.js';
 import { getProject } from './projects.js';
-import { getSession, isJiraKey, listMessages, type SessionView } from './sessions.js';
+import { getSession, isJiraKey, listMessages, type RepoView, type SessionView } from './sessions.js';
 import { resolveEnv } from './envstore.js';
 import { accountsOf } from './accounts.js';
 import { maskSecrets } from './secret.js';
@@ -89,6 +89,17 @@ function findTemplate(dir: string): string | null {
 
 async function baseRef(repo: string, base: string) {
   return (await refExists(repo, `refs/remotes/origin/${base}`)) ? `origin/${base}` : base;
+}
+
+/**
+ * 저장소의 PR 전 검사. 저장소에 앱이 여럿이면(모노레포) 앱마다 그 폴더에서 검사 명령을 돌린다.
+ */
+export function repoCheckCmd(r: RepoView): string | null {
+  const cmds = r.apps
+    .map((a) => ({ a, cmd: getProject(a.project_id)?.check_cmd?.trim() }))
+    .filter((x): x is { a: RepoView['apps'][number]; cmd: string } => Boolean(x.cmd));
+  if (cmds.length === 0) return null;
+  return cmds.map(({ a, cmd }) => (a.subdir ? `(cd '${a.subdir.replaceAll("'", "'\\''")}' && ${cmd})` : cmd)).join(' && ');
 }
 
 /** 로그, 환경값의 비밀값, 계정 비밀번호처럼 PR 본문에 섞이면 안 되는 값 */
@@ -213,7 +224,7 @@ async function findCommitTemplate(dir: string): Promise<string | null> {
 }
 
 /** 프로젝트 설정의 경로가 있으면 그것을, 없으면 저장소에서 찾은 것을 읽는다. 돌려주는 path는 표시용. */
-async function commitTemplateOf(w: SessionView['worktrees'][number], setting: string | null): Promise<{ path: string; content: string } | null> {
+async function commitTemplateOf(w: SessionView['repos'][number], setting: string | null): Promise<{ path: string; content: string } | null> {
   const abs = setting?.trim()
     ? path.resolve(w.path, setting.trim().replace(/^~(?=\/)/, os.homedir()))
     : await findCommitTemplate(w.path);
@@ -263,7 +274,7 @@ async function collectFacts(session: SessionView): Promise<RepoFacts[]> {
 }
 
 async function collectEach(session: SessionView): Promise<RepoFacts[]> {
-  return Promise.all(session.worktrees.map(async (w) => {
+  return Promise.all(session.repos.map(async (w) => {
     const project = getProject(w.project_id);
     const ref = await baseRef(w.path, w.base_branch);
     const porcelain = await git(w.path, ['status', '--porcelain']).catch(() => '');
@@ -292,7 +303,7 @@ async function collectEach(session: SessionView): Promise<RepoFacts[]> {
       commits_ahead: ahead,
       // 이미 PR로 올라간 것만 있으면 새로 올릴 변경이 없는 것으로 본다.
       has_changes: mode !== 'none',
-      check_cmd: project?.check_cmd ?? null,
+      check_cmd: repoCheckCmd(w),
       template_path: templatePath,
       commit_template: ct ? { path: ct.path, from: null } : null,
       existing_pr: pr,
@@ -361,7 +372,7 @@ export async function preparePr(sessionId: number): Promise<{ drafts: PrDraft[];
     const q = query({
       prompt,
       options: {
-        cwd: session.worktrees[0].path,
+        cwd: session.repos[0].path,
         tools: [],
         // 사용자 플러그인·훅을 불러오지 않는다. 훅이 작업 폴더에 상태 파일(.bkit/ 등)을 만들면 PR 커밋에 섞인다.
         settingSources: [],
@@ -402,7 +413,7 @@ export async function assertNewWork(sessionId: number, items: PrItem[]) {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
   for (const it of items) {
-    const w = session.worktrees.find((x) => x.id === it.worktree_id);
+    const w = session.repos.find((x) => x.id === it.worktree_id);
     if (!w) continue;
     const ref = await baseRef(w.path, w.base_branch);
     const dirty = porcelainFiles(await git(w.path, ['status', '--porcelain']).catch(() => '')).length;
@@ -457,7 +468,7 @@ export function startPr(sessionId: number, items: PrItem[], opts: { ignoreCheckF
   if (jobs.get(sessionId)?.status === 'running') throw new Error('이미 PR을 만드는 중입니다.');
   if (items.length === 0) throw new Error('PR을 만들 레포를 하나 이상 고르세요.');
   for (const it of items) {
-    if (!session.worktrees.some((w) => w.id === it.worktree_id)) throw new Error('세션에 없는 워크트리입니다.');
+    if (!session.repos.some((w) => w.id === it.worktree_id)) throw new Error('세션에 없는 워크트리입니다.');
     if (!it.title.trim()) throw new Error('PR 제목을 넣어 주세요.');
   }
 
@@ -466,7 +477,7 @@ export function startPr(sessionId: number, items: PrItem[], opts: { ignoreCheckF
     ignore_check_failures: Boolean(opts.ignoreCheckFailures), items,
     repos: items.map((it) => ({
       worktree_id: it.worktree_id,
-      project_name: session.worktrees.find((w) => w.id === it.worktree_id)!.project_name,
+      project_name: session.repos.find((w) => w.id === it.worktree_id)!.project_name,
       pr_url: null,
       steps: (['commit', 'check', 'push', 'pr'] as StepName[]).map((name) => ({ name, status: 'pending', started_at: null, ended_at: null, detail: null, output: null })),
     })),
@@ -487,7 +498,7 @@ export function continueIgnoringChecks(sessionId: number): PrJob {
 async function runJob(session: SessionView, job: PrJob, items: PrItem[], prior?: PrJob) {
   const secrets = sessionSecrets(session);
   const ignored = new Map<number, string>(); // 검사를 무시한 레포: worktree_id → 검사 명령
-  const wt = (id: number) => session.worktrees.find((w) => w.id === id)!;
+  const wt = (id: number) => session.repos.find((w) => w.id === id)!;
   try {
     for (const repo of job.repos) {
       const w = wt(repo.worktree_id);
@@ -500,7 +511,7 @@ async function runJob(session: SessionView, job: PrJob, items: PrItem[], prior?:
         s.detail = (await git(w.path, ['log', '-1', '--format=%h %s'])).slice(0, 200);
       });
       await step(job, repo, 'check', async (s) => {
-        const cmd = getProject(w.project_id)?.check_cmd;
+        const cmd = repoCheckCmd(w);
         if (!cmd) { s.status = 'skipped'; s.detail = '검사 명령 없음 (설정에서 넣을 수 있습니다)'; return; }
         // 이어서 진행할 때는 이미 돌린 검사 결과를 그대로 쓴다. 빌드를 다시 기다리지 않게.
         const before = prior?.repos.find((x) => x.worktree_id === repo.worktree_id)?.steps.find((x) => x.name === 'check');

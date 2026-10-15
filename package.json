@@ -11,7 +11,8 @@
     "dev": "concurrently -n server,web -c blue,green \"npm run dev -w server\" \"npm run dev -w web\"",
     "build": "npm run build -w web && npm run build -w server",
     "start": "npm run start -w server",
-    "typecheck": "npm run typecheck -w server && npm run typecheck -w web"
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
+    "package:mac": "npm --prefix desktop install --no-audit --no-fund && npm --prefix desktop run dist"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

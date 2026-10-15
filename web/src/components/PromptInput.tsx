@@ -196,7 +196,7 @@ export default function PromptInput({ session, thread, onStarted }: { session: S
           title="코드를 고치기 전에 계획서와 화면설계서를 HTML로 만들고, 승인한 뒤에 실행합니다">
           계획 먼저
         </button>
-        <span className="muted small">{session.worktrees.map((w) => w.path.split('/').pop()).join(', ')}</span>
+        <span className="muted small">{[...new Set(session.worktrees.map((w) => w.path.split('/').pop()))].join(', ')}</span>
         <div className="spacer" />
         {running && <button type="button" onClick={() => api.stop(session.id, chat).catch((e) => setError(e.message))}>중단</button>}
         <button type="submit" className="dark" disabled={sending}>{sending ? '보내는 중' : willQueue ? '대기열에 추가' : plan ? '계획 세우기' : thread.id === 'new' ? '새 대화 시작' : '보내기'}</button>

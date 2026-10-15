@@ -86,7 +86,7 @@ export async function suggestServerEnv(sessionId: number, ports: Record<number, 
     `이 세션 FE 주소: ${feUrl ?? '(이번에 FE를 띄우지 않음)'} · BE 주소: ${beUrl ?? '(이번에 BE를 띄우지 않음)'}`,
     '',
     ...rows.flatMap((r) => [
-      `## ${r.p.name} (${r.w.project_kind.toUpperCase()}) 폴더 ${r.w.path}`,
+      `## ${r.p.name} (${r.w.project_kind.toUpperCase()}) 폴더 ${r.w.app_path}`,
       `- 띄울 포트: ${r.port ?? '(이번에 띄우지 않음)'} · 실행 명령: ${r.p.start_cmd ?? '(없음)'}`,
       `- 도구가 자동으로 넣는 값(제안하지 말 것): ${Object.entries(r.auto).map(([k, v]) => `${k}=${v}`).join(', ') || '없음'}`,
       `- 지금 환경값: ${Object.entries(r.env).map(([k, v]) => `${k}=${show(k, v)}`).join(', ') || '없음'}`,
@@ -106,7 +106,8 @@ export async function suggestServerEnv(sessionId: number, ports: Record<number, 
     '- 바꿀 것이 없으면 suggestions를 비운다. note에는 확인하지 못한 것이나 재시작이 필요한 것 등을 한두 문장(없으면 빈 문자열). 모두 한국어로.',
   ].join('\n');
 
-  const dirs = rows.map((r) => r.w.path);
+  // 같은 저장소의 앱은 워크트리가 같으므로 한 번만 연다.
+  const dirs = [...new Set(rows.map((r) => r.w.path))];
   let structured: unknown = null;
   const q = query({
     prompt,

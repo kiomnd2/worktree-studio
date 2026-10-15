@@ -11,6 +11,8 @@ export type Detected = {
   portEnv: string | null;
   /** 새 워크트리에서 처음 실행하기 전에 한 번 돌릴 의존성 설치 명령 */
   setupCmd: string | null;
+  /** 등록할 때 사용자에게 알릴 것(예: 실행 모듈 후보가 여럿) */
+  note?: string | null;
 };
 
 function exists(dir: string, file: string) {
@@ -105,8 +107,120 @@ function detectPython(dir: string): Detected | null {
   return { kind: app ? 'be' : 'unknown', startCmd, checkCmd: checks.length ? checks.join(' && ') : null, healthPath: app ? healthPath : null, portEnv: null, setupCmd: tool.setup };
 }
 
+const SKIP_DIRS = new Set(['node_modules', 'build', 'dist', 'out', 'target', 'bin', 'obj', 'vendor', 'docs', '.next', '.nuxt', 'coverage', 'tmp', 'logs']);
+
+/** settings.gradle(.kts)에 include한 모듈과 그 폴더. projectDir을 바꾼 것도 따른다. */
+function gradleModules(root: string): { name: string; dir: string }[] {
+  const text = read(root, 'settings.gradle') || read(root, 'settings.gradle.kts');
+  if (!text) return [];
+  const names = new Set<string>();
+  for (const m of text.matchAll(/include\s*\(?([^\n)]*)/g)) {
+    for (const q of m[1].matchAll(/["']:?([\w.:-]+)["']/g)) names.add(q[1]);
+  }
+  return [...names].map((name) => {
+    const custom = text.match(new RegExp(`project\\(\\s*["']:${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']\\s*\\)\\.projectDir\\s*=\\s*(?:file\\(\\s*)?(?:new File\\([^,]+,\\s*)?["']([^"']+)["']`));
+    return { name, dir: path.join(root, custom ? custom[1] : name.replaceAll(':', '/')) };
+  });
+}
+
+/** @SpringBootApplication이 있는 소스 파일이 그 폴더 안에 있는지 얕게 찾는다. */
+function hasBootApp(dir: string, depth = 0): boolean {
+  if (depth > 9) return false;
+  let entries: fs.Dirent[] = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return false; }
+  for (const e of entries) {
+    if (e.isDirectory()) {
+      if (e.name.startsWith('.') || SKIP_DIRS.has(e.name) || e.name === 'test' || e.name === 'resources') continue;
+      if (hasBootApp(path.join(dir, e.name), depth + 1)) return true;
+    } else if (/\.(java|kt)$/.test(e.name) && /@SpringBootApplication/.test(read(dir, e.name))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Gradle 멀티 모듈이면 Spring Boot 앱 모듈을 찾아 그 모듈만 띄운다(예: ./gradlew :bootstrap:bootRun).
+ * 루트에서 그냥 bootRun을 돌리면 모든 모듈에서 bootRun을 찾다가 실패한다.
+ * @SpringBootApplication이 있는 모듈이 여럿이면(API·배치 등) 웹 서버로 띄울 모듈을 점수로 고른다:
+ *  - bootRun { } 설정이 있으면 +3 (개발 때 띄우는 모듈이라는 표시)
+ *  - spring-boot-starter-batch를 쓰거나 이름이 batch·worker·job·scheduler·consumer면 -3
+ *  - 이름이 api·web·server·app·bootstrap이면 +1
+ * 점수가 같으면 settings.gradle에 먼저 나온 모듈. 고르지 않은 후보는 note로 알려 준다.
+ */
+function gradleBootTask(root: string): { cmd: string; note: string | null } {
+  const boot = gradleModules(root).filter((m) => hasBootApp(path.join(m.dir, 'src', 'main')));
+  if (boot.length === 0) return { cmd: './gradlew bootRun', note: null };
+  const score = (m: { name: string; dir: string }) => {
+    const build = read(m.dir, 'build.gradle') || read(m.dir, 'build.gradle.kts');
+    const last = m.name.split(':').pop() ?? m.name;
+    let n = 0;
+    if (/^\s*(tasks\.named\(["']bootRun["']\)|bootRun\s*\{)/m.test(build)) n += 3;
+    if (/starter-batch/.test(build) || /batch|worker|job|scheduler|consumer/i.test(last)) n -= 3;
+    if (/api|web|server|app|bootstrap/i.test(last)) n += 1;
+    return n;
+  };
+  const ranked = boot.map((m, i) => ({ m, i, n: score(m) })).sort((a, b) => b.n - a.n || a.i - b.i);
+  const others = ranked.slice(1).map((r) => `:${r.m.name}`);
+  return {
+    cmd: `./gradlew :${ranked[0].m.name}:bootRun`,
+    note: others.length ? `실행 모듈로 :${ranked[0].m.name}을 골랐습니다. 다른 Spring Boot 앱: ${others.join(', ')} (실행 명령에서 바꿀 수 있습니다)` : null,
+  };
+}
+
+/** actuator가 있어야 /actuator/health로 확인한다. 없으면 루트 경로가 응답하는지만 본다. */
+function springHealth(root: string): string {
+  const files = [read(root, 'build.gradle'), read(root, 'build.gradle.kts'), read(root, 'pom.xml'),
+    ...gradleModules(root).flatMap((m) => [read(m.dir, 'build.gradle'), read(m.dir, 'build.gradle.kts')]),
+    read(root, 'gradle/libs.versions.toml')].join('\n');
+  return /actuator/.test(files) ? '/actuator/health' : '/';
+}
+
+export type DetectedApp = { subdir: string; detected: Detected };
+
+/**
+ * 저장소 안의 앱들을 찾는다. 루트와 깊이 2까지의 하위 폴더에서 FE(package.json), BE(Gradle·Maven), 파이썬 앱을 본다.
+ * 루트에 Gradle 빌드가 있으면 하위 Gradle 모듈은 루트 빌드의 일부로 보고 따로 세지 않는다.
+ * 앱이 하나면 지금처럼 루트를 한 프로젝트로 등록하고, 여럿이면 앱마다 등록한다.
+ */
+export function detectApps(root: string): DetectedApp[] {
+  const rootJvm = exists(root, 'build.gradle') || exists(root, 'build.gradle.kts') || exists(root, 'settings.gradle') || exists(root, 'settings.gradle.kts') || exists(root, 'pom.xml');
+  const dirs: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    if (depth > 2) return;
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name.startsWith('.') || SKIP_DIRS.has(e.name)) continue;
+      const sub = path.join(dir, e.name);
+      dirs.push(sub);
+      walk(sub, depth + 1);
+    }
+  };
+  walk(root, 1);
+  const apps: DetectedApp[] = [];
+  for (const dir of dirs) {
+    const isJvm = exists(dir, 'build.gradle') || exists(dir, 'build.gradle.kts') || exists(dir, 'pom.xml');
+    // 루트 Gradle/Maven 빌드의 하위 모듈이거나, 이미 찾은 앱 안의 폴더면 건너뛴다.
+    if (isJvm && rootJvm) continue;
+    if (apps.some((a) => dir.startsWith(path.join(root, a.subdir) + path.sep))) continue;
+    const hasPkg = exists(dir, 'package.json');
+    const hasPy = exists(dir, 'pyproject.toml') || exists(dir, 'requirements.txt') || exists(dir, 'manage.py');
+    if (!isJvm && !hasPkg && !hasPy) continue;
+    const d = detectProject(dir);
+    // 실행할 수 없는 라이브러리 패키지(예: packages/utils)는 앱으로 보지 않는다.
+    if (d.kind === 'unknown' || !d.startCmd) continue;
+    apps.push({ subdir: path.relative(root, dir), detected: d.kind === 'full' ? { ...d, kind: 'be' } : d });
+  }
+  if (apps.length === 0) return [{ subdir: '', detected: detectProject(root) }];
+  // 루트에도 앱(예: Gradle 백엔드)이 있으면 함께 등록한다. docker-compose만 있는 루트는 앱이 아니다.
+  const rootApp = detectProject(root, { ignoreCompose: true });
+  if (rootApp.startCmd && rootApp.kind !== 'unknown') apps.unshift({ subdir: '', detected: rootApp });
+  return apps;
+}
+
 /** 폴더 안의 빌드 파일을 보고 BE/FE/통합을 추정한다. 사용자가 나중에 고칠 수 있다. */
-export function detectProject(dir: string): Detected {
+export function detectProject(dir: string, opts: { ignoreCompose?: boolean } = {}): Detected {
   const gradle = exists(dir, 'build.gradle') || exists(dir, 'build.gradle.kts');
   const maven = exists(dir, 'pom.xml');
   let fe = false;
@@ -124,13 +238,13 @@ export function detectProject(dir: string): Detected {
     if (python) return python;
   }
   const be = gradle || maven;
-  const compose = exists(dir, 'docker-compose.yml') || exists(dir, 'compose.yaml');
+  const compose = !opts.ignoreCompose && (exists(dir, 'docker-compose.yml') || exists(dir, 'compose.yaml'));
   const kind: Detected['kind'] = (be && fe) || compose ? 'full' : be ? 'be' : fe ? 'fe' : 'unknown';
 
   if (be && !fe) {
     // Spring Boot는 SERVER_PORT 환경변수를 server.port로 읽는다.
-    if (gradle) return { kind, startCmd: './gradlew bootRun', checkCmd: './gradlew build', healthPath: '/actuator/health', portEnv: 'SERVER_PORT', setupCmd: null };
-    return { kind, startCmd: './mvnw spring-boot:run', checkCmd: './mvnw verify', healthPath: '/actuator/health', portEnv: 'SERVER_PORT', setupCmd: null };
+    if (gradle) { const boot = gradleBootTask(dir); return { kind, startCmd: boot.cmd, checkCmd: './gradlew build', healthPath: springHealth(dir), portEnv: 'SERVER_PORT', setupCmd: null, note: boot.note }; }
+    return { kind, startCmd: './mvnw spring-boot:run', checkCmd: './mvnw verify', healthPath: springHealth(dir), portEnv: 'SERVER_PORT', setupCmd: null };
   }
   if (pkg) {
     const pm = packageManager(dir);

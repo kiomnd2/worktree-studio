@@ -30,9 +30,9 @@ export default function SettingsPage() {
   useEffect(reload, [reload]);
   useEffect(() => { api.githubStatus().then(setGh).catch(() => setGh(null)); }, []);
 
-  const run = (fn: () => Promise<unknown>, ok?: string) => async () => {
+  const run = (fn: () => Promise<unknown>, ok?: string | ((result: unknown) => string)) => async () => {
     setError(null); setNotice(null);
-    try { await fn(); if (ok) setNotice(ok); reload(); } catch (e) { setError((e as Error).message); }
+    try { const r = await fn(); if (ok) setNotice(typeof ok === 'function' ? ok(r) : ok); reload(); } catch (e) { setError((e as Error).message); }
   };
 
   return (
@@ -48,7 +48,7 @@ export default function SettingsPage() {
       </div>
       {error && <p className="banner error" role="alert">{error}</p>}
       {notice && <p className="banner ok" role="status">{notice}</p>}
-      <ProjectsSection projects={projects} run={run} />
+      <ProjectsSection projects={projects} run={run} onReload={reload} />
       <JiraSection run={run} />
       <WorkspacesSection projects={projects} workspaces={workspaces} run={run} />
       <AccountsSection accounts={accounts} workspaces={workspaces} run={run} />
@@ -57,10 +57,12 @@ export default function SettingsPage() {
   );
 }
 
-type Run = (fn: () => Promise<unknown>, ok?: string) => () => Promise<void>;
+type Run = (fn: () => Promise<unknown>, ok?: string | ((result: unknown) => string)) => () => Promise<void>;
 
-function ProjectsSection({ projects, run }: { projects: Project[]; run: Run }) {
+function ProjectsSection({ projects, run, onReload }: { projects: Project[]; run: Run; onReload: () => void }) {
   const [path, setPath] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   return (
     <section className="card">
       <div className="card-head">
@@ -78,13 +80,33 @@ function ProjectsSection({ projects, run }: { projects: Project[]; run: Run }) {
           </tbody>
         </table>
       </div>
-      <form className="add-row" onSubmit={(e) => { e.preventDefault(); run(async () => { await api.addProject(path); setPath(''); }, '프로젝트를 추가했습니다.')(); }}>
+      <form className="add-row" onSubmit={async (e) => {
+        e.preventDefault();
+        if (adding) return;
+        // 결과는 페이지 맨 위 대신 추가 칸 바로 아래에 보여 준다(아래쪽에서 추가하면 위 알림이 안 보인다).
+        setAdding(true); setResult(null);
+        try {
+          const added = await api.addProject(path);
+          setPath('');
+          // 모노레포면 앱마다 등록된다.
+          const notes = added.flatMap((p) => (p.note ? [` ${p.name}: ${p.note}`] : [])).join('');
+          setResult({ ok: true, text: (added.length > 1
+            ? `한 저장소에서 앱 ${added.length}개를 찾아 등록했습니다: ${added.map((p) => p.name).join(', ')}. 세션에서는 워크트리 하나를 같이 씁니다.`
+            : `${added[0]?.name ?? '프로젝트'}를 추가했습니다. 위 목록에서 실행 명령을 확인하세요.`) + notes });
+          onReload();
+        } catch (err) {
+          setResult({ ok: false, text: (err as Error).message });
+        } finally {
+          setAdding(false);
+        }
+      }}>
         <label className="field grow">
           <span>로컬 폴더 추가</span>
           <input className="mono" value={path} placeholder="~/IdeaProjects/be-drms" onChange={(e) => setPath(e.target.value)} />
         </label>
-        <button type="submit" className="dark" disabled={!path.trim()}>폴더 분석 후 추가</button>
+        <button type="submit" className="dark" disabled={!path.trim() || adding}>{adding ? '분석하는 중' : '폴더 분석 후 추가'}</button>
       </form>
+      {result && <p className={`banner ${result.ok ? 'ok' : 'error'}`} role={result.ok ? 'status' : 'alert'}>{result.text}</p>}
     </section>
   );
 }

@@ -103,7 +103,7 @@ export async function detectScreens(sessionId: number) {
   const fe = feWorktree(session);
   if (!fe) throw new Error('이 세션에는 FE 워크트리가 없어 화면을 찾을 수 없습니다.');
   if (detecting.has(sessionId)) throw new Error('이미 영향 화면을 찾는 중입니다.');
-  const files = await Promise.all(session.worktrees.map(async (w) => ({ w, files: await changedFiles(w), diff: await changedDiff(w) })));
+  const files = await Promise.all(session.repos.map(async (w) => ({ w, files: await changedFiles(w), diff: await changedDiff(w) })));
   if (files.every((f) => f.files.length === 0)) throw new Error('기준 브랜치와 달라진 파일이 없습니다.');
 
   detecting.add(sessionId);
@@ -137,7 +137,7 @@ export async function detectScreens(sessionId: number) {
       prompt,
       options: {
         cwd: fe.path,
-        additionalDirectories: session.worktrees.filter((w) => w.id !== fe.id).map((w) => w.path),
+        additionalDirectories: session.repos.filter((w) => w.path !== fe.path).map((w) => w.path),
         tools: ['Read', 'Grep', 'Glob'],
         // 사용자 플러그인·훅을 불러오지 않는다. 훅이 작업 폴더에 상태 파일(.bkit/ 등)을 만들면 PR 커밋에 섞인다.
         settingSources: [],

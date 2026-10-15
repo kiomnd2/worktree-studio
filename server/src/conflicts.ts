@@ -6,7 +6,7 @@ import { CLAUDE_EXECUTABLE } from './config.js';
 import { git, originUrl, refExists } from './git.js';
 import { getProject } from './projects.js';
 import { getSession, type SessionView } from './sessions.js';
-import { listPrs } from './pr.js';
+import { listPrs, repoCheckCmd } from './pr.js';
 import { startChat } from './claude.js';
 
 /**
@@ -86,7 +86,7 @@ async function isMerging(dir: string) {
   return fs.existsSync(path.resolve(dir, gitDir, 'MERGE_HEAD'));
 }
 
-async function checkWorktree(session: SessionView, w: SessionView['worktrees'][number]): Promise<WorktreeConflict> {
+async function checkWorktree(session: SessionView, w: SessionView['repos'][number]): Promise<WorktreeConflict> {
   const pr = listPrs(session.id).find((p) => p.worktree_id === w.id && p.state === 'OPEN');
   const res: WorktreeConflict = {
     worktree_id: w.id, project_name: w.project_name, branch: w.branch, base_branch: w.base_branch,
@@ -139,7 +139,7 @@ async function checkWorktree(session: SessionView, w: SessionView['worktrees'][n
 export async function checkConflicts(sessionId: number): Promise<WorktreeConflict[]> {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
-  return Promise.all(session.worktrees.map((w) => checkWorktree(session, w)));
+  return Promise.all(session.repos.map((w) => checkWorktree(session, w)));
 }
 
 const SCHEMA = {
@@ -170,7 +170,7 @@ const SCHEMA = {
  */
 export async function proposeResolution(sessionId: number, worktreeId: number): Promise<ConflictProposal> {
   const session = getSession(sessionId);
-  const w = session?.worktrees.find((x) => x.id === worktreeId);
+  const w = session?.repos.find((x) => x.id === worktreeId);
   if (!session || !w) throw new Error('워크트리가 없습니다.');
   const c = await checkWorktree(session, w);
   if (c.state === 'clean') throw new Error('충돌이 없습니다.');
@@ -235,7 +235,7 @@ export async function proposeResolution(sessionId: number, worktreeId: number): 
  */
 export async function resolveConflicts(sessionId: number, worktreeId: number, proposal: ConflictProposal): Promise<{ chat_id: number }> {
   const session = getSession(sessionId);
-  const w = session?.worktrees.find((x) => x.id === worktreeId);
+  const w = session?.repos.find((x) => x.id === worktreeId);
   if (!session || !w) throw new Error('워크트리가 없습니다.');
   if (session.busy) throw new Error('Claude가 작업 중입니다. 머지는 워크트리 전체를 바꾸므로 작업이 끝난 뒤에 시작하세요.');
   const base = await baseRef(w.path, w.base_branch);
@@ -245,7 +245,7 @@ export async function resolveConflicts(sessionId: number, worktreeId: number, pr
     const r = await gitAllowFail(w.path, ['merge', '--no-ff', '--no-commit', base]);
     if (r.code !== 0 && !(await isMerging(w.path))) throw new Error(`머지를 시작하지 못했습니다: ${r.stdout.split('\n').slice(-3).join(' ')}`);
   }
-  const check = getProject(w.project_id)?.check_cmd;
+  const check = repoCheckCmd(w);
   const text = [
     `${w.project_name} 워크트리(${w.path})에서 ${base}를 머지하는 중이고 충돌이 났어. 도구가 \`git merge --no-ff --no-commit ${base}\`로 머지를 시작해 뒀어.`,
     '사용자가 승인한 해결 방법대로 충돌을 풀어줘.',
@@ -270,7 +270,7 @@ export async function resolveConflicts(sessionId: number, worktreeId: number, pr
 /** 워크트리에서 진행 중인 머지를 취소해 머지 전으로 되돌린다. */
 export async function abortMerge(sessionId: number, worktreeId: number) {
   const session = getSession(sessionId);
-  const w = session?.worktrees.find((x) => x.id === worktreeId);
+  const w = session?.repos.find((x) => x.id === worktreeId);
   if (!session || !w) throw new Error('워크트리가 없습니다.');
   if (session.busy) throw new Error('Claude가 작업 중입니다. 먼저 중단하세요.');
   if (!(await isMerging(w.path))) throw new Error('진행 중인 머지가 없습니다.');

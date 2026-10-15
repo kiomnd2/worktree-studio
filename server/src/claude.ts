@@ -7,7 +7,7 @@ import { cancelApprovals, requestAccount, requestAnswers, requestEnv, requestPla
 import { docsDir, listDocs, saveDoc } from './docs.js';
 import { setTasks, startFirstTask, tasksForContext } from './tasks.js';
 import { CLAUDE_EXECUTABLE, UPLOAD_DIR } from './config.js';
-import { appendMessage, createChat, enqueuePrompt, getChat, getSession, isQueuePaused, queueLength, setChat, setQueuePaused, shiftQueue } from './sessions.js';
+import { type RepoView, appendMessage, createChat, enqueuePrompt, getChat, getSession, isQueuePaused, queueLength, setChat, setQueuePaused, shiftQueue } from './sessions.js';
 import { getSettings } from './settings.js';
 import { notifyRunFinished } from './notify.js';
 import { serverPorts } from './runner.js';
@@ -37,8 +37,11 @@ function storeImages(images: IncomingImage[]): StoredImage[] {
   });
 }
 
-function buildSystemAppend(worktrees: { project_name: string; path: string; branch: string; base_branch: string }[], side: boolean) {
-  const lines = worktrees.map((w) => `- ${w.project_name}: ${w.path} (브랜치 ${w.branch}, ${w.base_branch}에서 분기)`);
+function buildSystemAppend(repos: RepoView[], side: boolean) {
+  // 저장소 하나에 앱이 여럿이면(모노레포) 앱 폴더도 알려 준다.
+  const lines = repos.map((w) => `- ${w.project_name}: ${w.path} (브랜치 ${w.branch}, ${w.base_branch}에서 분기)${w.apps.length > 1
+    ? `. 이 저장소의 앱: ${w.apps.map((a) => `${a.project_kind.toUpperCase()} ${a.subdir ? `${a.subdir}/` : '루트'}`).join(', ')}`
+    : ''}`);
   const sideLines = side ? [
     '이 대화는 세션의 추가 대화다. 같은 워크트리에서 메인 대화의 Claude가 다른 작업을 동시에 하고 있을 수 있다.',
     '요청받은 일만 좁게 고치고, 관련 없는 파일은 건드리지 않는다. 파일을 고치기 직전에 다시 읽어 최신 내용 위에 고친다. git stash, checkout, reset처럼 워크트리 전체를 바꾸는 명령은 쓰지 않는다.',
@@ -234,7 +237,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
 
   const primary = session.worktrees.find((w) => w.id === session.primary_worktree_id) ?? session.worktrees[0];
   if (!primary) throw new Error('세션에 워크트리가 없습니다.');
-  const others = session.worktrees.filter((w) => w.id !== primary.id).map((w) => w.path);
+  const others = session.repos.filter((w) => w.path !== primary.path).map((w) => w.path);
 
   const stored = preStored ?? storeImages(images);
   appendMessage(sessionId, 'user', { text, images: stored, ...(opts.plan ? { plan: true } : {}) }, chatId);
@@ -310,7 +313,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
         ...(opts.plan ? { planModeInstructions: chatId === 0 ? PLAN_INSTRUCTIONS : PLAN_INSTRUCTIONS.split('\n').filter((l) => !l.includes('set_tasks')).join('\n') } : {}),
         canUseTool,
         settingSources: ['user', 'project', 'local'],
-        systemPrompt: { type: 'preset', preset: 'claude_code', append: buildSystemAppend(session.worktrees, chatId !== 0) },
+        systemPrompt: { type: 'preset', preset: 'claude_code', append: buildSystemAppend(session.repos, chatId !== 0) },
         abortController: abort,
         pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
         mcpServers: { studio: studioTools(sessionId, chatId) },

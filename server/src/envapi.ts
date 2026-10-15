@@ -30,7 +30,7 @@ export function sessionEnvState(sessionId: number): ProjectEnvState[] {
     const project = getProject(w.project_id)!;
     ensureDefaultProfile(project.id);
     const profile = selectedProfile(sessionId, project.id);
-    seedProfileIfEmpty(profile.id, scanEnv(w.path, project.local_path).map((f) => ({ ...f })));
+    seedProfileIfEmpty(profile.id, scanEnv(w.app_path, project.local_path).map((f) => ({ ...f })));
     const base = profileVars(profile.id);
     const overrides = sessionOverrides(sessionId, project.id);
     const vars = base.map((v) => (v.key in overrides ? { ...v, value: overrides[v.key], overridden: true } : { ...v, overridden: false }));

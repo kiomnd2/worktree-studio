@@ -103,7 +103,7 @@ async function worktreeChanges(w: Wt, scope: ChangeScope): Promise<WorktreeChang
 export async function sessionChanges(sessionId: number, scope: ChangeScope): Promise<WorktreeChanges[]> {
   const s = getSession(sessionId);
   if (!s) throw new Error('세션이 없습니다.');
-  return Promise.all(s.worktrees.filter((w) => fs.existsSync(w.path)).map((w) => worktreeChanges(w, scope)));
+  return Promise.all(s.repos.filter((w) => fs.existsSync(w.path)).map((w) => worktreeChanges(w, scope)));
 }
 
 /**
@@ -112,7 +112,7 @@ export async function sessionChanges(sessionId: number, scope: ChangeScope): Pro
  */
 export async function fileDiff(worktreeId: number, sessionId: number, file: string, opts: { scope: ChangeScope; full: boolean; ignoreWhitespace: boolean }): Promise<{ patch: string; binary: boolean }> {
   const s = getSession(sessionId);
-  const w = s?.worktrees.find((x) => x.id === worktreeId);
+  const w = s?.repos.find((x) => x.id === worktreeId);
   if (!w) throw new Error('워크트리가 없습니다.');
   const norm = path.normalize(file);
   if (path.isAbsolute(norm) || norm.startsWith('..')) throw new Error('잘못된 경로입니다.');

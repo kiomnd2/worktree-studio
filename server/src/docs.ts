@@ -111,7 +111,7 @@ export function writeFolderIndex(sessionId: number) {
   const prs = prsOf(sessionId);
   const meta = {
     session_id: s.id, ticket: s.ticket, summary: s.summary, workspace: s.workspace_name, created_at: s.created_at,
-    worktrees: s.worktrees.map((w) => ({ project: w.project_name, branch: w.branch, base: w.base_branch })),
+    worktrees: s.repos.map((w) => ({ project: w.project_name, branch: w.branch, base: w.base_branch })),
     prs, docs: docs.map(({ path: _p, ...d }) => d),
   };
   fs.writeFileSync(path.join(docsDir(sessionId), 'meta.json'), JSON.stringify(meta, null, 2));
@@ -122,7 +122,7 @@ export function writeFolderIndex(sessionId: number) {
   const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(s.ticket)} 산출물</title>
 <style>body{font-family:-apple-system,system-ui,sans-serif;margin:32px;color:#1b2230;max-width:960px}h1{font-size:22px;margin:0 0 4px}.m{color:#6b7280;font-size:13px}table{border-collapse:collapse;width:100%;margin-top:16px}th,td{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left;font-size:14px}th{background:#f6f7f9}a{color:#3346d3}</style></head>
 <body><h1>${esc(s.ticket)} ${esc(s.summary)}</h1>
-<p class="m">${esc(s.workspace_name)} · ${s.worktrees.map((w) => `${esc(w.project_name)} <code>${esc(w.branch)}</code>`).join(', ')}${prs.length ? ` · PR ${prs.map((p) => `<a href="${esc(p.url)}">#${p.number}</a>`).join(', ')}` : ''}</p>
+<p class="m">${esc(s.workspace_name)} · ${s.repos.map((w) => `${esc(w.project_name)} <code>${esc(w.branch)}</code>`).join(', ')}${prs.length ? ` · PR ${prs.map((p) => `<a href="${esc(p.url)}">#${p.number}</a>`).join(', ')}` : ''}</p>
 <table><thead><tr><th>종류</th><th>문서</th><th>판</th><th>저장</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
   fs.writeFileSync(path.join(docsDir(sessionId), 'index.html'), html);
 }

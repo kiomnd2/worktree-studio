@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import os from 'node:os';
 import { db } from './db.js';
 import { git } from './git.js';
@@ -61,9 +62,20 @@ function classify(s: SessionView, prs: PullRequestRow[], dirty: number): { state
   return { state: 'active', reason: 'PR 없음' };
 }
 
+/** 워크트리를 지운 뒤에 빌드 도구·IDE가 다시 만들 수 있는 캐시. 이것만 남은 폴더는 지워도 된다. */
+const LEFTOVER_CACHES = new Set(['.gradle', '.idea', '.vscode', '.next', '.nuxt', '.turbo', '.venv', '__pycache__', '.pytest_cache', '.ruff_cache', '.mypy_cache', 'node_modules', 'build', 'dist', 'out', 'target', '.bkit', '.claude']);
+
+/** 그 경로가 저장소에 등록된 워크트리인지. macOS 한글 경로는 정규화가 달라질 수 있어 맞춰서 비교한다. */
+async function isWorktreeOf(repo: string, dir: string): Promise<boolean> {
+  const norm = (p: string) => { try { return fs.realpathSync(p).normalize('NFC'); } catch { return path.resolve(p).normalize('NFC'); } };
+  const target = norm(dir);
+  const out = await git(repo, ['worktree', 'list', '--porcelain']).catch(() => '');
+  return out.split('\n').some((l) => l.startsWith('worktree ') && norm(l.slice(9)) === target);
+}
+
 async function rowOf(s: SessionView): Promise<CleanupRow> {
   const prs = listPrs(s.id);
-  const worktrees = await Promise.all(s.worktrees.map(async (w) => {
+  const worktrees = await Promise.all(s.repos.map(async (w) => {
     const exists = fs.existsSync(w.path);
     const dirty = exists ? (await git(w.path, ['status', '--porcelain']).catch(() => '')).split('\n').filter(Boolean).length : 0;
     return { id: w.id, project_name: w.project_name, path: w.path, branch: w.branch, exists, dirty, size_kb: exists ? await folderKb(w.path) : 0 };
@@ -108,22 +120,35 @@ export async function cleanSession(sessionId: number, opts: { deleteRemote: bool
   };
 
   await attempt('서버 종료', async () => { await stopServers(sessionId); });
-  for (const w of s.worktrees) {
+  for (const w of s.repos) {
     const project = getProject(w.project_id);
     if (!project) continue;
+    const repo = project.repo_root || project.local_path;
     await attempt(`${w.project_name} 워크트리 삭제`, async () => {
-      if (!fs.existsSync(w.path)) { await git(project.local_path, ['worktree', 'prune']).catch(() => {}); return '이미 없음'; }
-      await git(project.local_path, ['worktree', 'remove', ...(opts.force ? ['--force'] : []), w.path]);
+      if (!fs.existsSync(w.path)) { await git(repo, ['worktree', 'prune']).catch(() => {}); return '이미 없음'; }
+      // 워크트리는 이미 지워졌는데 빌드 도구가 나중에 만든 캐시(.gradle 등)만 남아 폴더가 있는 경우.
+      // git은 워크트리가 아니라며 거절하므로, 캐시뿐이면 폴더를 지우고 다른 파일이 있으면 그대로 두고 알린다.
+      if (!(await isWorktreeOf(repo, w.path))) {
+        await git(repo, ['worktree', 'prune']).catch(() => {});
+        const left = fs.readdirSync(w.path).filter((n) => n !== '.DS_Store');
+        if (left.every((n) => LEFTOVER_CACHES.has(n))) {
+          fs.rmSync(w.path, { recursive: true, force: true });
+          sizeCache.delete(w.path);
+          return `워크트리는 이미 지워졌고, 남은 캐시 폴더(${left.join(', ') || '빈 폴더'})를 지웠습니다.`;
+        }
+        return `워크트리는 이미 지워졌습니다. 폴더에 다른 파일(${left.slice(0, 5).join(', ')})이 남아 있어 지우지 않았습니다. 확인 후 직접 지우세요: ${w.path}`;
+      }
+      await git(repo, ['worktree', 'remove', ...(opts.force ? ['--force'] : []), w.path]);
       sizeCache.delete(w.path);
     });
     await attempt(`${w.project_name} 로컬 브랜치 ${w.branch} 삭제`, async () => {
-      const exists = await git(project.local_path, ['rev-parse', '--verify', '--quiet', `refs/heads/${w.branch}`]).then(() => true, () => false);
+      const exists = await git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${w.branch}`]).then(() => true, () => false);
       if (!exists) return '이미 없음';
-      await git(project.local_path, ['branch', '-D', w.branch]);
+      await git(repo, ['branch', '-D', w.branch]);
     });
     if (opts.deleteRemote && row.prs.length > 0) {
       await attempt(`${w.project_name} 원격 브랜치 삭제`, async () => {
-        await runFile('git', ['push', 'origin', '--delete', w.branch], project.local_path, 60_000).catch((e) => {
+        await runFile('git', ['push', 'origin', '--delete', w.branch], repo, 60_000).catch((e) => {
           if (/remote ref does not exist/.test((e as Error).message)) return;
           throw e;
         });

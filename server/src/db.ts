@@ -104,6 +104,36 @@ CREATE TABLE IF NOT EXISTS servers (
 );
 `);
 
+// PR과 영향 화면 표. 아래 addColumn이 이 표들에 열을 더하므로 먼저 만든다(새로 설치할 때 표가 없어 실패하지 않게).
+db.exec(`
+CREATE TABLE IF NOT EXISTS pull_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  worktree_id INTEGER NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+  number INTEGER NOT NULL,
+  url TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'OPEN',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  checked_at TEXT
+);
+CREATE TABLE IF NOT EXISTS screen_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  route TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  before_file TEXT,
+  after_file TEXT,
+  diff_file TEXT,
+  diff_ratio REAL,
+  boxes TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'pending',
+  error TEXT,
+  captured_at TEXT,
+  UNIQUE (session_id, route)
+);
+`);
+
 function addColumn(table: string, column: string, ddl: string) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
   if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
@@ -167,37 +197,19 @@ addColumn('messages', 'chat_id', 'chat_id INTEGER NOT NULL DEFAULT 0');
 addColumn('prompt_queue', 'chat_id', 'chat_id INTEGER NOT NULL DEFAULT 0');
 db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(session_id, chat_id, id)`);
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS pull_requests (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  worktree_id INTEGER NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
-  number INTEGER NOT NULL,
-  url TEXT NOT NULL,
-  title TEXT NOT NULL DEFAULT '',
-  state TEXT NOT NULL DEFAULT 'OPEN',
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  checked_at TEXT
-);
-CREATE TABLE IF NOT EXISTS screen_checks (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  route TEXT NOT NULL,
-  reason TEXT NOT NULL DEFAULT '',
-  before_file TEXT,
-  after_file TEXT,
-  diff_file TEXT,
-  diff_ratio REAL,
-  boxes TEXT NOT NULL DEFAULT '[]',
-  status TEXT NOT NULL DEFAULT 'pending',
-  error TEXT,
-  captured_at TEXT,
-  UNIQUE (session_id, route)
-);
-`);
 
 // GitHub가 본 PR 머지 가능 여부(MERGEABLE, CONFLICTING, UNKNOWN). 충돌이면 화면에 표시한다.
 addColumn('pull_requests', 'mergeable', 'mergeable TEXT');
+
+// 저장소 하나에 FE·BE가 함께 있는 경우(모노레포): 프로젝트는 '앱' 하나이고 local_path는 그 앱 폴더다.
+// repo_root는 git 저장소 루트, subdir는 루트에서 앱 폴더까지의 상대 경로(루트 앱이면 '').
+// 같은 저장소의 앱들은 세션에서 워크트리 하나를 같이 쓴다.
+addColumn('projects', 'repo_root', 'repo_root TEXT');
+addColumn('projects', 'subdir', `subdir TEXT NOT NULL DEFAULT ''`);
+db.prepare(`UPDATE projects SET repo_root = local_path WHERE repo_root IS NULL`).run();
+// 닫은 세션이 아직 가리키는 프로젝트는 지우지 않고 숨긴다(산출물 보관함·리소스 정리가 그 정보를 쓴다).
+addColumn('projects', 'deleted', 'deleted INTEGER NOT NULL DEFAULT 0');
+addColumn('workspaces', 'deleted', 'deleted INTEGER NOT NULL DEFAULT 0');
 
 // 도구가 비정상 종료됐다면 실행 중으로 남은 세션을 되돌린다.
 db.prepare(`UPDATE sessions SET status = 'idle' WHERE status = 'running'`).run();
@@ -207,6 +219,7 @@ export type ProjectRow = {
   id: number; name: string; local_path: string; kind: string;
   start_cmd: string | null; check_cmd: string | null; health_path: string | null; created_at: string;
   port_env: string | null; api_env_key: string | null; baseline_url: string | null; login_path: string | null; setup_cmd: string | null; commit_template: string | null;
+  repo_root: string; subdir: string;
 };
 export type SessionRow = {
   id: number; workspace_id: number; ticket: string; summary: string; status: string;

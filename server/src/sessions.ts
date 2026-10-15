@@ -18,7 +18,10 @@ export type ChatView = Pick<ChatRow, 'id' | 'title' | 'status' | 'unread' | 'cre
 export type SessionView = SessionRow & QueueView & {
   workspace_name: string;
   accounts: { id: number; login: string; note: string }[];
-  worktrees: (WorktreeRow & { project_name: string; project_kind: string })[];
+  /** 앱(프로젝트)마다 하나. 같은 저장소의 앱들은 path·branch가 같은 워크트리를 같이 쓰고, app_path는 그 안의 앱 폴더다. */
+  worktrees: WorktreeView[];
+  /** 저장소마다 하나(같은 path는 한 번). 커밋·PR·충돌·변경 파일처럼 git으로 하는 일은 이것으로 한다. */
+  repos: RepoView[];
   /** 추가 대화. status·queue는 메인 대화(chat 0)의 것이다. */
   chats: ChatView[];
   /** 메인이든 추가 대화든 하나라도 작업 중인지 */
@@ -40,8 +43,9 @@ export function getSession(id: number): SessionView | undefined {
 
 function view(r: SessionRow & { workspace_name: string }): SessionView {
   const chats = chatsOf(r.id);
+  const worktrees = worktreesOf(r.id);
   return {
-    ...r, accounts: accountsView(r.id), worktrees: worktreesOf(r.id), ...queueView(r.id, 0), chats,
+    ...r, accounts: accountsView(r.id), worktrees, repos: reposOf(worktrees), ...queueView(r.id, 0), chats,
     busy: r.status === 'running' || chats.some((c) => c.status === 'running'),
   };
 }
@@ -133,10 +137,44 @@ function accountsView(sessionId: number) {
     WHERE a.workspace_id = s.workspace_id OR a.workspace_id IS NULL ORDER BY a.workspace_id IS NULL, a.login`).all(sessionId) as SessionView['accounts'];
 }
 
-function worktreesOf(sessionId: number) {
-  return db.prepare(`
-    SELECT wt.*, p.name AS project_name, p.kind AS project_kind FROM worktrees wt
-    JOIN projects p ON p.id = wt.project_id WHERE wt.session_id = ? ORDER BY wt.id`).all(sessionId) as SessionView['worktrees'];
+export type WorktreeView = WorktreeRow & {
+  project_name: string; project_kind: string;
+  /** 저장소 루트에서 앱 폴더까지(루트 앱이면 '') */
+  subdir: string;
+  /** 앱 폴더(path + subdir). 서버를 띄우고 환경값을 찾는 곳 */
+  app_path: string;
+  /** 원본 저장소 폴더 이름(앱이 여럿인 저장소를 부를 때) */
+  repo_name: string;
+  /** 워크트리 폴더가 지워졌는지(세션은 열려 있는데 폴더가 없으면 서버·Claude가 동작하지 않는다) */
+  missing: boolean;
+};
+export type RepoView = WorktreeView & {
+  /** 이 워크트리를 같이 쓰는 앱들 */
+  apps: { worktree_id: number; project_id: number; project_name: string; project_kind: string; subdir: string }[];
+};
+
+function worktreesOf(sessionId: number): WorktreeView[] {
+  const rows = db.prepare(`
+    SELECT wt.*, p.name AS project_name, p.kind AS project_kind, p.subdir AS subdir, COALESCE(p.repo_root, p.local_path) AS repo_root FROM worktrees wt
+    JOIN projects p ON p.id = wt.project_id WHERE wt.session_id = ? ORDER BY wt.id`).all(sessionId) as (Omit<WorktreeView, 'app_path' | 'repo_name' | 'missing'> & { repo_root: string })[];
+  return rows.map(({ repo_root, ...r }) => ({ ...r, subdir: r.subdir ?? '', app_path: r.subdir ? path.join(r.path, r.subdir) : r.path, repo_name: path.basename(repo_root), missing: !fs.existsSync(r.path) }));
+}
+
+/** 같은 워크트리(path)를 쓰는 앱을 묶는다. 앱이 여럿이면 이름은 저장소 폴더 이름으로 보여 준다. */
+export function reposOf(worktrees: WorktreeView[]): RepoView[] {
+  const out = new Map<string, RepoView>();
+  for (const w of worktrees) {
+    const app = { worktree_id: w.id, project_id: w.project_id, project_name: w.project_name, project_kind: w.project_kind, subdir: w.subdir };
+    const cur = out.get(w.path);
+    if (!cur) { out.set(w.path, { ...w, app_path: w.path, apps: [app] }); continue; }
+    cur.apps.push(app);
+    // 루트 앱이 있으면 그 앱을 대표로 둔다(PR·커밋 템플릿 설정을 그 프로젝트에서 읽는다).
+    if (!w.subdir && cur.subdir) Object.assign(cur, { ...w, app_path: w.path, apps: cur.apps });
+  }
+  for (const r of out.values()) {
+    if (r.apps.length > 1) r.project_name = r.repo_name;
+  }
+  return [...out.values()];
 }
 
 export function setSession(id: number, patch: Partial<Pick<SessionRow, 'status' | 'claude_session_id' | 'unread' | 'closed'>>) {
@@ -177,16 +215,22 @@ export async function createSession(input: CreateSessionInput): Promise<SessionV
 
   const created: { repo: string; path: string }[] = [];
   const planned: { projectId: number; path: string; branch: string; base: string }[] = [];
+  // 같은 저장소의 앱(모노레포의 FE·BE)은 워크트리 하나를 같이 쓴다. 브랜치는 그 저장소에서 처음 나온 앱의 것을 쓴다.
+  const byRepo = new Map<string, { path: string; branch: string; base: string }>();
   try {
     for (const b of input.branches) {
       const project = getProject(b.projectId);
       if (!project) throw new Error(`프로젝트 ${b.projectId}가 없습니다.`);
+      const repo = project.repo_root || project.local_path;
+      const shared = byRepo.get(repo);
+      if (shared) { planned.push({ projectId: b.projectId, ...shared }); continue; }
       const branch = b.branch.trim();
       if (!branch) throw new Error(`${project.name}의 새 브랜치 이름을 넣어 주세요.`);
-      await fetchOrigin(project.local_path).catch(() => { /* 오프라인이면 로컬 기준으로 진행 */ });
-      const wtPath = freePath(path.join(path.dirname(project.local_path), `${project.name}-${ticketSlug(ticket)}`));
-      await addWorktree(project.local_path, wtPath, branch, b.base);
-      created.push({ repo: project.local_path, path: wtPath });
+      await fetchOrigin(repo).catch(() => { /* 오프라인이면 로컬 기준으로 진행 */ });
+      const wtPath = freePath(path.join(path.dirname(repo), `${path.basename(repo)}-${ticketSlug(ticket)}`));
+      await addWorktree(repo, wtPath, branch, b.base);
+      created.push({ repo, path: wtPath });
+      byRepo.set(repo, { path: wtPath, branch, base: b.base });
       planned.push({ projectId: b.projectId, path: wtPath, branch, base: b.base });
     }
   } catch (err) {
@@ -217,9 +261,9 @@ export async function closeSession(id: number, removeWorktrees: boolean) {
   if (!s) throw new Error('세션이 없습니다.');
   if (s.busy) throw new Error('작업 중인 세션은 닫을 수 없습니다. 먼저 중단하세요.');
   if (removeWorktrees) {
-    for (const wt of s.worktrees) {
+    for (const wt of s.repos) {
       const project = getProject(wt.project_id);
-      if (project) await removeWorktree(project.local_path, wt.path).catch(() => {});
+      if (project) await removeWorktree(project.repo_root || project.local_path, wt.path).catch(() => {});
     }
   }
   setSession(id, { closed: 1 });
