@@ -9,6 +9,8 @@ import SettingsPage from './components/SettingsPage';
 import RightPanel from './components/RightPanel';
 import EnvPage from './components/EnvPage';
 import PrDialog from './components/PrDialog';
+import ConflictDialog from './components/ConflictDialog';
+import Toasts from './components/Toasts';
 import CleanupPage from './components/CleanupPage';
 import ChangesPage from './components/ChangesPage';
 import TestsPage from './components/TestsPage';
@@ -39,6 +41,7 @@ export default function App() {
   const [view, setView] = useState<View>(initialView);
   const [creating, setCreating] = useState(false);
   const [prOpen, setPrOpen] = useState(false);
+  const [conflictOpen, setConflictOpen] = useState(false);
   const [prs, setPrs] = useState<PullRequest[]>([]);
   const [cleanupCount, setCleanupCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -104,6 +107,19 @@ export default function App() {
     return () => window.removeEventListener('wts:open-doc', onOpen);
   }, [selectedId]);
 
+  // 테스트·변경 파일·문서 화면이나 PR 창에서 "새 대화로 보내기"를 누르면 그 세션의 대화 화면으로 돌아간다.
+  useEffect(() => {
+    const toChat = () => {
+      if (!selectedId) return;
+      setPrOpen(false);
+      setConflictOpen(false);
+      setView((v) => (v.kind === 'session' ? v : { kind: 'session', id: selectedId }));
+    };
+    window.addEventListener('wts:new-chat', toChat);
+    window.addEventListener('wts:open-chat', toChat);
+    return () => { window.removeEventListener('wts:new-chat', toChat); window.removeEventListener('wts:open-chat', toChat); };
+  }, [selectedId]);
+
   useServerEvents((e) => {
     if (e.type === 'sessions.changed' || e.type === 'session.updated') reload();
     if (e.type === 'server.updated' && e.sessionId === selectedId) reloadServers();
@@ -139,13 +155,18 @@ export default function App() {
                   {selected.accounts.length === 1 ? `계정 ${selected.accounts[0].login}` : `계정 ${selected.accounts.length}개`}
                 </span>
               )}
-              {prs.map((p) => (
+              {prs.map((p) => (p.state === 'OPEN' && p.mergeable === 'CONFLICTING' ? (
+                <button key={p.id} className="chip-status conflict" title="기준 브랜치와 충돌합니다. 눌러서 충돌 내용과 해결 방법을 봅니다" onClick={() => setConflictOpen(true)}>
+                  <span className="srv-dot failed" aria-hidden="true" />
+                  PR #{p.number} 충돌
+                </button>
+              ) : (
                 <a key={p.id} className="chip-status" href={p.url} target="_blank" rel="noreferrer">
                   <span className={`srv-dot ${p.state === 'OPEN' ? 'running' : p.state === 'MERGED' ? 'merged' : 'idle'}`} aria-hidden="true" />
                   PR #{p.number} {p.state === 'OPEN' ? '열림' : p.state === 'MERGED' ? '머지됨' : '닫힘'}
                 </a>
-              ))}
-              <button className="small-btn primary" disabled={selected.status === 'running'} title={selected.status === 'running' ? 'Claude 작업이 끝난 뒤에 만들 수 있습니다' : undefined} onClick={() => setPrOpen(true)}>
+              )))}
+              <button className="small-btn primary" disabled={selected.busy} title={selected.busy ? 'Claude 작업이 끝난 뒤에 만들 수 있습니다' : undefined} onClick={() => setPrOpen(true)}>
                 푸시하고 PR 만들기
               </button>
             </div>
@@ -204,6 +225,7 @@ export default function App() {
               onOpenTests={() => setView({ kind: 'tests', id: selected.id })}
               onOpenDocs={(name) => setView({ kind: 'docs', id: selected.id, name: name ?? null })}
               onClosed={() => { setView({ kind: 'session', id: null }); reload(); }}
+              onOpenConflicts={() => setConflictOpen(true)}
             />
           </>
         ) : (
@@ -225,6 +247,10 @@ export default function App() {
           onClose={() => setPrOpen(false)}
           onOpenCleanup={() => { setPrOpen(false); setView({ kind: 'cleanup' }); }}
         />
+      )}
+      <Toasts onOpenTests={(id) => setView({ kind: 'tests', id })} />
+      {conflictOpen && selected && (
+        <ConflictDialog session={selected} onClose={() => { setConflictOpen(false); reloadPrs(); }} />
       )}
       {creating && (
         <NewSessionDialog

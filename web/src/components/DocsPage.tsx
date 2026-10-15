@@ -104,7 +104,7 @@ export default function DocsPage({ sessionId, ticket, live = false, initial, bac
                         ))}
                       </select>
                     )}
-                    {live && <button className="small-btn primary" onClick={() => mention(current)}>프롬프트에 언급</button>}
+                    {live && <button className="small-btn primary" onClick={() => mention(current)}>새 대화에서 언급</button>}
                     <a className="small-btn" href={docUrl(sessionId, current.name, shown)} target="_blank" rel="noreferrer">새 창으로</a>
                     <button className="small-btn" onClick={() => remove(current)}>삭제</button>
                   </div>

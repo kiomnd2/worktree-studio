@@ -1,4 +1,5 @@
 import type {
+  ConflictProposal, WorktreeConflict,
   EnvSuggestion,
   TaskList,
   Account, Approval, ChangeScope, ArchiveEntry, DocMeta, JiraConfig, JiraIssue, JiraRequiredField, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
@@ -55,9 +56,12 @@ export const api = {
     workspaceId: number; ticket: string; summary: string;
     branches: { projectId: number; base: string; branch: string }[]; firstPrompt?: string; firstPromptPlan?: boolean;
   }) => request<Session>('POST', '/api/sessions', body),
-  messages: (id: number) => request<StoredMessage[]>('GET', `/api/sessions/${id}/messages`),
-  prompt: (id: number, text: string, images: { mediaType: string; data: string; name?: string }[], plan = false) =>
-    request<{ queued: boolean; position: number }>('POST', `/api/sessions/${id}/prompt`, { text, images, plan }),
+  messages: (id: number, chat = 0) => request<StoredMessage[]>('GET', `/api/sessions/${id}/messages?chat=${chat}`),
+  prompt: (id: number, text: string, images: { mediaType: string; data: string; name?: string }[], plan = false, chat = 0) =>
+    request<{ queued: boolean; position: number }>('POST', `/api/sessions/${id}/prompt`, { text, images, plan, chat }),
+  startChat: (id: number, text: string, images: { mediaType: string; data: string; name?: string }[], plan = false) =>
+    request<{ id: number; title: string }>('POST', `/api/sessions/${id}/chats`, { text, images, plan }),
+  closeChat: (id: number, chat: number) => request('POST', `/api/sessions/${id}/chats/${chat}/close`),
   docs: (id: number) => request<DocMeta[]>('GET', `/api/sessions/${id}/docs`),
   archive: () => request<ArchiveEntry[]>('GET', '/api/artifacts'),
   revealArchive: (sessionId?: number) => request('POST', '/api/artifacts/reveal', { session: sessionId }),
@@ -77,10 +81,14 @@ export const api = {
   approvals: (id: number) => request<Approval[]>('GET', `/api/sessions/${id}/approvals`),
   decideApproval: (approvalId: number, body: { approve: false; feedback?: string } | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number }) =>
     request('POST', `/api/approvals/${approvalId}`, body),
+  conflicts: (id: number) => request<WorktreeConflict[]>('GET', `/api/sessions/${id}/conflicts`),
+  proposeConflict: (id: number, worktreeId: number) => request<ConflictProposal>('POST', `/api/sessions/${id}/conflicts/${worktreeId}/propose`),
+  resolveConflict: (id: number, worktreeId: number, proposal: ConflictProposal) => request<{ chat_id: number }>('POST', `/api/sessions/${id}/conflicts/${worktreeId}/resolve`, proposal),
+  abortMerge: (id: number, worktreeId: number) => request('POST', `/api/sessions/${id}/conflicts/${worktreeId}/abort`),
   removeQueued: (id: number, queueId: number) => request('DELETE', `/api/sessions/${id}/queue/${queueId}`),
-  resumeQueue: (id: number) => request('POST', `/api/sessions/${id}/queue/resume`),
-  stop: (id: number) => request('POST', `/api/sessions/${id}/stop`),
-  markRead: (id: number) => request('POST', `/api/sessions/${id}/read`),
+  resumeQueue: (id: number, chat = 0) => request('POST', `/api/sessions/${id}/queue/resume?chat=${chat}`),
+  stop: (id: number, chat = 0) => request('POST', `/api/sessions/${id}/stop?chat=${chat}`),
+  markRead: (id: number, chat = 0) => request('POST', `/api/sessions/${id}/read?chat=${chat}`),
   closeSession: (id: number, removeWorktrees: boolean) => request('POST', `/api/sessions/${id}/close`, { removeWorktrees }),
 
   env: (id: number) => request<ProjectEnvState[]>('GET', `/api/sessions/${id}/env`),

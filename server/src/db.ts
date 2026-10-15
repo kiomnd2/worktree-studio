@@ -149,6 +149,24 @@ addColumn('workspaces', 'jira_project', 'jira_project TEXT');
 addColumn('prompt_queue', 'plan', 'plan INTEGER NOT NULL DEFAULT 0');
 addColumn('sessions', 'stale_notified', 'stale_notified INTEGER NOT NULL DEFAULT 0');
 
+// 한 세션 안의 추가 대화. 같은 워크트리에서 메인 대화와 따로 Claude를 돌린다(로그를 보다 생긴 작은 수정 등).
+// 메인 대화는 chat_id 0이고 sessions 행의 상태를 쓴다.
+db.exec(`
+CREATE TABLE IF NOT EXISTS chats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'idle',
+  claude_session_id TEXT,
+  unread INTEGER NOT NULL DEFAULT 0,
+  closed INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
+addColumn('messages', 'chat_id', 'chat_id INTEGER NOT NULL DEFAULT 0');
+addColumn('prompt_queue', 'chat_id', 'chat_id INTEGER NOT NULL DEFAULT 0');
+db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(session_id, chat_id, id)`);
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS pull_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,8 +196,12 @@ CREATE TABLE IF NOT EXISTS screen_checks (
 );
 `);
 
+// GitHub가 본 PR 머지 가능 여부(MERGEABLE, CONFLICTING, UNKNOWN). 충돌이면 화면에 표시한다.
+addColumn('pull_requests', 'mergeable', 'mergeable TEXT');
+
 // 도구가 비정상 종료됐다면 실행 중으로 남은 세션을 되돌린다.
 db.prepare(`UPDATE sessions SET status = 'idle' WHERE status = 'running'`).run();
+db.prepare(`UPDATE chats SET status = 'idle' WHERE status = 'running'`).run();
 
 export type ProjectRow = {
   id: number; name: string; local_path: string; kind: string;
@@ -193,4 +215,7 @@ export type SessionRow = {
 };
 export type WorktreeRow = {
   id: number; session_id: number; project_id: number; path: string; branch: string; base_branch: string; setup_done: number;
+};
+export type ChatRow = {
+  id: number; session_id: number; title: string; status: string; claude_session_id: string | null; unread: number; closed: number; created_at: string;
 };

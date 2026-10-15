@@ -7,7 +7,7 @@ import { cancelApprovals, requestAccount, requestAnswers, requestEnv, requestPla
 import { docsDir, listDocs, saveDoc } from './docs.js';
 import { setTasks, startFirstTask, tasksForContext } from './tasks.js';
 import { CLAUDE_EXECUTABLE, UPLOAD_DIR } from './config.js';
-import { appendMessage, enqueuePrompt, getSession, isQueuePaused, queueLength, setQueuePaused, setSession, shiftQueue } from './sessions.js';
+import { appendMessage, createChat, enqueuePrompt, getChat, getSession, isQueuePaused, queueLength, setChat, setQueuePaused, shiftQueue } from './sessions.js';
 import { getSettings } from './settings.js';
 import { notifyRunFinished } from './notify.js';
 import { serverPorts } from './runner.js';
@@ -19,13 +19,11 @@ export type IncomingImage = { mediaType: string; data: string; name?: string };
 type StoredImage = { file: string; mediaType: ImageType; name?: string };
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const running = new Map<number, AbortController>();
+/** 대화마다(세션:대화) 하나씩 돈다. 대화 0은 메인 대화 */
+const running = new Map<string, AbortController>();
 /** 실행 중인 프롬프트에서 저장한 문서 이름. 계획 승인 카드에 이번 계획의 문서만 보여 준다. */
-const savedThisRun = new Map<number, Set<string>>();
-
-export function isRunning(sessionId: number) {
-  return running.has(sessionId);
-}
+const savedThisRun = new Map<string, Set<string>>();
+const rkey = (sessionId: number, chatId: number) => `${sessionId}:${chatId}`;
 
 function storeImages(images: IncomingImage[]): StoredImage[] {
   return images.map((img) => {
@@ -39,9 +37,15 @@ function storeImages(images: IncomingImage[]): StoredImage[] {
   });
 }
 
-function buildSystemAppend(worktrees: { project_name: string; path: string; branch: string; base_branch: string }[]) {
+function buildSystemAppend(worktrees: { project_name: string; path: string; branch: string; base_branch: string }[], side: boolean) {
   const lines = worktrees.map((w) => `- ${w.project_name}: ${w.path} (브랜치 ${w.branch}, ${w.base_branch}에서 분기)`);
+  const sideLines = side ? [
+    '이 대화는 세션의 추가 대화다. 같은 워크트리에서 메인 대화의 Claude가 다른 작업을 동시에 하고 있을 수 있다.',
+    '요청받은 일만 좁게 고치고, 관련 없는 파일은 건드리지 않는다. 파일을 고치기 직전에 다시 읽어 최신 내용 위에 고친다. git stash, checkout, reset처럼 워크트리 전체를 바꾸는 명령은 쓰지 않는다.',
+    '세션의 작업 목록은 메인 대화가 관리하므로 이 대화에서는 바꾸지 않는다.',
+  ] : [];
   return [
+    ...sideLines,
     '이 세션은 아래 git 워크트리에서만 작업한다. 원본 클론 폴더나 다른 워크트리는 수정하지 않는다.',
     ...lines,
     '커밋, 푸시, PR 생성은 사용자가 도구에서 따로 실행하므로 요청받지 않으면 하지 않는다.',
@@ -57,7 +61,7 @@ function buildSystemAppend(worktrees: { project_name: string; path: string; bran
 }
 
 /** 시스템 프롬프트는 세션 처음에 고정되므로, 바뀌는 정보(서버 주소, 계정)는 매 메시지에 붙인다. */
-function runtimeContext(sessionId: number): string | null {
+function runtimeContext(sessionId: number, chatId: number): string | null {
   const ports = serverPorts(sessionId);
   const accounts = accountsOf(sessionId);
   const lines: string[] = [];
@@ -67,7 +71,7 @@ function runtimeContext(sessionId: number): string | null {
   } else {
     lines.push('지금 실행 중인 개발 서버가 없다. 화면 확인이 필요하면 사용자에게 서버 실행을 부탁한다.');
   }
-  const tasks = tasksForContext(sessionId);
+  const tasks = chatId === 0 ? tasksForContext(sessionId) : null;
   if (tasks) lines.push(tasks);
   const docs = listDocs(sessionId);
   if (docs.length) {
@@ -87,6 +91,9 @@ const KIND_LABEL = { plan: '계획서', screen: '화면설계서', test: '테스
 const PLAN_INSTRUCTIONS = [
   '1. 코드를 읽어 요청을 이해한다. 계획을 정하는 데 필요한데 코드로 알 수 없는 것은 AskUserQuestion으로 바로 묻고, 답을 계획에 반영한다. 사소한 것은 계획서의 "확인할 것"에 적는다.',
   '2. 계획서를 mcp__studio__save_doc(kind "plan", name "plan")으로 저장한다. 목표, 바꿀 파일과 이유, 단계, 데이터·API 변경, 영향 범위, 테스트 방법, 확인할 것을 담는다.',
+  '   업무 흐름이 걸린 작업(여러 역할이 주고받는 절차, 신청·승인·정산 같은 단계, 상태가 바뀌는 데이터)이면 계획서에 비즈니스 플로우 그림을 넣는다. 단순한 버그 수정이나 화면 문구 변경처럼 흐름과 상관없으면 넣지 않는다.',
+  '   그림은 문서 안에 직접 쓴 인라인 <svg>로 그린다(스크립트·Mermaid·외부 이미지는 문서 화면에서 보이지 않는다). 역할별 가로 레인, 단계 상자, 화살표, 분기 조건 글자를 넣고, 이번 작업으로 새로 생기거나 바뀌는 단계는 색으로 구분하고 범례를 단다.',
+  '   데이터 상태가 바뀌면(예: 대기→승인→체결) 상태 전이 그림도 따로 그린다. 그림 아래에 단계별 설명(누가, 무엇을, 어떤 API·테이블)을 짧은 표로 붙인다. 글자는 한국어로, 겹치지 않게 viewBox를 넉넉히 잡는다.',
   '3. 화면이 새로 생기거나 바뀌면 화면마다 화면설계서를 mcp__studio__save_doc(kind "screen", name "screen-<영문 화면 이름>")으로 저장한다.',
   '   화면설계서는 실제 화면과 같은 배치의 와이어프레임(HTML/CSS로 그린 것)에 번호 표시를 달고, 옆이나 아래에 번호별 설명 표(항목, 동작, 검증 규칙, 데이터 출처)를 둔다.',
   '   바뀌는 화면이면 지금 화면과 달라지는 부분을 표시한다. 상태(빈 목록, 오류, 로딩, 권한별 차이)가 있으면 함께 그린다.',
@@ -96,37 +103,50 @@ const PLAN_INSTRUCTIONS = [
 ].join('\n');
 
 /**
- * 사용자가 보낸 프롬프트. Claude가 작업 중이거나 앞에 기다리는 프롬프트가 있으면 대기열 끝에 넣고,
- * 아니면 바로 실행한다. 이미지는 지금 파일로 저장해 둬서 대기열에는 이름만 남긴다.
+ * 사용자가 보낸 프롬프트. 그 대화에서 Claude가 작업 중이거나 앞에 기다리는 프롬프트가 있으면 대기열 끝에 넣고,
+ * 아니면 바로 실행한다. 이미지는 지금 파일로 저장해 둬서 대기열에는 이름만 남긴다. chatId 0은 메인 대화.
  */
-export function submitPrompt(sessionId: number, text: string, images: IncomingImage[], opts: { plan?: boolean } = {}): { queued: boolean; position: number } {
+export function submitPrompt(sessionId: number, text: string, images: IncomingImage[], opts: { plan?: boolean; chatId?: number } = {}): { queued: boolean; position: number } {
+  const chatId = opts.chatId ?? 0;
+  const session = getSession(sessionId);
+  if (!session) throw new Error('세션이 없습니다.');
+  if (session.closed) throw new Error('닫힌 세션입니다.');
+  if (chatId !== 0 && !session.chats.some((c) => c.id === chatId)) throw new Error('닫았거나 없는 대화입니다.');
+  if (!text.trim() && images.length === 0) throw new Error('프롬프트를 입력하세요.');
+  const stored = storeImages(images);
+  if (running.has(rkey(sessionId, chatId)) || queueLength(sessionId, chatId) > 0) {
+    return { queued: true, position: enqueuePrompt(sessionId, chatId, text, stored, Boolean(opts.plan)) };
+  }
+  runPrompt(sessionId, text, [], stored, { plan: opts.plan, chatId }).catch(() => { /* 오류는 대화에 event로 남는다 */ });
+  return { queued: false, position: 0 };
+}
+
+/** 추가 대화를 열고 첫 프롬프트를 바로 실행한다. */
+export function startChat(sessionId: number, text: string, images: IncomingImage[], opts: { plan?: boolean; title?: string } = {}) {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
   if (session.closed) throw new Error('닫힌 세션입니다.');
   if (!text.trim() && images.length === 0) throw new Error('프롬프트를 입력하세요.');
-  const stored = storeImages(images);
-  if (running.has(sessionId) || queueLength(sessionId) > 0) {
-    return { queued: true, position: enqueuePrompt(sessionId, text, stored, Boolean(opts.plan)) };
-  }
-  runPrompt(sessionId, text, [], stored, { plan: opts.plan }).catch(() => { /* 오류는 대화에 event로 남는다 */ });
-  return { queued: false, position: 0 };
+  const chat = createChat(sessionId, text, opts.title);
+  submitPrompt(sessionId, text, images, { plan: opts.plan, chatId: chat.id });
+  return { id: chat.id, title: chat.title };
 }
 
-/** 대기열에서 다음 프롬프트를 꺼내 실행한다. 작업 중이거나 멈춘 대기열이면 아무것도 안 한다. */
-export function drainQueue(sessionId: number) {
-  if (running.has(sessionId) || isQueuePaused(sessionId)) return;
-  const next = shiftQueue(sessionId);
+/** 대화의 대기열에서 다음 프롬프트를 꺼내 실행한다. 작업 중이거나 멈춘 대기열이면 아무것도 안 한다. */
+export function drainQueue(sessionId: number, chatId: number) {
+  if (running.has(rkey(sessionId, chatId)) || isQueuePaused(sessionId, chatId)) return;
+  const next = shiftQueue(sessionId, chatId);
   if (!next) return;
-  runPrompt(sessionId, next.text, [], JSON.parse(next.images) as StoredImage[], { plan: Boolean(next.plan) }).catch(() => {});
+  runPrompt(sessionId, next.text, [], JSON.parse(next.images) as StoredImage[], { plan: Boolean(next.plan), chatId }).catch(() => {});
 }
 
-export function resumeQueue(sessionId: number) {
-  setQueuePaused(sessionId, false);
-  drainQueue(sessionId);
+export function resumeQueue(sessionId: number, chatId: number) {
+  setQueuePaused(sessionId, chatId, false);
+  drainQueue(sessionId, chatId);
 }
 
 /** 프롬프트 중에 Claude가 환경값·테스트 계정을 요청하는 도구. 사용자가 승인할 때까지 기다린다. */
-function studioTools(sessionId: number) {
+function studioTools(sessionId: number, chatId: number) {
   const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
   return createSdkMcpServer({
     name: 'studio',
@@ -144,7 +164,7 @@ function studioTools(sessionId: number) {
           })).min(1),
           reason: z.string().describe('요청 전체 이유 한 문장'),
         },
-        async (args) => text(await requestEnv(sessionId, args.project, args.vars, args.reason)),
+        async (args) => text(await requestEnv(sessionId, chatId, args.project, args.vars, args.reason)),
       ),
       tool(
         'request_test_account',
@@ -187,7 +207,7 @@ function studioTools(sessionId: number) {
         async (args) => {
           try {
             const d = saveDoc(sessionId, args);
-            savedThisRun.get(sessionId)?.add(d.name);
+            savedThisRun.get(rkey(sessionId, chatId))?.add(d.name);
             return text(`${d.title}을(를) ${d.version}판으로 저장했습니다: ${d.path}`);
           } catch (err) {
             return { ...text((err as Error).message), isError: true };
@@ -201,11 +221,15 @@ function studioTools(sessionId: number) {
 }
 
 /** 세션의 워크트리에서 Claude Code를 실행하고 메시지를 저장·중계한다. 끝나면 성공 여부를 돌려준다. */
-export async function runPrompt(sessionId: number, text: string, images: IncomingImage[], preStored?: StoredImage[], opts: { plan?: boolean } = {}): Promise<{ ok: boolean; stopped: boolean }> {
+export async function runPrompt(sessionId: number, text: string, images: IncomingImage[], preStored?: StoredImage[], opts: { plan?: boolean; chatId?: number } = {}): Promise<{ ok: boolean; stopped: boolean }> {
+  const chatId = opts.chatId ?? 0;
+  const key = rkey(sessionId, chatId);
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
   if (session.closed) throw new Error('닫힌 세션입니다.');
-  if (running.has(sessionId)) throw new Error('이미 작업 중입니다. 끝나거나 중단한 뒤 보내세요.');
+  const chat = chatId === 0 ? null : getChat(sessionId, chatId);
+  if (chatId !== 0 && (!chat || chat.closed)) throw new Error('닫았거나 없는 대화입니다.');
+  if (running.has(key)) throw new Error('이미 작업 중입니다. 끝나거나 중단한 뒤 보내세요.');
   if (!text.trim() && images.length === 0 && !preStored?.length) throw new Error('프롬프트를 입력하세요.');
 
   const primary = session.worktrees.find((w) => w.id === session.primary_worktree_id) ?? session.worktrees[0];
@@ -213,7 +237,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
   const others = session.worktrees.filter((w) => w.id !== primary.id).map((w) => w.path);
 
   const stored = preStored ?? storeImages(images);
-  appendMessage(sessionId, 'user', { text, images: stored, ...(opts.plan ? { plan: true } : {}) });
+  appendMessage(sessionId, 'user', { text, images: stored, ...(opts.plan ? { plan: true } : {}) }, chatId);
 
   const content: SDKUserMessage['message']['content'] = [
     ...stored.map((img) => ({
@@ -222,7 +246,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
     })),
     ...(text.trim() ? [{ type: 'text' as const, text }] : []),
   ];
-  const ctx = runtimeContext(sessionId);
+  const ctx = runtimeContext(sessionId, chatId);
   if (ctx) content.push({ type: 'text', text: ctx });
 
   async function* input(): AsyncGenerator<SDKUserMessage> {
@@ -230,9 +254,9 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
   }
 
   const abort = new AbortController();
-  running.set(sessionId, abort);
-  savedThisRun.set(sessionId, new Set());
-  setSession(sessionId, { status: 'running', unread: 0 });
+  running.set(key, abort);
+  savedThisRun.set(key, new Set());
+  setChat(sessionId, chatId, { status: 'running', unread: 0 });
 
   const started = Date.now();
   let ok = false;
@@ -248,7 +272,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
       // 화면에 질문 카드를 띄우고 답을 받아 이어서 작업한다.
       const questions = Array.isArray(input.questions) ? (input.questions as Question[]) : [];
       if (questions.length === 0) return { behavior: 'deny', message: '질문이 비어 있습니다.' };
-      const answers = await requestAnswers(sessionId, questions);
+      const answers = await requestAnswers(sessionId, chatId, questions);
       if (!answers) return { behavior: 'deny', message: '사용자가 질문에 답하지 않았습니다. 추측해서 진행하지 말고, 지금까지 한 것과 정해야 할 것을 정리해 이번 작업을 마치세요.' };
       return { behavior: 'allow', updatedInput: { ...input, answers } };
     }
@@ -257,11 +281,11 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
     if (!plan && typeof input.planFilePath === 'string') { try { plan = fs.readFileSync(input.planFilePath, 'utf8'); } catch { /* 요약 없이 문서만 보여 준다 */ } }
     // ExitPlanMode가 본문을 넘기지 않으면 Claude가 마지막으로 쓴 글을 요약으로 보여 준다.
     if (!plan) plan = lastText;
-    const saved = savedThisRun.get(sessionId);
+    const saved = savedThisRun.get(key);
     const docs = listDocs(sessionId).filter((d) => saved?.has(d.name)).map((d) => ({ name: d.name, title: d.title, kind: d.kind }));
-    const d = await requestPlanApproval(sessionId, plan, docs);
+    const d = await requestPlanApproval(sessionId, chatId, plan, docs);
     if (d.approve) {
-      startFirstTask(sessionId);
+      if (chatId === 0) startFirstTask(sessionId);
       const next: PermissionMode = mode === 'plan' ? 'default' : mode;
       return { behavior: 'allow', updatedInput: input, updatedPermissions: [{ type: 'setMode', mode: next, destination: 'session' }] };
     }
@@ -280,63 +304,67 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
         cwd: primary.path,
         // 저장한 문서를 다음 프롬프트에서 읽을 수 있게 문서 폴더도 연다.
         additionalDirectories: [...others, docsDir(sessionId)],
-        resume: session.claude_session_id ?? undefined,
+        resume: (chat ? chat.claude_session_id : session.claude_session_id) ?? undefined,
         permissionMode: opts.plan ? 'plan' : mode,
-        ...(opts.plan ? { planModeInstructions: PLAN_INSTRUCTIONS } : {}),
+        // 추가 대화는 세션 작업 목록을 건드리지 않으므로 목록을 올리는 단계를 뺀다.
+        ...(opts.plan ? { planModeInstructions: chatId === 0 ? PLAN_INSTRUCTIONS : PLAN_INSTRUCTIONS.split('\n').filter((l) => !l.includes('set_tasks')).join('\n') } : {}),
         canUseTool,
         settingSources: ['user', 'project', 'local'],
-        systemPrompt: { type: 'preset', preset: 'claude_code', append: buildSystemAppend(session.worktrees) },
+        systemPrompt: { type: 'preset', preset: 'claude_code', append: buildSystemAppend(session.worktrees, chatId !== 0) },
         abortController: abort,
         pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
-        mcpServers: { studio: studioTools(sessionId) },
+        mcpServers: { studio: studioTools(sessionId, chatId) },
         allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks'],
+        // 추가 대화는 세션 작업 목록을 바꾸지 않는다.
+        ...(chatId !== 0 ? { disallowedTools: ['mcp__studio__set_tasks'] } : {}),
       },
     });
 
     for await (const msg of q as AsyncIterable<SDKMessage>) {
       if (msg.type === 'system' && msg.subtype === 'init') {
-        if (msg.session_id && msg.session_id !== session.claude_session_id) setSession(sessionId, { claude_session_id: msg.session_id });
+        const prev = chat ? chat.claude_session_id : session.claude_session_id;
+        if (msg.session_id && msg.session_id !== prev) setChat(sessionId, chatId, { claude_session_id: msg.session_id });
         continue;
       }
       if (msg.type === 'assistant') {
         for (const block of msg.message.content) if (block.type === 'text') lastText = block.text;
-        appendMessage(sessionId, 'sdk', msg);
+        appendMessage(sessionId, 'sdk', msg, chatId);
       } else if (msg.type === 'user') {
-        appendMessage(sessionId, 'sdk', msg);
+        appendMessage(sessionId, 'sdk', msg, chatId);
       } else if (msg.type === 'result') {
         ok = msg.subtype === 'success' && !msg.is_error;
-        appendMessage(sessionId, 'sdk', msg);
-        if (msg.session_id) setSession(sessionId, { claude_session_id: msg.session_id });
+        appendMessage(sessionId, 'sdk', msg, chatId);
+        if (msg.session_id) setChat(sessionId, chatId, { claude_session_id: msg.session_id });
       }
     }
   } catch (err) {
     if (abort.signal.aborted) {
-      appendMessage(sessionId, 'event', { kind: 'stopped' });
+      appendMessage(sessionId, 'event', { kind: 'stopped' }, chatId);
     } else {
       const message = err instanceof Error ? err.message : String(err);
-      appendMessage(sessionId, 'event', { kind: 'error', message });
+      appendMessage(sessionId, 'event', { kind: 'error', message }, chatId);
       lastText = message;
     }
   } finally {
-    running.delete(sessionId);
-    savedThisRun.delete(sessionId);
-    cancelApprovals(sessionId);
+    running.delete(key);
+    savedThisRun.delete(key);
+    cancelApprovals(sessionId, { chatId });
     const stopped = abort.signal.aborted;
-    setSession(sessionId, { status: 'idle', unread: 1 });
+    setChat(sessionId, chatId, { status: 'idle', unread: 1 });
     // 중단했거나 오류로 끝났으면 다음 프롬프트를 바로 보내지 않고 대기열을 멈춘다. 사용자가 보고 이어서 실행한다.
-    const waiting = queueLength(sessionId);
-    if (waiting > 0 && (stopped || !ok)) setQueuePaused(sessionId, true);
+    const waiting = queueLength(sessionId, chatId);
+    if (waiting > 0 && (stopped || !ok)) setQueuePaused(sessionId, chatId, true);
     if (!stopped && (waiting === 0 || !ok)) {
-      notifyRunFinished({ sessionId, ticket: session.ticket, ok, durationMs: Date.now() - started, summary: lastText });
+      notifyRunFinished({ sessionId, ticket: chat ? `${session.ticket} · ${chat.title}` : session.ticket, ok, durationMs: Date.now() - started, summary: lastText });
     }
-    setImmediate(() => drainQueue(sessionId));
+    setImmediate(() => drainQueue(sessionId, chatId));
     // eslint-disable-next-line no-unsafe-finally
     return { ok: ok && !stopped, stopped };
   }
 }
 
-export function stopPrompt(sessionId: number) {
-  const ctl = running.get(sessionId);
+export function stopPrompt(sessionId: number, chatId = 0) {
+  const ctl = running.get(rkey(sessionId, chatId));
   if (!ctl) return false;
   ctl.abort();
   return true;

@@ -9,9 +9,9 @@ const STATUS_LABEL: Record<string, string> = {
   idle: '꺼짐', starting: '시작 중', running: '실행 중', unhealthy: '응답 없음', failed: '멈춤', stopped: '꺼짐',
 };
 
-type Props = { session: Session; onOpenEnv: (message?: string) => void; onOpenChanges: () => void; onOpenTests: () => void; onOpenDocs: (name?: string) => void; onClosed: () => void };
+type Props = { session: Session; onOpenEnv: (message?: string) => void; onOpenChanges: () => void; onOpenTests: () => void; onOpenDocs: (name?: string) => void; onClosed: () => void; onOpenConflicts: () => void };
 
-export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTests, onOpenDocs, onClosed }: Props) {
+export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTests, onOpenDocs, onClosed, onOpenConflicts }: Props) {
   const [servers, setServers] = useState<ServerView[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +59,7 @@ export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTe
         onOpenTests={onOpenTests}
         onOpenDocs={onOpenDocs}
         onClosed={onClosed}
+        onOpenConflicts={onOpenConflicts}
       />
 
       <div className="panel-block">
@@ -136,7 +137,7 @@ function FailureBox({ server: s, sessionId, onChanged, onError }: {
       <code className="failure-summary">{f.summary}</code>
       <div className="failure-actions">
         <button className="small-btn" onClick={() => setShowLog((v) => !v)}>{showLog ? '로그 접기' : '오류 로그'}</button>
-        <button className="small-btn" onClick={() => insertIntoPrompt(`${s.project_name} 서버가 실행 중에 실패했어.\n실행 명령: ${f.command}\n\`\`\`\n${f.excerpt.split('\n').slice(-80).join('\n')}\n\`\`\``)}>프롬프트에 넣기</button>
+        <button className="small-btn" title="새 대화 탭의 입력창에 넣습니다" onClick={() => insertIntoPrompt(`${s.project_name} 서버가 실행 중에 실패했어.\n실행 명령: ${f.command}\n\`\`\`\n${f.excerpt.split('\n').slice(-80).join('\n')}\n\`\`\``)}>새 대화로 보내기</button>
         <button className="small-btn" onClick={async () => {
           onError(null);
           try { onChanged(await api.dismissFailure(sessionId, s.worktree_id)); } catch (e) { onError((e as Error).message); }
@@ -218,12 +219,14 @@ type MenuKey = 'changes' | 'docs' | 'tests' | 'session';
  * 패널 맨 위의 메뉴. 변경 파일·계획 문서·화면 테스트·세션은 필요할 때만 펼쳐 보고,
  * 패널 본문에는 서버, 미리보기, 로그만 둔다. 숫자를 보여 주려고 내용은 닫혀 있어도 그려 둔다.
  */
-function PanelMenus({ session, anyRunning, onOpenChanges, onOpenTests, onOpenDocs, onClosed }: {
-  session: Session; anyRunning: boolean; onOpenChanges: () => void; onOpenTests: () => void; onOpenDocs: (name?: string) => void; onClosed: () => void;
+function PanelMenus({ session, anyRunning, onOpenChanges, onOpenTests, onOpenDocs, onClosed, onOpenConflicts }: {
+  session: Session; anyRunning: boolean; onOpenChanges: () => void; onOpenTests: () => void; onOpenDocs: (name?: string) => void; onClosed: () => void; onOpenConflicts: () => void;
 }) {
   const [open, setOpen] = useState<MenuKey | null>(null);
   const [changes, setChanges] = useState<number | null>(null);
   const [docs, setDocs] = useState(0);
+  // 화면 테스트 진행·결과. 메뉴 버튼에 진행률이나 실패 수를 보여 준다.
+  const [tests, setTests] = useState<{ running: boolean; done: number; total: number; bad: number; pass: number } | null>(null);
   const box = useRef<HTMLDivElement>(null);
 
   // 바깥을 누르거나 Esc를 누르면 닫는다.
@@ -236,10 +239,14 @@ function PanelMenus({ session, anyRunning, onOpenChanges, onOpenTests, onOpenDoc
     return () => { document.removeEventListener('pointerdown', onDown); window.removeEventListener('keydown', onKey); };
   }, [open]);
 
-  const menus: { key: MenuKey; label: string; count?: string }[] = [
+  const testCount = tests?.running ? { count: `실행 ${tests.done}/${tests.total}`, tone: 'run' as const }
+    : tests && tests.bad ? { count: `실패 ${tests.bad}`, tone: 'bad' as const }
+    : tests && tests.pass && tests.pass === tests.total ? { count: `통과 ${tests.pass}`, tone: 'good' as const }
+    : { count: session.accounts.length ? `계정 ${session.accounts.length}` : undefined, tone: undefined };
+  const menus: { key: MenuKey; label: string; count?: string; tone?: 'run' | 'bad' | 'good' }[] = [
     { key: 'changes', label: '변경 파일', count: changes === null ? undefined : String(changes) },
     { key: 'docs', label: '산출물', count: String(docs) },
-    { key: 'tests', label: '화면 테스트', count: session.accounts.length ? `계정 ${session.accounts.length}` : undefined },
+    { key: 'tests', label: '화면 테스트', ...testCount },
     { key: 'session', label: '세션' },
   ];
   const close = () => setOpen(null);
@@ -257,7 +264,8 @@ function PanelMenus({ session, anyRunning, onOpenChanges, onOpenTests, onOpenDoc
             onClick={() => setOpen(open === m.key ? null : m.key)}
           >
             {m.label}
-            {m.count !== undefined && <span className="panel-menu-count">{m.count}</span>}
+            {m.tone === 'run' && <span className="spinner" aria-hidden="true" />}
+            {m.count !== undefined && <span className={`panel-menu-count${m.tone ? ` ${m.tone}` : ''}`}>{m.count}</span>}
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
           </button>
         ))}
@@ -270,10 +278,17 @@ function PanelMenus({ session, anyRunning, onOpenChanges, onOpenTests, onOpenDoc
         <DocsBlock session={session} onOpen={(name) => { close(); onOpenDocs(name); }} onCount={setDocs} />
       </div>
       <div id="panel-menu-tests" className="panel-pop" hidden={open !== 'tests'}>
-        <TestsBlock session={session} onOpen={() => { close(); onOpenTests(); }} />
+        <TestsBlock session={session} onOpen={() => { close(); onOpenTests(); }} onSummary={setTests} />
         <AccountBlock session={session} />
       </div>
       <div id="panel-menu-session" className="panel-pop" hidden={open !== 'session'}>
+        <div className="panel-block">
+          <div className="block-head">
+            <h2>기준 브랜치와 충돌</h2>
+            <button className="small-btn" onClick={() => { close(); onOpenConflicts(); }}>충돌 확인</button>
+          </div>
+          <p className="muted small">{session.worktrees.map((w) => w.base_branch).filter((b, i, a) => a.indexOf(b) === i).join(', ')}에 먼저 들어간 변경과 이 브랜치가 충돌하는지 봅니다. 워크트리는 바꾸지 않습니다.</p>
+        </div>
         <CloseBlock session={session} anyRunning={anyRunning} onClosed={onClosed} />
       </div>
     </div>
@@ -342,15 +357,22 @@ function ChangesBlock({ session, onOpen, onCount }: { session: Session; onOpen: 
 }
 
 /** 화면 테스트 요약. 케이스 만들기·계정 확인·실행은 테스트 화면에서 한다. */
-function TestsBlock({ session, onOpen }: { session: Session; onOpen: () => void }) {
+function TestsBlock({ session, onOpen, onSummary }: {
+  session: Session; onOpen: () => void; onSummary: (s: { running: boolean; done: number; total: number; bad: number; pass: number } | null) => void;
+}) {
   const [state, setState] = useState<TestState | null>(null);
   const reload = useCallback(() => { api.tests(session.id).then(setState).catch(() => setState(null)); }, [session.id]);
   useEffect(reload, [reload]);
   useServerEvents((e) => { if (e.type === 'tests.updated' && e.sessionId === session.id) reload(); });
-  if (!state?.fe_project) return null;
-  const c = state.cases;
+  const c = state?.cases ?? [];
   const pass = c.filter((x) => x.status === 'pass').length;
   const bad = c.filter((x) => ['fail', 'blocked', 'error'].includes(x.status)).length;
+  const current = c.find((x) => x.status === 'running');
+  const p = state?.progress;
+  useEffect(() => {
+    onSummary(state?.fe_project && c.length ? { running: Boolean(p), done: p ? p.done : pass + bad, total: p ? p.total : c.length, bad, pass } : null);
+  }, [state, pass, bad, c.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!state?.fe_project) return null;
   const need = state.roles.filter((r) => !r.account).length;
   return (
     <div className="panel-block">
@@ -360,7 +382,7 @@ function TestsBlock({ session, onOpen }: { session: Session; onOpen: () => void 
       </div>
       <p className="muted small">
         {state.generating ? '케이스를 만드는 중입니다.'
-          : state.running ? `실행 중 · 통과 ${pass} · 실패·확인 불가 ${bad}`
+          : state.running ? `실행 중${p ? ` ${p.done}/${p.total}` : ''}${current ? ` · 지금: ${current.title}` : ''} · 통과 ${pass} · 실패·확인 불가 ${bad}`
           : c.length === 0 ? '이번 변경을 확인하는 테스트 케이스를 만들고 브라우저로 돌려 화면을 찍습니다.'
           : need ? `계정 확인이 필요한 역할 ${need}개`
           : c.some((x) => x.ran_at) ? `통과 ${pass} · 실패·확인 불가 ${bad}` : '실행 전입니다.'}
@@ -507,7 +529,7 @@ function Preview({ sessionId, baseUrl, ready }: { sessionId: number; baseUrl: st
             // 크게 보기 중이면 닫아서 바로 입력창을 보이게 한다.
             setExpanded(false);
           } catch (e) { setNote((e as Error).message); } finally { setCapturing(false); }
-        }}>{capturing ? '화면 찍는 중' : '프롬프트에 전달'}</button>
+        }}>{capturing ? '화면 찍는 중' : '새 대화로 보내기'}</button>
         <label className="start-check small" title={`페이지를 ${DESKTOP_WIDTH}px 폭으로 그려 패널에 맞게 줄입니다`}>
           <input type="checkbox" checked={fit} onChange={(e) => { setFit(e.target.checked); writeNumber(PREVIEW_FIT_KEY, e.target.checked ? 1 : 2); }} /> 화면 맞춤
         </label>
@@ -609,8 +631,8 @@ function Logs({ servers }: { servers: ServerView[] }) {
             <span className="log-time">{clock(l.t)}</span>
             <span className="log-text">{l.text}</span>
             {l.level !== 'info' && (
-              <button className="log-send" onClick={() => insertIntoPrompt(`${project} 서버 로그에서 이 오류가 났어. 원인 찾아서 고쳐줘.\n\`\`\`\n${contextAround(lines[active!] ?? [], l)}\n\`\`\``)}>
-                Claude에게 보내기
+              <button className="log-send" title="새 대화 탭의 입력창에 넣습니다" onClick={() => insertIntoPrompt(`${project} 서버 로그에서 이 오류가 났어. 원인 찾아서 고쳐줘.\n\`\`\`\n${contextAround(lines[active!] ?? [], l)}\n\`\`\``)}>
+                새 대화로 보내기
               </button>
             )}
           </div>

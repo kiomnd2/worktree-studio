@@ -19,6 +19,8 @@ import { broadcast } from './hub.js';
 export type PullRequestRow = {
   id: number; session_id: number; worktree_id: number; number: number; url: string; title: string;
   state: 'OPEN' | 'MERGED' | 'CLOSED'; created_at: string; checked_at: string | null;
+  /** GitHub가 본 머지 가능 여부. CONFLICTING이면 기준 브랜치와 충돌 */
+  mergeable: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null;
 };
 
 export type PrDraft = {
@@ -451,7 +453,7 @@ async function step<T>(job: PrJob, repo: RepoJob, name: StepName, fn: (s: StepSt
 export function startPr(sessionId: number, items: PrItem[], opts: { ignoreCheckFailures?: boolean; prior?: PrJob } = {}): PrJob {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
-  if (session.status === 'running') throw new Error('Claude가 작업 중입니다. 끝난 뒤에 PR을 만드세요.');
+  if (session.busy) throw new Error('Claude가 작업 중입니다. 끝난 뒤에 PR을 만드세요.');
   if (jobs.get(sessionId)?.status === 'running') throw new Error('이미 PR을 만드는 중입니다.');
   if (items.length === 0) throw new Error('PR을 만들 레포를 하나 이상 고르세요.');
   for (const it of items) {

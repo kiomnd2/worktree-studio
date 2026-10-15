@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../api';
-import { openDoc, useServerEvents } from '../events';
+import { hasNewChatPending, openDoc, useServerEvents } from '../events';
 import type { Session, StoredMessage } from '../types';
 import PromptInput from './PromptInput';
 import ApprovalCards from './ApprovalCards';
@@ -54,19 +54,61 @@ function useNow(active: boolean) {
   return now;
 }
 
+/** 대화 하나의 실행 상태. id 0은 메인 대화, 'new'는 아직 보내지 않은 새 대화 */
+export type Thread = { id: number | 'new'; status: 'idle' | 'running'; queue: Session['queue']; queue_paused: boolean };
+
 export default function ChatView({ session }: { session: Session }) {
+  // 고른 대화는 세션마다 기억한다.
+  const selKey = `wts:chat:${session.id}`;
+  const [sel, setSelRaw] = useState<number | 'new'>(() => { try { return Number(localStorage.getItem(selKey)) || 0; } catch { return 0; } });
+  const setSel = (v: number | 'new') => {
+    setSelRaw(v);
+    if (v !== 'new') try { localStorage.setItem(selKey, String(v)); } catch { /* 사생활 보호 모드 등 */ }
+  };
   const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   // 스크롤이 맨 아래에 붙어 있으면 새 메시지를 따라 내려간다. 위로 올려 보는 중이면 그대로 둔다.
   const stick = useRef(true);
 
+  const chat = typeof sel === 'number' && sel !== 0 ? session.chats.find((c) => c.id === sel) : undefined;
+  // 방금 시작한 대화. 세션 목록에 나타나기 전까지는 닫힌 대화로 보지 않고 작업 중으로 보여 준다.
+  const [started, setStarted] = useState<number | null>(null);
+  useEffect(() => { if (chat && chat.id === started) setStarted(null); }, [chat, started]);
+  const waiting = typeof sel === 'number' && sel !== 0 && !chat && sel === started;
+  // 닫힌 대화를 고르고 있으면 메인으로 돌아간다.
+  useEffect(() => { if (typeof sel === 'number' && sel !== 0 && !chat && !waiting) setSel(0); }, [sel, chat, waiting]); // eslint-disable-line react-hooks/exhaustive-deps
+  const thread: Thread = sel === 'new' ? { id: 'new', status: 'idle', queue: [], queue_paused: false }
+    : chat ? { id: chat.id, status: chat.status, queue: chat.queue, queue_paused: chat.queue_paused }
+    : waiting ? { id: sel, status: 'running', queue: [], queue_paused: false }
+    : { id: 0, status: session.status, queue: session.queue, queue_paused: session.queue_paused };
+
+  // 도구 화면에서 넘긴 프롬프트는 새 대화 탭에 연다. 입력창이 나타나면서 기다리던 것을 가져간다.
   useEffect(() => {
-    api.messages(session.id).then(setMessages).catch((e) => setLoadError(e.message));
-  }, [session.id]);
+    const open = () => setSelRaw('new');
+    window.addEventListener('wts:new-chat', open);
+    if (hasNewChatPending()) open();
+    // 도구가 시작한 대화(충돌 해결 등)를 연다. 목록에 나타나기 전이라도 그 대화로 간다.
+    const openChat = (e: Event) => { const id = (e as CustomEvent<number>).detail; setStarted(id); setSel(id); };
+    window.addEventListener('wts:open-chat', openChat);
+    return () => { window.removeEventListener('wts:new-chat', open); window.removeEventListener('wts:open-chat', openChat); };
+  }, []);
+
+  useEffect(() => {
+    setLoadError(null);
+    stick.current = true;
+    if (thread.id === 'new') { setMessages([]); return; }
+    setMessages([]);
+    api.messages(session.id, thread.id).then(setMessages).catch((e) => setLoadError(e.message));
+  }, [session.id, thread.id]);
+
+  // 보고 있는 추가 대화의 새 결과 표시는 바로 지운다(메인 대화는 App이 지운다).
+  useEffect(() => {
+    if (chat?.unread && document.visibilityState === 'visible') api.markRead(session.id, chat.id).catch(() => {});
+  }, [session.id, chat?.id, chat?.unread]);
 
   useServerEvents((e) => {
-    if (e.type === 'message' && e.sessionId === session.id) {
+    if (e.type === 'message' && e.sessionId === session.id && (e.message.chat_id ?? 0) === thread.id) {
       setMessages((prev) => (prev.some((m) => m.id === e.message.id) ? prev : [...prev, e.message]));
     }
   });
@@ -75,7 +117,7 @@ export default function ChatView({ session }: { session: Session }) {
   useLayoutEffect(() => {
     const el = scroller.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [messages, session.status]);
+  }, [messages, thread.status]);
 
   // 첨부 이미지는 그린 뒤에 늦게 로드돼 높이가 늘어난다. load 이벤트는 버블링되지 않아 캡처로 받는다.
   useEffect(() => {
@@ -99,7 +141,7 @@ export default function ChatView({ session }: { session: Session }) {
     return map;
   }, [messages]);
 
-  const running = session.status === 'running';
+  const running = thread.status === 'running';
   const now = useNow(running);
   // 이번 작업은 마지막으로 보낸 프롬프트부터 센다.
   const lastUser = [...messages].reverse().find((m) => m.kind === 'user');
@@ -107,19 +149,25 @@ export default function ChatView({ session }: { session: Session }) {
 
   return (
     <main className="main chat">
-      <TaskBar sessionId={session.id} running={running} />
+      <ChatTabs session={session} sel={sel} onSelect={setSel} />
+      {thread.id === 0 && <TaskBar sessionId={session.id} running={running} />}
       <div
         className="stream"
         ref={scroller}
         onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }}
       >
         {loadError && <p className="error-text" role="alert">{loadError}</p>}
-        {messages.length === 0 && !loadError && (
+        {messages.length === 0 && !loadError && (thread.id === 'new' ? (
+          <div className="stream-empty">
+            <p>새 대화는 메인 대화와 같은 워크트리에서 따로 실행합니다. 메인 대화가 작업 중이어도 바로 시작합니다.</p>
+            <p className="muted small">두 대화가 같은 파일을 동시에 고치면 서로 덮어쓸 수 있으니, 메인 작업과 겹치지 않는 작은 수정에 쓰세요.</p>
+          </div>
+        ) : (
           <div className="stream-empty">
             <p>이 세션의 워크트리에서 할 일을 적어 보내세요.</p>
             <ul>{session.worktrees.map((w) => <li key={w.id}><code>{w.path}</code></li>)}</ul>
           </div>
-        )}
+        ))}
         {messages.map((m) => <MessageItem key={m.id} message={m} toolResults={toolResults} now={runStart !== null && atOf(m.created_at) >= runStart ? now : null} />)}
         {running && (
           <div className="working" aria-live="off">
@@ -128,9 +176,48 @@ export default function ChatView({ session }: { session: Session }) {
           </div>
         )}
       </div>
-      <ApprovalCards session={session} />
-      <PromptInput session={session} />
+      {thread.id !== 'new' && <ApprovalCards session={session} chatId={thread.id} />}
+      <PromptInput
+        key={thread.id}
+        session={session}
+        thread={thread}
+        onStarted={(id) => { setStarted(id); setSel(id); }}
+      />
     </main>
+  );
+}
+
+/** 메인 대화와 추가 대화 사이를 오간다. 다른 대화가 작업 중이거나 새 결과가 있으면 표시한다. */
+function ChatTabs({ session, sel, onSelect }: { session: Session; sel: number | 'new'; onSelect: (v: number | 'new') => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const mark = (status: string, unread: number) => (status === 'running'
+    ? <span className="spinner" aria-label="작업 중" />
+    : unread ? <span className="chat-dot" aria-label="새 결과" /> : null);
+  return (
+    <div className="chat-tabs" role="tablist" aria-label="대화">
+      <button role="tab" aria-selected={sel === 0} className={`chat-tab${sel === 0 ? ' on' : ''}`} onClick={() => onSelect(0)}>
+        {mark(session.status, sel === 0 ? 0 : session.unread)}메인 대화
+      </button>
+      {session.chats.map((c) => (
+        <span key={c.id} className={`chat-tab${sel === c.id ? ' on' : ''}`}>
+          <button role="tab" aria-selected={sel === c.id} className="chat-tab-label" title={c.title} onClick={() => onSelect(c.id)}>
+            {mark(c.status, sel === c.id ? 0 : c.unread)}<span className="chat-tab-title">{c.title}</span>
+          </button>
+          <button className="icon chat-tab-close" aria-label={`${c.title} 대화 닫기`} disabled={c.status === 'running'}
+            title={c.status === 'running' ? '작업 중인 대화는 중단한 뒤 닫을 수 있습니다' : '대화 닫기 (워크트리 변경은 그대로 남습니다)'}
+            onClick={() => {
+              if (!confirm(`"${c.title}" 대화를 닫을까요? 고친 코드는 워크트리에 그대로 남습니다.`)) return;
+              setError(null);
+              api.closeChat(session.id, c.id).then(() => { if (sel === c.id) onSelect(0); }).catch((e) => setError(e.message));
+            }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </span>
+      ))}
+      {sel === 'new' && <span className="chat-tab on" role="tab" aria-selected="true"><span className="chat-tab-label">새 대화</span></span>}
+      <button className="chat-tab chat-tab-add" onClick={() => onSelect('new')} disabled={sel === 'new'} title="같은 워크트리에서 따로 Claude에게 일을 맡깁니다">+ 새 대화</button>
+      {error && <span className="error-text small" role="alert">{error}</span>}
+    </div>
   );
 }
 

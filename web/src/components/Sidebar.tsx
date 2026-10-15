@@ -15,8 +15,8 @@ type Props = {
 };
 
 function statusOf(s: Session) {
-  if (s.status === 'running') return { label: '작업 중', cls: 'running' };
-  if (s.unread) return { label: '작업 완료 · 새 결과', cls: 'unread' };
+  if (s.busy) return { label: s.chats.length && s.status !== 'running' ? '추가 대화 작업 중' : '작업 중', cls: 'running' };
+  if (s.unread || s.chats.some((c) => c.unread)) return { label: '작업 완료 · 새 결과', cls: 'unread' };
   return { label: '대기', cls: 'idle' };
 }
 

@@ -43,9 +43,36 @@ export function useServerEvents(handler: Listener) {
   }, []);
 }
 
-/** 미리보기 캡처 같은 이미지를 프롬프트 첨부에 넣는다. data는 base64. */
+/**
+ * 도구 화면(로그, 변경 파일, 문서, 화면 테스트, 미리보기 캡처 등)에서 넘기는 프롬프트는 메인 대화가 아니라 새 대화 탭에 넣는다.
+ * 새 대화 탭이 이미 열려 있으면 거기에 더한다. 보내기는 사용자가 한다.
+ */
+export type NewChatItem = { text: string } | { image: { mediaType: string; data: string; name: string } };
+let newChatPending: NewChatItem[] = [];
+
+function toNewChat(item: NewChatItem) {
+  newChatPending.push(item);
+  window.dispatchEvent(new CustomEvent('wts:new-chat'));
+}
+
+/** 미리보기 캡처 같은 이미지를 새 대화의 첨부에 넣는다. data는 base64. */
 export function attachToPrompt(image: { mediaType: string; data: string; name: string }) {
-  window.dispatchEvent(new CustomEvent('wts:attach-image', { detail: image }));
+  toNewChat({ image });
+}
+
+/** 로그 줄 같은 텍스트를 새 대화의 입력창에 넣는다. 대화 화면이 없으면 나타날 때 넣는다. */
+export function insertIntoPrompt(text: string) {
+  toNewChat({ text });
+}
+
+/** 새 대화 탭에 넣을 것이 남아 있는지(대화 화면이 나타날 때 새 대화 탭을 열지 정한다) */
+export const hasNewChatPending = () => newChatPending.length > 0;
+
+/** 새 대화 입력창이 기다리던 텍스트와 이미지를 가져간다. */
+export function takeNewChatPending(): NewChatItem[] {
+  const out = newChatPending;
+  newChatPending = [];
+  return out;
 }
 
 /** 오른쪽 패널 미리보기에서 이 경로를 연다. */
@@ -53,22 +80,9 @@ export function openInPreview(path: string) {
   window.dispatchEvent(new CustomEvent('wts:preview-open', { detail: path }));
 }
 
-let promptMounted = false;
-let pendingInsert: string[] = [];
-
-/** 로그 줄 같은 텍스트를 프롬프트 입력창에 붙인다. 입력창이 없는 화면에서 부르면 입력창이 나타날 때 붙인다. */
-export function insertIntoPrompt(text: string) {
-  if (!promptMounted) { pendingInsert.push(text); return; }
-  window.dispatchEvent(new CustomEvent('wts:insert-prompt', { detail: text }));
-}
-
-/** 프롬프트 입력창이 나타나고 사라질 때 부른다. 기다리던 텍스트를 돌려준다. */
-export function promptInputMounted(mounted: boolean): string[] {
-  promptMounted = mounted;
-  if (!mounted) return [];
-  const out = pendingInsert;
-  pendingInsert = [];
-  return out;
+/** 대화 화면에서 이 대화 탭을 연다(충돌 해결처럼 도구가 시작한 대화). */
+export function openChat(chatId: number) {
+  window.dispatchEvent(new CustomEvent('wts:open-chat', { detail: chatId }));
 }
 
 /** 세션의 문서 화면을 연다. name이 있으면 그 문서를 고른다. */

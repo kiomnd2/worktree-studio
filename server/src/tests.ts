@@ -9,8 +9,9 @@ import { getSession, listMessages } from './sessions.js';
 import { listServers } from './runner.js';
 import { accountOf, checkAccountUsable, listAccounts } from './accounts.js';
 import { maskSecrets } from './secret.js';
-import { broadcast } from './hub.js';
+import { broadcast, isViewing } from './hub.js';
 import { sendNotification } from './notify.js';
+import { getSettings } from './settings.js';
 import { changedDiff, changedFiles, feWorktree } from './screens.js';
 import { saveDoc } from './docs.js';
 import { cancelApprovals, requestTestData } from './approvals.js';
@@ -62,6 +63,8 @@ const toView = (r: Row): TestCase => ({
 
 const generating = new Set<number>();
 const running = new Map<number, AbortController>();
+/** 실행 중인 테스트의 진행(끝난 케이스 수 / 이번에 돌리는 케이스 수) */
+const progress = new Map<number, { done: number; total: number }>();
 
 function changed(sessionId: number) {
   broadcast({ type: 'tests.updated', sessionId });
@@ -90,7 +93,7 @@ export function testState(sessionId: number) {
     blockers.push(`${sv.project_name} 서버가 ${SERVER_STATE[sv.status] ?? '꺼져 있습니다'}. 세션 화면에서 서버를 실행하고 헬스체크가 통과할 때까지 기다리세요.`);
   }
   if (fe && !all.find((x) => x.worktree_id === fe.id)?.can_start) blockers.push(`${fe.project_name}에 실행 명령이 없습니다. 설정에서 실행 명령을 넣으세요.`);
-  if (session.status === 'running') blockers.push('Claude가 작업 중입니다. 코드가 바뀌는 중이라 끝난 뒤에 실행하세요.');
+  if (session.busy) blockers.push('Claude가 작업 중입니다. 코드가 바뀌는 중이라 끝난 뒤에 실행하세요.');
   if (generating.has(sessionId)) blockers.push('테스트 케이스를 만드는 중입니다.');
   if (cases.length === 0) blockers.push('실행할 테스트 케이스가 없습니다.');
   return {
@@ -101,6 +104,7 @@ export function testState(sessionId: number) {
     login_path: fe ? getProject(fe.project_id)?.login_path ?? null : null,
     generating: generating.has(sessionId),
     running: running.has(sessionId),
+    progress: progress.get(sessionId) ?? null,
     // 역할마다 확인된 계정. 그 역할의 케이스가 모두 같은 계정을 가리켜야 확인된 것으로 본다.
     roles: roles.map((role) => {
       const ids = [...new Set(cases.filter((c) => c.role === role).map((c) => c.account_id))];
@@ -294,26 +298,43 @@ export function runTests(sessionId: number, ids?: number[]) {
 
   const abort = new AbortController();
   running.set(sessionId, abort);
+  progress.set(sessionId, { done: 0, total: targets.length });
   const mark = db.prepare(`UPDATE test_cases SET status = 'queued' WHERE id = ?`);
   for (const t of targets) mark.run(t.id);
   changed(sessionId);
 
   (async () => {
     let pass = 0, fail = 0;
-    for (const t of targets) {
+    const ticket = getSession(sessionId)?.ticket ?? '';
+    for (const [i, t] of targets.entries()) {
       if (abort.signal.aborted) break;
       const go = (prep?: Prep) => runCase(sessionId, t, state.app_url!, state.login_path, abort, prep)
-        .catch((err): CaseResult => ({ status: 'error', summary: (err as Error).message }));
+        .catch((err): CaseResult => {
+          // 실행 중 오류는 케이스를 '실행 중'으로 남기지 않고 오류로 적는다.
+          const summary = maskSecrets((err as Error).message, []);
+          if (!abort.signal.aborted) db.prepare(`UPDATE test_cases SET status = 'error', summary = ?, ran_at = datetime('now') WHERE id = ?`).run(summary, t.id);
+          changed(sessionId);
+          return { status: 'error', summary };
+        });
       let r = await go();
       // 진행할 데이터가 없어 막혔으면 만들어도 되는지 묻고, 승인하면 그 데이터를 만든 뒤 한 번 더 돌린다.
       if (r.needs && !abort.signal.aborted) {
         const plan = await requestTestData(sessionId, { case_id: t.id, case_title: t.title, ...r.needs });
         if (plan && !abort.signal.aborted) r = await go({ need: r.needs.need, plan });
       }
+      if (abort.signal.aborted) break;
       if (r.status === 'pass') pass++; else fail++;
+      progress.set(sessionId, { done: i + 1, total: targets.length });
+      // 케이스 하나가 끝날 때마다 화면에 알리고, 실패·오류는 OS 알림도 보낸다(보고 있는 세션이면 화면 알림만).
+      broadcast({ type: 'test.result', sessionId, ticket, caseId: t.id, title: t.title, status: r.status, summary: r.summary, index: i + 1, total: targets.length });
+      const ns = getSettings().notify;
+      if (r.status !== 'pass' && ns.onError && !(ns.skipWhenViewing && isViewing(sessionId))) {
+        sendNotification(`${ticket} 테스트 ${r.status === 'fail' ? '실패' : r.status === 'blocked' ? '확인 불가' : '오류'}: ${t.title}`, r.summary.slice(0, 140), sessionId);
+      }
     }
     if (abort.signal.aborted) db.prepare(`UPDATE test_cases SET status = 'draft' WHERE session_id = ? AND status IN ('queued', 'running')`).run(sessionId);
     running.delete(sessionId);
+    progress.delete(sessionId);
     changed(sessionId);
     const s = getSession(sessionId);
     if (!abort.signal.aborted) {

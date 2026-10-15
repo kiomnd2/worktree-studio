@@ -184,7 +184,7 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
                           <button type="button" onClick={() => {
                             insertIntoPrompt(`${r.project_name} PR 전 검사(${STEP_LABEL[s.name]})가 실패했어. 원인을 찾아서 고쳐줘.\n\`\`\`\n${s.output!.split('\n').slice(-60).join('\n')}\n\`\`\``);
                             onClose();
-                          }}>로그를 Claude에게 넘기기</button>
+                          }}>로그를 새 대화로 보내기</button>
                         </div>
                       )}
                     </li>

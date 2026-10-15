@@ -150,7 +150,7 @@ export default function TestsPage({ session, onBack }: { session: Session; onBac
               )}
               {['fail', 'blocked', 'error'].includes(c.status) && (
                 <div className="row">
-                  <button className="small-btn" onClick={() => sendToPrompt(c)}>프롬프트에 넣기</button>
+                  <button className="small-btn" onClick={() => sendToPrompt(c)}>새 대화로 보내기</button>
                 </div>
               )}
             </article>

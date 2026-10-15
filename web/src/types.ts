@@ -63,11 +63,19 @@ export type Session = {
   /** 이 세션에서 쓸 수 있는 계정(워크스페이스 계정과 공용 계정). 다른 세션과 같이 쓴다. */
   accounts: { id: number; login: string; note: string }[];
   worktrees: Worktree[];
-  queue: { id: number; text: string; image_count: number; plan: boolean; created_at: string }[];
+  queue: QueuedPrompt[];
   queue_paused: boolean;
+  /** 같은 워크트리에서 따로 연 대화. status·queue는 메인 대화의 것이다. */
+  chats: Chat[];
+  /** 메인이든 추가 대화든 하나라도 작업 중인지 */
+  busy: boolean;
 };
 
-export type StoredMessage = { id: number; kind: 'user' | 'sdk' | 'event'; payload: any; created_at: string };
+export type QueuedPrompt = { id: number; text: string; image_count: number; plan: boolean; created_at: string };
+
+export type Chat = { id: number; title: string; status: 'idle' | 'running'; unread: number; created_at: string; queue: QueuedPrompt[]; queue_paused: boolean };
+
+export type StoredMessage = { id: number; chat_id: number; kind: 'user' | 'sdk' | 'event'; payload: any; created_at: string };
 
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto';
 
@@ -89,7 +97,8 @@ export type ServerEvent =
   | { type: 'approvals.updated'; sessionId: number }
   | { type: 'docs.updated'; sessionId: number }
   | { type: 'tasks.updated'; sessionId: number }
-  | { type: 'tests.updated'; sessionId: number };
+  | { type: 'tests.updated'; sessionId: number }
+  | { type: 'test.result'; sessionId: number; ticket: string; caseId: number; title: string; status: TestCase['status']; summary: string; index: number; total: number };
 
 export type TestCase = {
   id: number; session_id: number; title: string; role: string; start_path: string; steps: string[]; expected: string[];
@@ -99,7 +108,10 @@ export type TestCase = {
 };
 export type TestState = {
   cases: TestCase[]; fe_project: { id: number; name: string } | null; app_url: string | null; login_path: string | null;
-  generating: boolean; running: boolean; roles: { role: string; account: { id: number; login: string; note: string } | null }[];
+  generating: boolean; running: boolean;
+  /** 실행 중일 때 끝난 케이스 수 / 이번에 돌리는 케이스 수 */
+  progress: { done: number; total: number } | null;
+  roles: { role: string; account: { id: number; login: string; note: string } | null }[];
   /** 지금 실행하면 안 되는 이유. 비어 있어야 실행할 수 있다(역할 계정 확인은 케이스마다 따로 본다). */
   blockers: string[];
 };
@@ -119,7 +131,7 @@ export type EnvSuggestion = { worktree_id: number; project_id: number; project_n
 export type TaskList = { title: string; tasks: { title: string; status: 'todo' | 'doing' | 'done' | 'skipped'; note: string }[]; updated_at: string };
 
 export type Approval = {
-  id: number; session_id: number; reason: string; created_at: number;
+  id: number; session_id: number; chat_id: number; reason: string; created_at: number;
   request:
     | { kind: 'env'; project_id: number; project_name: string; profile_name: string; vars: { key: string; value: string; reason: string; secret: boolean; current: string | null }[] }
     | { kind: 'plan'; plan: string; docs: { name: string; title: string; kind: DocKind }[] }
@@ -136,7 +148,23 @@ export type ArchiveEntry = {
 };
 
 export type PrState = 'OPEN' | 'MERGED' | 'CLOSED';
-export type PullRequest = { id: number; session_id: number; worktree_id: number; number: number; url: string; title: string; state: PrState; created_at: string };
+export type PullRequest = { id: number; session_id: number; worktree_id: number; number: number; url: string; title: string; state: PrState; created_at: string; mergeable: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null };
+
+export type ConflictHunk = { line: number; ours: string; theirs: string };
+export type WorktreeConflict = {
+  worktree_id: number; project_name: string; branch: string; base_branch: string;
+  pr: { number: number; url: string } | null;
+  state: 'clean' | 'conflict' | 'merging' | 'error';
+  behind: number; unpushed: number;
+  files: { path: string; hunks: ConflictHunk[]; note: string | null }[];
+  base_commits: { sha: string; subject: string; author: string }[];
+  error: string | null;
+};
+export type ConflictProposal = {
+  summary: string;
+  files: { path: string; strategy: 'ours' | 'theirs' | 'both' | 'manual'; how: string; risk: string }[];
+  checks: string[];
+};
 export type PrDraft = {
   worktree_id: number; project_name: string; project_kind: ProjectKind; branch: string; base_branch: string;
   dirty_files: string[]; commits_ahead: number; has_changes: boolean; check_cmd: string | null; template_path: string | null;

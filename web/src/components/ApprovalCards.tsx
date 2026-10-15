@@ -7,12 +7,13 @@ import { DOC_KIND } from './DocsPage';
 import type { Approval, Session } from '../types';
 
 /** Claude가 프롬프트 중에 요청한 환경값, 계획 승인, 질문, 테스트 데이터. 사용자가 확인해야 적용되고, 그동안 Claude는 기다린다. */
-export default function ApprovalCards({ session, only }: { session: Session; only?: Approval['request']['kind'] }) {
+/** chatId를 주면 그 대화가 낸 요청만 보여 준다(only를 주면 대화와 상관없이 그 종류만). */
+export default function ApprovalCards({ session, only, chatId }: { session: Session; only?: Approval['request']['kind']; chatId?: number }) {
   const [list, setList] = useState<Approval[]>([]);
   const reload = useCallback(() => { api.approvals(session.id).then(setList).catch(() => setList([])); }, [session.id]);
   useEffect(reload, [reload]);
   useServerEvents((e) => { if (e.type === 'approvals.updated' && e.sessionId === session.id) reload(); });
-  const shown = only ? list.filter((a) => a.request.kind === only) : list;
+  const shown = only ? list.filter((a) => a.request.kind === only) : chatId !== undefined ? list.filter((a) => a.chat_id === chatId) : list;
   if (shown.length === 0) return null;
   return (
     <section className="approvals" aria-label="확인이 필요한 요청">

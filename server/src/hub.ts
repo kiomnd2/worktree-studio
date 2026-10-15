@@ -3,7 +3,7 @@ import type { WebSocket } from 'ws';
 export type ServerEvent =
   | { type: 'session.updated'; sessionId: number }
   | { type: 'sessions.changed' }
-  | { type: 'message'; sessionId: number; message: { id: number; kind: string; payload: unknown; created_at: string } }
+  | { type: 'message'; sessionId: number; message: { id: number; chat_id: number; kind: string; payload: unknown; created_at: string } }
   | { type: 'server.updated'; sessionId: number }
   | { type: 'log'; sessionId: number; worktreeId: number; lines: LogLine[] }
   | { type: 'pr.updated'; sessionId: number }
@@ -12,7 +12,9 @@ export type ServerEvent =
   | { type: 'approvals.updated'; sessionId: number }
   | { type: 'docs.updated'; sessionId: number }
   | { type: 'tests.updated'; sessionId: number }
-  | { type: 'tasks.updated'; sessionId: number };
+  | { type: 'tasks.updated'; sessionId: number }
+  /** 화면 테스트 케이스 하나가 끝남 */
+  | { type: 'test.result'; sessionId: number; ticket: string; caseId: number; title: string; status: string; summary: string; index: number; total: number };
 
 export type LogLine = { seq: number; t: number; stream: 'out' | 'err' | 'sys'; level: 'error' | 'warn' | 'info'; text: string };
 

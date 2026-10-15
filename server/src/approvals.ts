@@ -30,6 +30,8 @@ export type TestDataRequest = { kind: 'testdata'; case_id: number; case_title: s
 export type Approval = {
   id: number;
   session_id: number;
+  /** 요청한 대화. 0은 메인 대화(화면 테스트의 요청도 0) */
+  chat_id: number;
   reason: string;
   request: EnvRequest | PlanRequest | QuestionRequest | TestDataRequest;
   created_at: number;
@@ -52,8 +54,8 @@ export function listApprovals(sessionId: number): Approval[] {
   return [...pending.values()].map((p) => p.approval).filter((a) => a.session_id === sessionId);
 }
 
-function ask(sessionId: number, reason: string, request: Approval['request'], apply: (d: Decision) => string): Promise<string> {
-  const approval: Approval = { id: nextId++, session_id: sessionId, reason, request, created_at: Date.now() };
+function ask(sessionId: number, chatId: number, reason: string, request: Approval['request'], apply: (d: Decision) => string): Promise<string> {
+  const approval: Approval = { id: nextId++, session_id: sessionId, chat_id: chatId, reason, request, created_at: Date.now() };
   return new Promise((resolve) => {
     decisionHandlers.set(approval.id, apply);
     pending.set(approval.id, {
@@ -83,17 +85,18 @@ export function decide(approvalId: number, d: Decision) {
   p.resolve(text);
 }
 
-/** 프롬프트가 끝나거나 중단되면 남은 요청은 거절로 끝낸다. 화면 테스트의 요청은 테스트가 따로 끝낸다. */
-export function cancelApprovals(sessionId: number, kind?: 'testdata') {
+/** 프롬프트가 끝나거나 중단되면 그 대화의 남은 요청은 거절로 끝낸다. 화면 테스트의 요청은 테스트가 따로 끝낸다. */
+export function cancelApprovals(sessionId: number, target: 'testdata' | { chatId: number }) {
   for (const p of [...pending.values()]) {
     if (p.approval.session_id !== sessionId) continue;
-    if ((p.approval.request.kind === 'testdata') !== (kind === 'testdata')) continue;
+    const testdata = p.approval.request.kind === 'testdata';
+    if (target === 'testdata' ? !testdata : testdata || p.approval.chat_id !== target.chatId) continue;
     decisionHandlers.delete(p.approval.id);
     p.resolve('작업이 끝나 요청이 취소됐습니다.');
   }
 }
 
-export function requestEnv(sessionId: number, projectName: string, vars: { key: string; value?: string; reason: string }[], reason: string): Promise<string> {
+export function requestEnv(sessionId: number, chatId: number, projectName: string, vars: { key: string; value?: string; reason: string }[], reason: string): Promise<string> {
   const session = getSession(sessionId);
   if (!session) return Promise.resolve('세션이 없습니다.');
   const wt = session.worktrees.find((w) => w.project_name === projectName) ?? (session.worktrees.length === 1 ? session.worktrees[0] : undefined);
@@ -108,7 +111,7 @@ export function requestEnv(sessionId: number, projectName: string, vars: { key: 
     profile_name: selectedProfile(sessionId, wt.project_id).name,
     vars: clean.map((v) => ({ key: v.key, value: v.value ?? '', reason: v.reason, secret: looksSecret(v.key), current: env[v.key] ?? null })),
   };
-  return ask(sessionId, reason, request, (d) => {
+  return ask(sessionId, chatId, reason, request, (d) => {
     if (!d.approve) return '사용자가 환경값 요청을 거절했습니다. 값 없이 진행하거나 사용자에게 이유를 물어보세요.';
     const values = new Map((d.vars ?? []).map((v) => [v.key, v.value]));
     const chosen = request.vars.filter((v) => values.has(v.key));
@@ -153,9 +156,9 @@ export function requestAccount(sessionId: number, role: string): string {
  * 계획 승인. 승인하면 true(이어서 실행), 고쳐 달라고 하면 그 내용을 돌려준다.
  * 프롬프트가 끝나거나 중단돼 취소되면 거절로 본다.
  */
-export function requestPlanApproval(sessionId: number, plan: string, docs: PlanRequest['docs']): Promise<{ approve: true } | { approve: false; feedback: string }> {
+export function requestPlanApproval(sessionId: number, chatId: number, plan: string, docs: PlanRequest['docs']): Promise<{ approve: true } | { approve: false; feedback: string }> {
   let result: { approve: true } | { approve: false; feedback: string } = { approve: false, feedback: '' };
-  return ask(sessionId, '', { kind: 'plan', plan, docs }, (d) => {
+  return ask(sessionId, chatId, '', { kind: 'plan', plan, docs }, (d) => {
     result = d.approve ? { approve: true } : { approve: false, feedback: d.feedback?.trim() ?? '' };
     return '';
   }).then(() => result);
@@ -164,16 +167,16 @@ export function requestPlanApproval(sessionId: number, plan: string, docs: PlanR
 /** 테스트 데이터를 만들어도 되는지 묻는다. 승인하면 만들 방법(사용자가 고친 것 포함), 아니면 null. */
 export function requestTestData(sessionId: number, request: Omit<TestDataRequest, 'kind'>): Promise<string | null> {
   let result: string | null = null;
-  return ask(sessionId, '', { kind: 'testdata', ...request }, (d) => {
+  return ask(sessionId, 0, '', { kind: 'testdata', ...request }, (d) => {
     result = d.approve ? (d.plan?.trim() || request.plan) : null;
     return '';
   }).then(() => result);
 }
 
 /** Claude의 질문에 대한 사용자 답. 질문 문장을 키로 한 답(여러 개 고르면 쉼표로 이음). 답하지 않으면 null. */
-export function requestAnswers(sessionId: number, questions: Question[]): Promise<Record<string, string> | null> {
+export function requestAnswers(sessionId: number, chatId: number, questions: Question[]): Promise<Record<string, string> | null> {
   let result: Record<string, string> | null = null;
-  return ask(sessionId, '', { kind: 'question', questions }, (d) => {
+  return ask(sessionId, chatId, '', { kind: 'question', questions }, (d) => {
     result = d.approve && d.answers ? d.answers : null;
     return '';
   }).then(() => result);

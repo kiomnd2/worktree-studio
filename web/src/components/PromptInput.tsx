@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import { promptInputMounted } from '../events';
+import { takeNewChatPending } from '../events';
 import type { Session } from '../types';
+import type { Thread } from './ChatView';
 import AnnotateDialog from './AnnotateDialog';
 
 const ACCEPT = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
@@ -22,7 +23,8 @@ function formatSize(n: number) {
   return n > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 }
 
-export default function PromptInput({ session }: { session: Session }) {
+/** thread의 대화로 보낸다. 'new'면 보낼 때 새 대화를 열고 onStarted로 그 대화 id를 알린다. */
+export default function PromptInput({ session, thread, onStarted }: { session: Session; thread: Thread; onStarted: (chatId: number) => void }) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -39,31 +41,31 @@ export default function PromptInput({ session }: { session: Session }) {
   };
   const fileInput = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const running = session.status === 'running';
+  const running = thread.status === 'running';
+  const chat = thread.id === 'new' ? 0 : thread.id;
 
   useEffect(() => () => attachments.forEach((a) => URL.revokeObjectURL(a.preview)), []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 새 대화 입력창은 도구 화면에서 넘긴 텍스트와 이미지를 받는다(나타날 때 기다리던 것과 그 뒤에 오는 것).
   useEffect(() => {
-    const onInsert = (e: Event) => {
-      const add = (e as CustomEvent<string>).detail;
-      setText((prev) => (prev.trim() ? `${prev.replace(/\s+$/, '')}\n\n${add}` : add));
+    if (thread.id !== 'new') return;
+    const take = () => {
+      const items = takeNewChatPending();
+      if (!items.length) return;
+      const texts = items.flatMap((i) => ('text' in i ? [i.text] : []));
+      if (texts.length) setText((prev) => [prev.replace(/\s+$/, ''), ...texts].filter(Boolean).join('\n\n'));
+      const files = items.flatMap((i) => {
+        if (!('image' in i)) return [];
+        const bytes = Uint8Array.from(atob(i.image.data), (c) => c.charCodeAt(0));
+        return [new File([bytes], i.image.name, { type: i.image.mediaType })];
+      });
+      if (files.length) addFiles(files);
       textarea.current?.focus();
     };
-    window.addEventListener('wts:insert-prompt', onInsert);
-    for (const t of promptInputMounted(true)) onInsert(new CustomEvent('wts:insert-prompt', { detail: t }));
-    return () => { window.removeEventListener('wts:insert-prompt', onInsert); promptInputMounted(false); };
-  }, []);
-
-  useEffect(() => {
-    const onAttach = (e: Event) => {
-      const { mediaType, data, name } = (e as CustomEvent<{ mediaType: string; data: string; name: string }>).detail;
-      const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
-      addFiles([new File([bytes], name, { type: mediaType })]);
-      textarea.current?.focus();
-    };
-    window.addEventListener('wts:attach-image', onAttach);
-    return () => window.removeEventListener('wts:attach-image', onAttach);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    take();
+    window.addEventListener('wts:new-chat', take);
+    return () => window.removeEventListener('wts:new-chat', take);
+  }, [thread.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function addFiles(files: FileList | File[]) {
     setError(null);
@@ -92,7 +94,7 @@ export default function PromptInput({ session }: { session: Session }) {
   }
 
   // 작업 중이거나 앞에 기다리는 프롬프트가 있으면 대기열 끝에 들어간다.
-  const willQueue = running || session.queue.length > 0;
+  const willQueue = running || thread.queue.length > 0;
 
   async function send() {
     if (sending) return;
@@ -100,7 +102,9 @@ export default function PromptInput({ session }: { session: Session }) {
     setSending(true);
     setError(null);
     try {
-      await api.prompt(session.id, text, attachments.map(({ mediaType, data, name }) => ({ mediaType, data, name })), plan);
+      const images = attachments.map(({ mediaType, data, name }) => ({ mediaType, data, name }));
+      if (thread.id === 'new') onStarted((await api.startChat(session.id, text, images, plan)).id);
+      else await api.prompt(session.id, text, images, plan, thread.id);
       attachments.forEach((a) => URL.revokeObjectURL(a.preview));
       setText('');
       setAttachments([]);
@@ -113,21 +117,21 @@ export default function PromptInput({ session }: { session: Session }) {
 
   return (
     <>
-    {session.queue.length > 0 && (
+    {thread.queue.length > 0 && (
       <section className="prompt-queue" aria-label="대기 중인 프롬프트">
         <div className="queue-head">
-          <strong>대기 중 {session.queue.length}개</strong>
-          {session.queue_paused ? (
+          <strong>대기 중 {thread.queue.length}개</strong>
+          {thread.queue_paused ? (
             <>
               <span className="warn-text small">{running ? '' : '앞 작업이 중단되거나 오류로 끝나서 멈췄습니다.'}</span>
-              <button type="button" className="small-btn primary" disabled={running} onClick={() => api.resumeQueue(session.id).catch((e) => setError(e.message))}>이어서 실행</button>
+              <button type="button" className="small-btn primary" disabled={running} onClick={() => api.resumeQueue(session.id, chat).catch((e) => setError(e.message))}>이어서 실행</button>
             </>
           ) : (
             <span className="muted small">{running ? '지금 작업이 끝나면 순서대로 실행합니다.' : '곧 실행합니다.'}</span>
           )}
         </div>
         <ol>
-          {session.queue.map((q) => (
+          {thread.queue.map((q) => (
             <li key={q.id}>
               {q.plan && <span className="plan-badge">계획</span>}
               <span className="queue-text">{q.text || '(이미지만)'}</span>
@@ -171,6 +175,7 @@ export default function PromptInput({ session }: { session: Session }) {
         value={text}
         placeholder={willQueue
           ? `${running ? 'Claude가 작업 중입니다' : '대기열이 멈춰 있습니다'}. 지금 보내면 대기열 끝에 넣고 순서대로 실행합니다. (Enter 추가, Shift+Enter 줄바꿈)`
+          : thread.id === 'new' ? '새 대화에서 맡길 일을 적어주세요. 메인 대화와 같은 워크트리에서 따로 실행합니다. (Enter 보내기, Shift+Enter 줄바꿈)'
           : '이 워크트리에서 할 일을 적어주세요. 이미지는 끌어다 놓거나 붙여넣을 수 있습니다. (Enter 보내기, Shift+Enter 줄바꿈)'}
         onChange={(e) => setText(e.target.value)}
         onPaste={(e) => {
@@ -193,8 +198,8 @@ export default function PromptInput({ session }: { session: Session }) {
         </button>
         <span className="muted small">{session.worktrees.map((w) => w.path.split('/').pop()).join(', ')}</span>
         <div className="spacer" />
-        {running && <button type="button" onClick={() => api.stop(session.id).catch((e) => setError(e.message))}>중단</button>}
-        <button type="submit" className="dark" disabled={sending}>{sending ? '보내는 중' : willQueue ? '대기열에 추가' : plan ? '계획 세우기' : '보내기'}</button>
+        {running && <button type="button" onClick={() => api.stop(session.id, chat).catch((e) => setError(e.message))}>중단</button>}
+        <button type="submit" className="dark" disabled={sending}>{sending ? '보내는 중' : willQueue ? '대기열에 추가' : plan ? '계획 세우기' : thread.id === 'new' ? '새 대화 시작' : '보내기'}</button>
       </div>
     </form>
     {editing && (

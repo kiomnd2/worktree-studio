@@ -639,3 +639,57 @@ a.small-btn { display: inline-flex; align-items: center; text-decoration: none; 
 .env-suggest-list > li > input[type=checkbox] { margin-top: 4px; }
 .env-suggest-body { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
 .env-suggest-body .mono.muted { overflow-wrap: anywhere; }
+
+/* 한 세션 안의 여러 대화 */
+.chat-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px 12px; border-bottom: 1px solid var(--rule); background: var(--soft); }
+.chat-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px; border: 1px solid transparent; border-radius: 6px; background: transparent; font-size: 13px; color: var(--muted); max-width: 260px; }
+.chat-tab.on { border-color: var(--rule); background: var(--sheet); color: var(--ink); font-weight: 600; }
+span.chat-tab { padding: 0 2px 0 0; }
+span.chat-tab:not(:has(.chat-tab-close)) { padding: 0 10px; }
+.chat-tab-label { display: inline-flex; align-items: center; gap: 6px; min-height: 26px; padding: 0 4px 0 8px; border: 0; background: transparent; color: inherit; font: inherit; min-width: 0; }
+.chat-tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-tab-close { min-height: 22px; min-width: 22px; padding: 0; }
+.chat-tab-add { color: var(--accent-ink); }
+.chat-tab .spinner { width: 10px; height: 10px; }
+.chat-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+
+/* 기준 브랜치와 머지 충돌 */
+.chip-status.conflict { border-color: var(--err); color: var(--err); background: var(--err-soft); cursor: pointer; font: inherit; }
+.conflict-card { border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.conflict-card.conflict, .conflict-card.merging { border-color: var(--err); }
+.conflict-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.conflict-how { margin: 0; padding: 10px 12px; background: var(--soft); border-radius: 6px; }
+.conflict-cause ul { margin: 4px 0 0; padding-left: 18px; }
+.conflict-files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.conflict-files summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 4px 0; }
+.conflict-files summary code { overflow-wrap: anywhere; }
+.conflict-hunk { margin: 6px 0 10px; }
+.conflict-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
+.conflict-sides > div { min-width: 0; }
+.conflict-sides pre { margin: 2px 0 0; padding: 8px; background: var(--soft); border: 1px solid var(--rule); border-radius: 4px; font-size: 12px; overflow-x: auto; max-height: 260px; }
+.conflict-side-label { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.conflict-proposal { border-top: 1px solid var(--rule); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.conflict-proposal p { margin: 0; }
+.conflict-proposal-file { display: flex; flex-direction: column; gap: 4px; }
+.conflict-proposal-file textarea { width: 100%; font: inherit; font-size: 13px; }
+@media (max-width: 700px) { .conflict-sides { grid-template-columns: 1fr; } }
+
+/* 화면 테스트 진행·결과 표시 */
+.panel-menu-count.run { background: var(--accent-soft); color: var(--accent-ink); }
+.panel-menu-count.bad { background: var(--err-soft); color: var(--err); font-weight: 600; }
+.panel-menu-count.good { background: var(--ok-soft); color: var(--ok-ink); }
+.panel-menu-btn .spinner { width: 10px; height: 10px; }
+.toasts { position: fixed; right: 16px; bottom: 16px; z-index: 20; display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 32px)); }
+.toast { display: flex; align-items: flex-start; gap: 4px; background: var(--sheet); border: 1px solid var(--rule); border-left: 4px solid var(--rule-strong); border-radius: 8px; box-shadow: 0 6px 20px rgba(27, 34, 48, 0.16); padding: 10px 8px 10px 12px; }
+.toast.ok { border-left-color: var(--ok); }
+.toast.err { border-left-color: var(--err); }
+.toast.warn { border-left-color: var(--warn-ink); }
+.toast-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; text-align: left; background: transparent; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; }
+.toast-head { display: flex; align-items: center; gap: 8px; }
+.toast-badge { font-size: 11.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px; }
+.toast-badge.ok { background: var(--ok-soft); color: var(--ok-ink); }
+.toast-badge.err { background: var(--err-soft); color: var(--err); }
+.toast-badge.warn { background: var(--warn-soft); color: var(--warn-ink); }
+.toast-title { font-size: 13.5px; overflow-wrap: anywhere; }
+.toast-summary { color: var(--ink-2); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.toast-close { min-width: 24px; min-height: 24px; padding: 0; flex-shrink: 0; }

@@ -53,7 +53,7 @@ function daysSince(sqlite: string) {
 }
 
 function classify(s: SessionView, prs: PullRequestRow[], dirty: number): { state: CleanupState; reason: string } {
-  if (s.status === 'running') return { state: 'running', reason: 'Claude가 작업 중' };
+  if (s.busy) return { state: 'running', reason: 'Claude가 작업 중' };
   if (dirty > 0) return { state: 'protected', reason: `커밋하지 않은 변경 ${dirty}개` };
   if (prs.some((p) => p.state === 'OPEN')) return { state: 'waiting_merge', reason: 'PR 머지 대기' };
   if (prs.length > 0) return { state: 'ready', reason: prs.every((p) => p.state === 'MERGED') ? 'PR 머지됨' : 'PR 닫힘' };
@@ -159,10 +159,12 @@ export async function refreshPrStates(sessionId?: number): Promise<number> {
   const touched = new Set<number>();
   for (const pr of open) {
     try {
-      const out = await runFile('gh', ['pr', 'view', pr.url, '--json', 'state'], os.homedir(), 20_000);
-      const state = (JSON.parse(out) as { state: string }).state;
-      db.prepare(`UPDATE pull_requests SET checked_at = datetime('now'), state = ? WHERE id = ?`).run(state, pr.id);
+      const out = await runFile('gh', ['pr', 'view', pr.url, '--json', 'state,mergeable'], os.homedir(), 20_000);
+      const { state, mergeable } = JSON.parse(out) as { state: string; mergeable: string };
+      db.prepare(`UPDATE pull_requests SET checked_at = datetime('now'), state = ?, mergeable = ? WHERE id = ?`).run(state, mergeable ?? null, pr.id);
       if (state !== 'OPEN') { changedCount++; touched.add(pr.session_id); }
+      // 충돌이 생기거나 풀리면 화면의 PR 표시를 바꾼다.
+      else if ((mergeable ?? null) !== pr.mergeable) touched.add(pr.session_id);
     } catch (err) {
       // 오프라인이거나 gh 로그인이 풀렸으면 다음에 다시 본다.
       console.warn(`[pr] #${pr.number} 상태를 확인하지 못했습니다:`, (err as Error).message);
@@ -192,7 +194,7 @@ function notifyStale() {
   const days = getSettings().cleanup.staleDays;
   if (!days || !getSettings().notify.onCleanup) return;
   for (const s of listSessions()) {
-    if (s.status === 'running' || s.stale_notified) continue;
+    if (s.busy || s.stale_notified) continue;
     if (daysSince(s.updated_at) < days || listPrs(s.id).length > 0) continue;
     sendNotification(`${s.ticket} ${days}일 동안 활동이 없습니다`, '필요 없으면 리소스 정리에서 지울 수 있습니다.', s.id);
     db.prepare(`UPDATE sessions SET stale_notified = 1 WHERE id = ?`).run(s.id);

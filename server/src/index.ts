@@ -13,8 +13,9 @@ import {
   getProject, getWorkspace, listProjectRows, listWorkspaces, updateProject, updateWorkspace,
 } from './projects.js';
 import { listBranches } from './git.js';
-import { closeSession, createSession, getSession, listMessages, listSessions, removeQueued, setSession } from './sessions.js';
-import { resumeQueue, runPrompt, stopPrompt, submitPrompt } from './claude.js';
+import { closeChat, closeSession, createSession, getSession, listMessages, listSessions, removeQueued, setChat } from './sessions.js';
+import { resumeQueue, runPrompt, startChat, stopPrompt, submitPrompt } from './claude.js';
+import { abortMerge, checkConflicts, proposeResolution, resolveConflicts } from './conflicts.js';
 import { decide, listApprovals } from './approvals.js';
 import { clearTasks, getTasks } from './tasks.js';
 import { deleteDoc, docHtml, listArchive, listDocs, revealArchive } from './docs.js';
@@ -169,16 +170,31 @@ app.get('/api/sessions/:id', async (req) => {
   if (!s) throw Object.assign(new Error('세션이 없습니다.'), { statusCode: 404 });
   return s;
 });
-app.get('/api/sessions/:id/messages', async (req) => listMessages(idParam.parse(req.params).id));
+/** ?chat=N: 그 대화의 메시지. 0이나 생략은 메인 대화 */
+const chatQuery = z.object({ chat: z.coerce.number().int().min(0).default(0) });
+const promptBody = z.object({
+  text: z.string().default(''),
+  images: z.array(z.object({ mediaType: z.string(), data: z.string(), name: z.string().optional() })).max(10).default([]),
+  plan: z.boolean().default(false),
+});
+app.get('/api/sessions/:id/messages', async (req) => listMessages(idParam.parse(req.params).id, chatQuery.parse(req.query).chat));
 app.post('/api/sessions/:id/prompt', async (req) => {
   const { id } = idParam.parse(req.params);
-  const body = z.object({
-    text: z.string().default(''),
-    images: z.array(z.object({ mediaType: z.string(), data: z.string(), name: z.string().optional() })).max(10).default([]),
-    plan: z.boolean().default(false),
-  }).parse(req.body);
+  const body = promptBody.extend({ chat: z.number().int().min(0).default(0) }).parse(req.body);
   // 실행은 백그라운드로 두고, 진행 상황은 WebSocket으로 보낸다. 작업 중이면 대기열에 넣는다.
-  return submitPrompt(id, body.text, body.images, { plan: body.plan });
+  return submitPrompt(id, body.text, body.images, { plan: body.plan, chatId: body.chat });
+});
+// 추가 대화: 같은 워크트리에서 메인 대화와 따로 Claude를 돌린다. 첫 프롬프트와 함께 연다.
+app.post('/api/sessions/:id/chats', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const body = promptBody.parse(req.body);
+  return startChat(id, body.text, body.images, { plan: body.plan });
+});
+app.post('/api/sessions/:id/chats/:cid/close', async (req) => {
+  const { id, cid } = z.object({ id: z.coerce.number().int(), cid: z.coerce.number().int().min(1) }).parse(req.params);
+  if (getSession(id)?.chats.find((c) => c.id === cid)?.status === 'running') throw Object.assign(new Error('작업 중인 대화는 닫을 수 없습니다. 먼저 중단하세요.'), { statusCode: 409 });
+  closeChat(id, cid);
+  return { ok: true };
 });
 app.delete('/api/sessions/:id/queue/:qid', async (req) => {
   const { id, qid } = z.object({ id: z.coerce.number().int(), qid: z.coerce.number().int() }).parse(req.params);
@@ -186,12 +202,12 @@ app.delete('/api/sessions/:id/queue/:qid', async (req) => {
   return { ok: true };
 });
 app.post('/api/sessions/:id/queue/resume', async (req) => {
-  resumeQueue(idParam.parse(req.params).id);
+  resumeQueue(idParam.parse(req.params).id, chatQuery.parse(req.query).chat);
   return { ok: true };
 });
-app.post('/api/sessions/:id/stop', async (req) => ({ stopped: stopPrompt(idParam.parse(req.params).id) }));
+app.post('/api/sessions/:id/stop', async (req) => ({ stopped: stopPrompt(idParam.parse(req.params).id, chatQuery.parse(req.query).chat) }));
 app.post('/api/sessions/:id/read', async (req) => {
-  setSession(idParam.parse(req.params).id, { unread: 0 });
+  setChat(idParam.parse(req.params).id, chatQuery.parse(req.query).chat, { unread: 0 });
   return { ok: true };
 });
 app.post('/api/sessions/:id/close', async (req) => {
@@ -446,6 +462,27 @@ app.post('/api/sessions/:id/pr', async (req) => {
   }).parse(req.body);
   await assertNewWork(id, items);
   return startPr(id, items, { ignoreCheckFailures: ignore_check_failures });
+});
+// 기준 브랜치와의 머지 충돌: 확인(워크트리는 그대로) → 해결 방법 제안(읽기만) → 승인하면 새 대화에서 해결
+app.get('/api/sessions/:id/conflicts', async (req) => checkConflicts(idParam.parse(req.params).id));
+const conflictParams = z.object({ id: z.coerce.number().int(), wid: z.coerce.number().int() });
+app.post('/api/sessions/:id/conflicts/:wid/propose', async (req) => {
+  const { id, wid } = conflictParams.parse(req.params);
+  return proposeResolution(id, wid);
+});
+app.post('/api/sessions/:id/conflicts/:wid/resolve', async (req) => {
+  const { id, wid } = conflictParams.parse(req.params);
+  const proposal = z.object({
+    summary: z.string(),
+    files: z.array(z.object({ path: z.string(), strategy: z.enum(['ours', 'theirs', 'both', 'manual']), how: z.string(), risk: z.string() })),
+    checks: z.array(z.string()),
+  }).parse(req.body);
+  return resolveConflicts(id, wid, proposal);
+});
+app.post('/api/sessions/:id/conflicts/:wid/abort', async (req) => {
+  const { id, wid } = conflictParams.parse(req.params);
+  await abortMerge(id, wid);
+  return { ok: true };
 });
 app.post('/api/sessions/:id/pr/continue', async (req) => continueIgnoringChecks(idParam.parse(req.params).id));
 app.post('/api/prs/:id/close', async (req) => {
