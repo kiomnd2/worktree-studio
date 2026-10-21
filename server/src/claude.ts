@@ -12,6 +12,14 @@ import { getSettings } from './settings.js';
 import { notifyRunFinished } from './notify.js';
 import { serverPorts } from './runner.js';
 import { accountsOf } from './accounts.js';
+import { recordUsage } from './usage.js';
+import { playwrightMcpCli } from './tests.js';
+import { SCREEN_DIR } from './screens.js';
+
+// 대화가 이 크기(토큰)를 넘으면 앞부분을 요약해 줄인다. 매 호출이 대화 전체를 다시 읽으므로 길수록 토큰이 커진다.
+export const AUTO_COMPACT_TOKENS = 300_000;
+// Studio 대화에서만 끄는 사용자 플러그인. bkit은 Bash 호출마다 훅 문구를 넣고 매 답변에 보고 표를 요구한다.
+const DISABLED_PLUGINS = ['bkit@bkit-marketplace'];
 
 export const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const;
 type ImageType = (typeof IMAGE_TYPES)[number];
@@ -53,6 +61,8 @@ function buildSystemAppend(repos: RepoView[], side: boolean) {
     ...lines,
     '커밋, 푸시, PR 생성은 사용자가 도구에서 따로 실행하므로 요청받지 않으면 하지 않는다.',
     '개발 서버는 도구가 띄우고 관리한다. 직접 띄우거나 끄지 말고, 메시지의 <tool_context>에 적힌 주소로 확인한다.',
+    '빌드·테스트·로그처럼 출력이 긴 명령은 `| tail -n 80`이나 조용한 옵션(-q 등)으로 실행한다. 명령 출력은 이후 모든 호출에서 다시 읽힌다. 실패하면 필요한 범위만 다시 본다.',
+    '화면 확인은 mcp__browser 도구로 한다.',
     '환경값은 도구가 관리한다. 필요한 값이 없거나 틀렸으면 .env 파일을 만들거나 고치지 말고 mcp__studio__request_env_values로 요청한다.',
     '다른 역할의 테스트 계정이 필요하면 mcp__studio__request_test_account로 요청한다. 두 요청 모두 사용자가 화면에서 확인해야 적용된다.',
     '작업 중에 사용자가 정해야 할 것(요구사항이 애매함, 방법이 여럿임, 데이터를 바꿔도 되는지 등)이 생기면 추측하지 말고 AskUserQuestion으로 바로 묻는다. 답을 받으면 이어서 작업한다.',
@@ -316,8 +326,19 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
         systemPrompt: { type: 'preset', preset: 'claude_code', append: buildSystemAppend(session.repos, chatId !== 0) },
         abortController: abort,
         pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
-        mcpServers: { studio: studioTools(sessionId, chatId) },
-        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks'],
+        // Studio가 넘긴 MCP만 쓴다. 사용자 설정의 MCP·커넥터는 도구 목록이 바뀔 때마다 대화에 목록이 다시 들어간다.
+        strictMcpConfig: true,
+        mcpServers: {
+          studio: studioTools(sessionId, chatId),
+          // 화면 확인용 브라우저. 스크린샷은 워크트리가 아닌 세션 화면 폴더에 남겨 커밋에 섞이지 않게 한다(세션 정리 때 함께 지운다).
+          browser: {
+            type: 'stdio',
+            command: process.execPath,
+            args: [playwrightMcpCli(), '--headless', '--browser', 'chrome', '--isolated', '--ignore-https-errors', '--viewport-size', '1440,900', '--output-dir', path.join(SCREEN_DIR, String(sessionId), 'chat')],
+          },
+        },
+        settings: { autoCompactWindow: AUTO_COMPACT_TOKENS, enabledPlugins: Object.fromEntries(DISABLED_PLUGINS.map((p) => [p, false])) },
+        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks', 'mcp__browser'],
         // 추가 대화는 세션 작업 목록을 바꾸지 않는다.
         ...(chatId !== 0 ? { disallowedTools: ['mcp__studio__set_tasks'] } : {}),
       },
@@ -335,6 +356,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
       } else if (msg.type === 'user') {
         appendMessage(sessionId, 'sdk', msg, chatId);
       } else if (msg.type === 'result') {
+        recordUsage(msg, { purpose: 'chat', sessionId, chatId, cwd: primary.path, resumed: Boolean(chat ? chat.claude_session_id : session.claude_session_id) });
         ok = msg.subtype === 'success' && !msg.is_error;
         appendMessage(sessionId, 'sdk', msg, chatId);
         if (msg.session_id) setChat(sessionId, chatId, { claude_session_id: msg.session_id });

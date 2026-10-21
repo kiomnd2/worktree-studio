@@ -3,6 +3,8 @@ import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { CLAUDE_EXECUTABLE } from './config.js';
 import { getProject, getWorkspace } from './projects.js';
 import { issueTypes, recentTicketExamples } from './jira.js';
+import { recordUsage } from './usage.js';
+import { helperModel } from './models.js';
 
 const SCHEMA = {
   type: 'object',
@@ -56,12 +58,14 @@ export async function draftTicket(workspaceId: number, input: { prompt: string }
       permissionMode: 'dontAsk',
       maxTurns: 25,
       persistSession: false,
+      model: helperModel('ticket_draft'),
       outputFormat: { type: 'json_schema', schema: SCHEMA },
       pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
     },
   });
   for await (const msg of q as AsyncIterable<SDKMessage>) {
     if (msg.type === 'result') {
+      recordUsage(msg, { purpose: 'ticket_draft', cwd: dirs[0] ?? null });
       if (msg.subtype !== 'success' || msg.is_error) throw new Error('티켓 내용을 쓰지 못했습니다. 다시 시도하세요.');
       structured = msg.structured_output ?? JSON.parse(msg.result);
     }

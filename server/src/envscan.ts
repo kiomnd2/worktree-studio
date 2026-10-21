@@ -3,6 +3,8 @@ import path from 'node:path';
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { CLAUDE_EXECUTABLE } from './config.js';
 import { looksSecret } from './secret.js';
+import { recordUsage } from './usage.js';
+import { helperModel } from './models.js';
 
 export type FoundVar = {
   key: string;
@@ -191,12 +193,14 @@ export async function analyzeEnvWithAI(dir: string, known: string[]): Promise<Fo
       permissionMode: 'dontAsk',
       maxTurns: 40,
       persistSession: false,
+      model: helperModel('env_scan'),
       outputFormat: { type: 'json_schema', schema: AI_SCHEMA },
       pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
     },
   });
   for await (const msg of q as AsyncIterable<SDKMessage>) {
     if (msg.type === 'result') {
+      recordUsage(msg, { purpose: 'env_scan', cwd: dir });
       if (msg.subtype !== 'success') throw new Error('AI 분석이 끝나지 못했습니다. 다시 시도하거나 직접 추가하세요.');
       if (msg.is_error) throw new Error(msg.result || 'AI 분석 중 오류가 났습니다.');
       structured = msg.structured_output ?? safeJson(msg.result);

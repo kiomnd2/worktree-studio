@@ -88,6 +88,8 @@ export type Settings = {
   permissionMode: PermissionMode;
   notify: { onComplete: boolean; onError: boolean; onServerFail: boolean; os: boolean; sound: boolean; skipWhenViewing: boolean; minSeconds: number; onPr: boolean; onCleanup: boolean };
   cleanup: { stopServersOnPr: boolean; autoCleanMerged: boolean; deleteRemoteBranch: boolean; pollMinutes: number; staleDays: number };
+  /** 보조 작업마다 쓸 모델. 빈 값이면 Claude Code 기본 모델. */
+  helperModels: Record<string, string>;
 };
 
 export type ServerEvent =

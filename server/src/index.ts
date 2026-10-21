@@ -24,6 +24,7 @@ import { draftTicket } from './ticketdraft.js';
 import { chooseSite, createIssue, getIssue, issueTypes, jiraConfigView, requiredFields, jiraLogout, jiraStatus, oauthCallback, oauthStart, searchIssues } from './jira.js';
 import { confirmRoleAccount, deleteCase, generateCases, runTests, saveCase, stopTests, testShotPath, testState } from './tests.js';
 import { getSettings, saveSettings, type Settings } from './settings.js';
+import { HELPER_PURPOSES } from './models.js';
 import { sendNotification } from './notify.js';
 import { cleanupOrphans, clearFailure, getLogs, listServers, planPorts, startServers, stopAll, stopServers } from './runner.js';
 import { suggestServerEnv } from './envsuggest.js';
@@ -549,6 +550,8 @@ app.put('/api/settings', async (req) => {
       stopServersOnPr: z.boolean(), autoCleanMerged: z.boolean(), deleteRemoteBranch: z.boolean(),
       pollMinutes: z.number().int().min(1).max(1440), staleDays: z.number().int().min(0).max(365),
     }).default(getSettings().cleanup),
+    // 고른 작업만 온다(z.record는 enum 키를 모두 요구한다).
+    helperModels: z.partialRecord(z.enum(HELPER_PURPOSES), z.string().max(100)).default(getSettings().helperModels),
   }).parse(req.body);
   const saved = saveSettings(body as Settings);
   scheduleCleanupPoll();

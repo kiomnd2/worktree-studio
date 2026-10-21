@@ -11,6 +11,8 @@ import { getSession, listMessages, type SessionView } from './sessions.js';
 import { listServers } from './runner.js';
 import { accountOf } from './accounts.js';
 import { broadcast } from './hub.js';
+import { recordUsage } from './usage.js';
+import { helperModel } from './models.js';
 
 /**
  * 영향받는 화면 체크리스트. Claude가 바뀐 파일에서 화면 경로를 찾아 목록으로 만들고,
@@ -145,12 +147,14 @@ export async function detectScreens(sessionId: number) {
         permissionMode: 'dontAsk',
         maxTurns: 40,
         persistSession: false,
+        model: helperModel('screens'),
         outputFormat: { type: 'json_schema', schema: DETECT_SCHEMA },
         pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
       },
     });
     for await (const msg of q as AsyncIterable<SDKMessage>) {
       if (msg.type === 'result') {
+        recordUsage(msg, { purpose: 'screens', sessionId, cwd: fe.path });
         if (msg.subtype !== 'success' || msg.is_error) throw new Error('영향 화면 분석이 끝나지 못했습니다. 다시 시도하거나 직접 추가하세요.');
         structured = msg.structured_output ?? JSON.parse(msg.result);
       }

@@ -8,6 +8,8 @@ import { getSession } from './sessions.js';
 import { resolveEnv } from './envstore.js';
 import { looksSecret } from './secret.js';
 import { git } from './git.js';
+import { recordUsage } from './usage.js';
+import { helperModel } from './models.js';
 
 /**
  * 서버를 띄우기 전에, 이 세션의 포트로 FE와 BE가 서로 맞물리려면 바꿔야 할 환경값을 제안한다.
@@ -121,12 +123,14 @@ export async function suggestServerEnv(sessionId: number, ports: Record<number, 
       permissionMode: 'dontAsk',
       maxTurns: 30,
       persistSession: false,
+      model: helperModel('env_suggest'),
       outputFormat: { type: 'json_schema', schema: SCHEMA },
       pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
     },
   });
   for await (const msg of q as AsyncIterable<SDKMessage>) {
     if (msg.type === 'result') {
+      recordUsage(msg, { purpose: 'env_suggest', sessionId, cwd: dirs[0] });
       if (msg.subtype !== 'success' || msg.is_error) throw new Error('설정을 살펴보지 못했습니다.');
       structured = msg.structured_output ?? JSON.parse(msg.result);
     }
