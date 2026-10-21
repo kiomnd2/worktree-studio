@@ -1,0 +1,183 @@
+import { broadcast } from './hub.js';
+import { getSession } from './sessions.js';
+import { profileVars, resolveEnv, saveSessionEnv, selectedProfile, type EnvVar } from './envstore.js';
+import { accountsOf } from './accounts.js';
+import { looksSecret } from './secret.js';
+import { sendNotification } from './notify.js';
+
+/**
+ * 프롬프트를 실행하던 Claude가 환경값이나 테스트 계정이 더 필요하다고 요청한 것.
+ * 사용자가 화면에서 값을 고치거나 계정을 골라 승인해야 적용되고, Claude는 그때까지 기다린다.
+ */
+export type EnvRequest = {
+  kind: 'env';
+  project_id: number;
+  project_name: string;
+  profile_name: string;
+  vars: { key: string; value: string; reason: string; secret: boolean; current: string | null }[];
+};
+/** 계획 모드에서 Claude가 계획을 마치고 실행해도 되는지 묻는 것. docs는 이번 계획에서 저장한 산출물 이름 */
+export type PlanRequest = { kind: 'plan'; plan: string; docs: { name: string; title: string; kind: string }[] };
+/** 작업 중 Claude가 정해야 할 것을 묻는 것(AskUserQuestion). 답을 받을 때까지 기다린다. */
+export type Question = { question: string; header: string; options: { label: string; description: string }[]; multiSelect: boolean };
+export type QuestionRequest = { kind: 'question'; questions: Question[] };
+/**
+ * 화면 테스트가 진행할 데이터(대기 중인 주문 등)가 없어 막힌 것. 사용자가 승인하면 그 데이터를 화면에서 만들고 케이스를 다시 돌린다.
+ * plan은 만드는 방법이고 사용자가 고쳐서 승인할 수 있다.
+ */
+export type TestDataRequest = { kind: 'testdata'; case_id: number; case_title: string; need: string; plan: string; role: string };
+
+export type Approval = {
+  id: number;
+  session_id: number;
+  /** 요청한 대화. 0은 메인 대화(화면 테스트의 요청도 0) */
+  chat_id: number;
+  reason: string;
+  request: EnvRequest | PlanRequest | QuestionRequest | TestDataRequest;
+  created_at: number;
+};
+
+export type Decision =
+  | { approve: false; feedback?: string }
+  | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile' };
+
+const pending = new Map<number, { approval: Approval; resolve: (text: string) => void }>();
+/** 승인했을 때 실제로 적용하고 Claude에게 돌려줄 문장을 만드는 함수 */
+const decisionHandlers = new Map<number, (d: Decision) => string>();
+let nextId = 1;
+
+function changed(sessionId: number) {
+  broadcast({ type: 'approvals.updated', sessionId });
+}
+
+export function listApprovals(sessionId: number): Approval[] {
+  return [...pending.values()].map((p) => p.approval).filter((a) => a.session_id === sessionId);
+}
+
+function ask(sessionId: number, chatId: number, reason: string, request: Approval['request'], apply: (d: Decision) => string): Promise<string> {
+  const approval: Approval = { id: nextId++, session_id: sessionId, chat_id: chatId, reason, request, created_at: Date.now() };
+  return new Promise((resolve) => {
+    decisionHandlers.set(approval.id, apply);
+    pending.set(approval.id, {
+      approval,
+      resolve: (text) => { pending.delete(approval.id); changed(sessionId); resolve(text); },
+    });
+    changed(sessionId);
+    const s = getSession(sessionId);
+    const body = request.kind === 'plan'
+      ? '계획을 마쳤습니다. 산출물을 보고 실행할지 정해 주세요.'
+      : request.kind === 'question'
+      ? `Claude가 묻습니다: ${request.questions[0]?.question ?? ''}`
+      : request.kind === 'testdata'
+      ? `테스트 "${request.case_title}"를 진행할 데이터가 없습니다. 만들지 정해 주세요.`
+      : `Claude가 ${request.project_name} 환경값 ${request.vars.map((v) => v.key).join(', ')}을(를) 요청했습니다.`;
+    sendNotification(`${s?.ticket ?? ''} 확인이 필요합니다`, body, sessionId);
+  });
+}
+
+/** 사용자의 승인·거절. 적용 결과를 Claude에게 도구 결과로 돌려준다. */
+export function decide(approvalId: number, d: Decision) {
+  const p = pending.get(approvalId);
+  const apply = decisionHandlers.get(approvalId);
+  if (!p || !apply) throw new Error('이미 처리했거나 사라진 요청입니다.');
+  const text = apply(d);
+  decisionHandlers.delete(approvalId);
+  p.resolve(text);
+}
+
+/** 프롬프트가 끝나거나 중단되면 그 대화의 남은 요청은 거절로 끝낸다. 화면 테스트의 요청은 테스트가 따로 끝낸다. */
+export function cancelApprovals(sessionId: number, target: 'testdata' | { chatId: number }) {
+  for (const p of [...pending.values()]) {
+    if (p.approval.session_id !== sessionId) continue;
+    const testdata = p.approval.request.kind === 'testdata';
+    if (target === 'testdata' ? !testdata : testdata || p.approval.chat_id !== target.chatId) continue;
+    decisionHandlers.delete(p.approval.id);
+    p.resolve('작업이 끝나 요청이 취소됐습니다.');
+  }
+}
+
+export function requestEnv(sessionId: number, chatId: number, projectName: string, vars: { key: string; value?: string; reason: string }[], reason: string): Promise<string> {
+  const session = getSession(sessionId);
+  if (!session) return Promise.resolve('세션이 없습니다.');
+  const wt = session.worktrees.find((w) => w.project_name === projectName) ?? (session.worktrees.length === 1 ? session.worktrees[0] : undefined);
+  if (!wt) return Promise.resolve(`프로젝트 ${projectName}를 찾지 못했습니다. 다음 중 하나로 다시 요청하세요: ${session.worktrees.map((w) => w.project_name).join(', ')}`);
+  const clean = vars.map((v) => ({ ...v, key: v.key.trim() })).filter((v) => /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(v.key));
+  if (clean.length === 0) return Promise.resolve('요청한 키 이름이 올바르지 않습니다.');
+  const { env } = resolveEnv(sessionId, wt.project_id);
+  const request: EnvRequest = {
+    kind: 'env',
+    project_id: wt.project_id,
+    project_name: wt.project_name,
+    profile_name: selectedProfile(sessionId, wt.project_id).name,
+    vars: clean.map((v) => ({ key: v.key, value: v.value ?? '', reason: v.reason, secret: looksSecret(v.key), current: env[v.key] ?? null })),
+  };
+  return ask(sessionId, chatId, reason, request, (d) => {
+    if (!d.approve) return '사용자가 환경값 요청을 거절했습니다. 값 없이 진행하거나 사용자에게 이유를 물어보세요.';
+    const values = new Map((d.vars ?? []).map((v) => [v.key, v.value]));
+    const chosen = request.vars.filter((v) => values.has(v.key));
+    if (chosen.length === 0) return '사용자가 아무 값도 승인하지 않았습니다.';
+    const target = d.target ?? 'session';
+    if (target === 'profile') {
+      const merged = new Map<string, EnvVar>(profileVars(selectedProfile(sessionId, wt.project_id).id).map((v) => [v.key, v]));
+      for (const v of chosen) {
+        const prev = merged.get(v.key);
+        merged.set(v.key, { key: v.key, value: values.get(v.key)!, required: prev?.required ?? false, secret: prev?.secret ?? v.secret, source: 'manual', found_in: prev?.found_in ?? null });
+      }
+      saveSessionEnv(sessionId, wt.project_id, 'profile', [...merged.values()]);
+    } else {
+      // 이번 세션에만: 지금 값 위에 승인한 값만 얹는다.
+      const cur = resolveEnv(sessionId, wt.project_id).env;
+      const vars: EnvVar[] = Object.entries({ ...cur, ...Object.fromEntries(chosen.map((v) => [v.key, values.get(v.key)!])) })
+        .map(([key, value]) => ({ key, value, required: false, secret: looksSecret(key), source: 'manual', found_in: null }));
+      saveSessionEnv(sessionId, wt.project_id, 'session', vars);
+    }
+    const where = target === 'profile' ? `프로필 ${request.profile_name}` : '이번 세션';
+    return `사용자가 승인해 ${wt.project_name}의 ${where} 환경값에 ${chosen.map((v) => v.key).join(', ')}를 넣었습니다. `
+      + '실행 중인 서버에는 아직 반영되지 않았으니, 확인이 필요하면 사용자에게 서버 재시작을 부탁하세요. 값은 .env 파일로 만들지 마세요.';
+  });
+}
+
+/**
+ * 다른 역할의 계정이 필요하다는 요청. 계정은 세션에 묶이지 않고 워크스페이스 계정을 모두 쓸 수 있으므로,
+ * 메모(역할)가 맞는 계정을 바로 알려 주고, 없으면 사용자에게 풀에 추가해 달라고 하게 한다.
+ */
+export function requestAccount(sessionId: number, role: string): string {
+  const all = accountsOf(sessionId);
+  if (all.length === 0) return '이 워크스페이스에 테스트 계정이 없습니다. 사용자에게 설정의 테스트 계정 풀에 계정을 추가해 달라고 하세요.';
+  const want = role.trim().toLowerCase();
+  const hit = all.filter((a) => want && a.note.toLowerCase().includes(want));
+  const fmt = (a: (typeof all)[number]) => `- ${a.login} / ${a.password}${a.note ? ` (${a.note})` : ''}`;
+  return hit.length
+    ? `"${role}" 역할로 쓸 수 있는 계정:\n${hit.map(fmt).join('\n')}`
+    : `메모에 "${role}"이(가) 적힌 계정이 없습니다. 아래 계정 중 맞는 것이 있으면 쓰고, 없으면 사용자에게 설정의 테스트 계정 풀에 추가해 달라고 하세요.\n${all.map(fmt).join('\n')}`;
+}
+
+/**
+ * 계획 승인. 승인하면 true(이어서 실행), 고쳐 달라고 하면 그 내용을 돌려준다.
+ * 프롬프트가 끝나거나 중단돼 취소되면 거절로 본다.
+ */
+export function requestPlanApproval(sessionId: number, chatId: number, plan: string, docs: PlanRequest['docs']): Promise<{ approve: true } | { approve: false; feedback: string }> {
+  let result: { approve: true } | { approve: false; feedback: string } = { approve: false, feedback: '' };
+  return ask(sessionId, chatId, '', { kind: 'plan', plan, docs }, (d) => {
+    result = d.approve ? { approve: true } : { approve: false, feedback: d.feedback?.trim() ?? '' };
+    return '';
+  }).then(() => result);
+}
+
+/** 테스트 데이터를 만들어도 되는지 묻는다. 승인하면 만들 방법(사용자가 고친 것 포함), 아니면 null. */
+export function requestTestData(sessionId: number, request: Omit<TestDataRequest, 'kind'>): Promise<string | null> {
+  let result: string | null = null;
+  return ask(sessionId, 0, '', { kind: 'testdata', ...request }, (d) => {
+    result = d.approve ? (d.plan?.trim() || request.plan) : null;
+    return '';
+  }).then(() => result);
+}
+
+/** Claude의 질문에 대한 사용자 답. 질문 문장을 키로 한 답(여러 개 고르면 쉼표로 이음). 답하지 않으면 null. */
+export function requestAnswers(sessionId: number, chatId: number, questions: Question[]): Promise<Record<string, string> | null> {
+  let result: Record<string, string> | null = null;
+  return ask(sessionId, chatId, '', { kind: 'question', questions }, (d) => {
+    result = d.approve && d.answers ? d.answers : null;
+    return '';
+  }).then(() => result);
+}
