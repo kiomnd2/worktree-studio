@@ -15,6 +15,8 @@ import { getSettings } from './settings.js';
 import { changedDiff, changedFiles, feWorktree } from './screens.js';
 import { saveDoc } from './docs.js';
 import { cancelApprovals, requestTestData } from './approvals.js';
+import { recordUsage } from './usage.js';
+import { helperModel } from './models.js';
 
 /**
  * 개발한 기능의 테스트 케이스를 만들고, 브라우저로 직접 돌려 보며 화면을 찍는다.
@@ -187,12 +189,14 @@ export async function generateCases(sessionId: number): Promise<number> {
         permissionMode: 'dontAsk',
         maxTurns: 30,
         persistSession: false,
+        model: helperModel('test_cases'),
         outputFormat: { type: 'json_schema', schema: CASE_SCHEMA },
         pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
       },
     });
     for await (const msg of q as AsyncIterable<SDKMessage>) {
       if (msg.type === 'result') {
+        recordUsage(msg, { purpose: 'test_cases', sessionId, cwd: fe.path });
         if (msg.subtype !== 'success' || msg.is_error) throw new Error('테스트 케이스를 만들지 못했습니다. 다시 시도하세요.');
         structured = msg.structured_output ?? JSON.parse(msg.result);
       }
@@ -253,7 +257,7 @@ export function confirmRoleAccount(sessionId: number, role: string, accountId: n
 }
 
 const require = createRequire(import.meta.url);
-function playwrightMcpCli(): string {
+export function playwrightMcpCli(): string {
   // 패키지 exports에 cli.js가 없어 package.json 위치로 찾는다.
   return path.join(path.dirname(require.resolve('@playwright/mcp/package.json')), 'cli.js');
 }
@@ -425,6 +429,7 @@ async function runCase(sessionId: number, t: TestCase, appUrl: string, loginPath
         permissionMode: 'dontAsk',
         maxTurns: 60,
         persistSession: false,
+        model: helperModel('test_run'),
         abortController: abort,
         outputFormat: { type: 'json_schema', schema: prep ? RESULT_SCHEMA : RESULT_SCHEMA_WITH_NEEDS },
         pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
@@ -432,6 +437,7 @@ async function runCase(sessionId: number, t: TestCase, appUrl: string, loginPath
     });
     for await (const msg of q as AsyncIterable<SDKMessage>) {
       if (msg.type === 'result') {
+        recordUsage(msg, { purpose: 'test_run', sessionId, cwd: dir });
         if (msg.subtype !== 'success' || msg.is_error) throw new Error('테스트를 끝까지 실행하지 못했습니다.');
         structured = msg.structured_output ?? JSON.parse(msg.result);
       }

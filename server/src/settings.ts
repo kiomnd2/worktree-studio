@@ -22,12 +22,15 @@ export type Settings = {
     pollMinutes: number;
     staleDays: number;
   };
+  /** 보조 호출(models.ts HELPER_PURPOSES)마다 쓸 모델. 없거나 빈 값이면 사용자 기본 모델. */
+  helperModels: Record<string, string>;
 };
 
 const DEFAULTS: Settings = {
   permissionMode: 'auto',
   notify: { onComplete: true, onError: true, onServerFail: true, os: true, sound: false, skipWhenViewing: true, minSeconds: 30, onPr: true, onCleanup: true },
   cleanup: { stopServersOnPr: true, autoCleanMerged: false, deleteRemoteBranch: false, pollMinutes: 10, staleDays: 7 },
+  helperModels: {},
 };
 
 export function getSettings(): Settings {
@@ -38,6 +41,7 @@ export function getSettings(): Settings {
     ...DEFAULTS, ...saved,
     notify: { ...DEFAULTS.notify, ...(saved.notify ?? {}) },
     cleanup: { ...DEFAULTS.cleanup, ...(saved.cleanup ?? {}) },
+    helperModels: { ...(saved.helperModels ?? {}) },
   };
 }
 

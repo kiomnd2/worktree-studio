@@ -211,6 +211,34 @@ db.prepare(`UPDATE projects SET repo_root = local_path WHERE repo_root IS NULL`)
 addColumn('projects', 'deleted', 'deleted INTEGER NOT NULL DEFAULT 0');
 addColumn('workspaces', 'deleted', 'deleted INTEGER NOT NULL DEFAULT 0');
 
+// Claude 호출의 토큰·비용 기록(usage.ts). 보조 호출(PR 문안, 화면 테스트 등)은 대화 기록 파일을 남기지 않아 여기에만 남는다.
+// 행 하나가 결과 메시지 하나다. 숫자 열은 그 결과에서 늘어난 몫이고 cumulative는 SDK가 준 누적값 그대로다.
+// 세션이 정리돼도 기록은 남기려고 sessions에 외래 키를 걸지 않는다.
+db.exec(`
+CREATE TABLE IF NOT EXISTS usage_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  purpose TEXT NOT NULL,
+  session_id INTEGER,
+  chat_id INTEGER,
+  cwd TEXT,
+  claude_session_id TEXT,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  models TEXT NOT NULL DEFAULT '{}',
+  cumulative TEXT NOT NULL DEFAULT '{}',
+  num_turns INTEGER,
+  duration_ms INTEGER,
+  is_error INTEGER NOT NULL DEFAULT 0,
+  carried INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_usage_claude ON usage_log(claude_session_id, id);
+CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_log(session_id, id);
+`);
+
 // 도구가 비정상 종료됐다면 실행 중으로 남은 세션을 되돌린다.
 db.prepare(`UPDATE sessions SET status = 'idle' WHERE status = 'running'`).run();
 db.prepare(`UPDATE chats SET status = 'idle' WHERE status = 'running'`).run();

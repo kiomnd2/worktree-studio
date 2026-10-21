@@ -10,6 +10,34 @@ import TaskBar from './TaskBar';
 
 type ToolResult = { text: string; isError: boolean; at: number };
 
+// 서버 claude.ts의 AUTO_COMPACT_TOKENS와 같은 값. 이 크기를 넘으면 Claude가 앞부분을 요약한다.
+const COMPACT_AT = 300_000;
+// 이 크기부터 대화가 길다고 알린다.
+const LONG_AT = 200_000;
+
+/** 마지막 호출이 읽은 대화 크기(토큰). 매 호출이 대화 전체를 다시 읽으므로 이 값이 호출당 토큰이다. */
+function contextTokens(messages: StoredMessage[]): number | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const p = messages[i].payload;
+    if (messages[i].kind !== 'sdk' || p?.type !== 'assistant' || p.parent_tool_use_id) continue;
+    const u = p.message?.usage;
+    if (u) return (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+  }
+  return null;
+}
+
+function ContextMeter({ tokens, running, onCompact }: { tokens: number; running: boolean; onCompact: () => void }) {
+  const long = tokens >= LONG_AT;
+  return (
+    <div className={`ctx-meter${long ? ' long' : ''}`} aria-live="off">
+      <span className="ctx-bar" aria-hidden="true"><span style={{ width: `${Math.min(100, (tokens / COMPACT_AT) * 100)}%` }} /></span>
+      <span>대화 크기 {Math.round(tokens / 1000)}K / 자동 요약 {COMPACT_AT / 1000}K</span>
+      {long && <span className="muted">· 길어진 대화는 호출마다 토큰이 큽니다. 다른 작업이면 새 세션에서 시작하세요.</span>}
+      {long && <button className="link" disabled={running} onClick={onCompact}>지금 요약</button>}
+    </div>
+  );
+}
+
 function toolSummary(name: string, input: any): string {
   if (!input || typeof input !== 'object') return '';
   if (name === 'Bash') return input.command ?? '';
@@ -146,6 +174,8 @@ export default function ChatView({ session }: { session: Session }) {
   // 이번 작업은 마지막으로 보낸 프롬프트부터 센다.
   const lastUser = [...messages].reverse().find((m) => m.kind === 'user');
   const runStart = running && lastUser ? atOf(lastUser.created_at) : null;
+  const ctx = useMemo(() => contextTokens(messages), [messages]);
+  const threadId = thread.id;
 
   return (
     <main className="main chat">
@@ -176,6 +206,9 @@ export default function ChatView({ session }: { session: Session }) {
           </div>
         )}
       </div>
+      {threadId !== 'new' && ctx !== null && (
+        <ContextMeter tokens={ctx} running={running} onCompact={() => api.prompt(session.id, '/compact', [], false, threadId).catch((e) => setLoadError(e.message))} />
+      )}
       {thread.id !== 'new' && <ApprovalCards session={session} chatId={thread.id} />}
       <PromptInput
         key={thread.id}

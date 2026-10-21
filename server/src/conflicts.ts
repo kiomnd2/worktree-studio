@@ -8,6 +8,8 @@ import { getProject } from './projects.js';
 import { getSession, type SessionView } from './sessions.js';
 import { listPrs, repoCheckCmd } from './pr.js';
 import { startChat } from './claude.js';
+import { recordUsage } from './usage.js';
+import { helperModel } from './models.js';
 
 /**
  * 작업 브랜치와 기준 브랜치(origin/develop 등)의 머지 충돌.
@@ -215,12 +217,14 @@ export async function proposeResolution(sessionId: number, worktreeId: number): 
       permissionMode: 'dontAsk',
       maxTurns: 40,
       persistSession: false,
+      model: helperModel('conflict'),
       outputFormat: { type: 'json_schema', schema: SCHEMA },
       pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
     },
   });
   for await (const msg of q as AsyncIterable<SDKMessage>) {
     if (msg.type === 'result') {
+      recordUsage(msg, { purpose: 'conflict', sessionId, cwd: w.path });
       if (msg.subtype !== 'success' || msg.is_error) throw new Error('해결 방법을 만들지 못했습니다.');
       structured = msg.structured_output ?? JSON.parse(msg.result);
     }

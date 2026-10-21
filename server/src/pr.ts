@@ -15,6 +15,8 @@ import { stopServers } from './runner.js';
 import { getSettings } from './settings.js';
 import { sendNotification } from './notify.js';
 import { broadcast } from './hub.js';
+import { recordUsage } from './usage.js';
+import { helperModel } from './models.js';
 
 export type PullRequestRow = {
   id: number; session_id: number; worktree_id: number; number: number; url: string; title: string;
@@ -379,12 +381,14 @@ export async function preparePr(sessionId: number): Promise<{ drafts: PrDraft[];
         permissionMode: 'dontAsk',
         maxTurns: 4,
         persistSession: false,
+        model: helperModel('pr_draft'),
         outputFormat: { type: 'json_schema', schema: DRAFT_SCHEMA },
         pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
       },
     });
     for await (const msg of q as AsyncIterable<SDKMessage>) {
       if (msg.type === 'result') {
+        recordUsage(msg, { purpose: 'pr_draft', sessionId, cwd: session.repos[0].path });
         if (msg.subtype !== 'success' || msg.is_error) throw new Error('Claude가 본문을 끝까지 쓰지 못했습니다.');
         structured = msg.structured_output ?? JSON.parse(msg.result);
       }

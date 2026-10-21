@@ -267,9 +267,31 @@ function WorkspacesSection({ projects, workspaces, run }: { projects: Project[];
   );
 }
 
+// 빈 값 = Claude Code 기본 모델(보조 작업에 따로 정하지 않음).
+const HELPER_MODEL_OPTIONS = [
+  { value: '', label: '기본 모델' },
+  { value: 'claude-opus-5-5', label: 'Opus 5.5' },
+  { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
+  { value: 'claude-haiku-5-5', label: 'Haiku 5.5' },
+];
+// 서버 models.ts HELPER_PURPOSES와 같은 목록. hint는 토큰·속도를 줄이고 싶을 때의 권장 모델이다.
+const HELPER_TASKS = [
+  { key: 'pr_draft', label: 'PR 문안', hint: 'Haiku' },
+  { key: 'ticket_draft', label: 'Jira 티켓 초안', hint: 'Haiku' },
+  { key: 'screens', label: '영향 화면 찾기', hint: 'Sonnet' },
+  { key: 'test_cases', label: '화면 테스트 케이스 만들기', hint: 'Sonnet' },
+  { key: 'test_run', label: '화면 테스트 실행', hint: 'Sonnet' },
+  { key: 'env_scan', label: '환경값 AI 분석', hint: 'Sonnet' },
+  { key: 'env_suggest', label: '서버 설정 제안', hint: 'Sonnet' },
+  { key: 'project_analyze', label: '프로젝트 분석', hint: 'Sonnet' },
+  { key: 'conflict', label: '머지 충돌 해결안', hint: '기본 모델' },
+];
+
 function PreferencesSection({ settings, setSettings, run }: { settings: Settings; setSettings: (s: Settings) => void; run: Run }) {
   const n = settings.notify;
   const setN = (patch: Partial<Settings['notify']>) => setSettings({ ...settings, notify: { ...n, ...patch } });
+  const hm = settings.helperModels ?? {};
+  const setHm = (key: string, value: string) => setSettings({ ...settings, helperModels: { ...hm, [key]: value } });
   return (
     <section className="card">
       <div className="card-head"><div><h2>Claude와 알림</h2><p className="muted small">알림은 로컬 서버가 OS 알림으로 보내므로 브라우저 탭을 닫아도 옵니다.</p></div></div>
@@ -280,6 +302,19 @@ function PreferencesSection({ settings, setSettings, run }: { settings: Settings
             {MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
           </select>
         </label>
+        <fieldset className="checks column helper-models">
+          <legend>보조 작업 모델</legend>
+          <p className="muted small">대화 밖에서 Studio가 Claude를 따로 부르는 작업입니다. 기본 모델은 Claude Code 설정을 따릅니다. 가벼운 모델일수록 빠르고 토큰이 적지만 결과가 덜 정확할 수 있습니다.</p>
+          {HELPER_TASKS.map((t) => (
+            <label key={t.key} className="inline">
+              <span className="helper-label">{t.label}</span>
+              <select id={`helper-model-${t.key}`} value={hm[t.key] ?? ''} onChange={(e) => setHm(t.key, e.target.value)}>
+                {HELPER_MODEL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <span className="muted small">권장 {t.hint}</span>
+            </label>
+          ))}
+        </fieldset>
         <fieldset className="checks column">
           <legend>알릴 일</legend>
           <label><input type="checkbox" checked={n.onComplete} onChange={(e) => setN({ onComplete: e.target.checked })} /> 프롬프트 작업이 끝났을 때</label>
