@@ -16,6 +16,7 @@ import ChangesPage from './components/ChangesPage';
 import TestsPage from './components/TestsPage';
 import DocsPage from './components/DocsPage';
 import ArchivePage from './components/ArchivePage';
+import UsagePage from './components/UsagePage';
 import type { PullRequest, ServerView } from './types';
 
 type View =
@@ -27,6 +28,7 @@ type View =
   | { kind: 'tests'; id: number }
   | { kind: 'docs'; id: number; name: string | null }
   | { kind: 'archive' }
+  | { kind: 'usage' }
   | { kind: 'archive-docs'; id: number; ticket: string; name: string | null };
 
 function initialView(): View {
@@ -136,7 +138,7 @@ export default function App() {
           </svg>
           Worktree Studio
         </div>
-        {selected && view.kind !== 'settings' && view.kind !== 'cleanup' && view.kind !== 'archive' && view.kind !== 'archive-docs' && (
+        {selected && view.kind !== 'settings' && view.kind !== 'cleanup' && view.kind !== 'archive' && view.kind !== 'archive-docs' && view.kind !== 'usage' && (
           <>
             <div className="topbar-session">
               <strong>{selected.ticket}</strong> <span>{selected.summary}</span>
@@ -185,17 +187,21 @@ export default function App() {
           settingsOpen={view.kind === 'settings'}
           cleanupOpen={view.kind === 'cleanup'}
           archiveOpen={view.kind === 'archive' || view.kind === 'archive-docs'}
+          usageOpen={view.kind === 'usage'}
           cleanupCount={cleanupCount}
           onSelect={(id) => setView({ kind: 'session', id })}
           onNew={() => setCreating(true)}
           onSettings={() => setView({ kind: 'settings' })}
           onCleanup={() => setView({ kind: 'cleanup' })}
           onArchive={() => setView({ kind: 'archive' })}
+          onUsage={() => setView({ kind: 'usage' })}
         />
         {view.kind === 'settings' ? (
           <main className="main scroll"><SettingsPage /></main>
         ) : view.kind === 'cleanup' ? (
           <CleanupPage onOpenSession={(id) => setView({ kind: 'session', id })} />
+        ) : view.kind === 'usage' ? (
+          <UsagePage onOpenSession={(id) => setView({ kind: 'session', id })} />
         ) : view.kind === 'archive' ? (
           <ArchivePage onOpen={(e, name) => setView({ kind: 'archive-docs', id: e.session_id, ticket: e.ticket, name: name ?? null })} />
         ) : view.kind === 'archive-docs' ? (

@@ -1,9 +1,10 @@
 import type {
+  AnalyzeField, ProjectAnalysis,
   ConflictProposal, WorktreeConflict,
   EnvSuggestion,
   TaskList,
   Account, Approval, ChangeScope, ArchiveEntry, DocMeta, JiraConfig, JiraIssue, JiraRequiredField, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
-  ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, Workspace,
+  ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, UsageReport, Workspace,
 } from './types';
 
 export class ApiError extends Error {
@@ -27,14 +28,18 @@ export function missingFrom(e: unknown): MissingEnv[] | null {
 
 export const api = {
   projects: () => request<Project[]>('GET', '/api/projects'),
-  addProject: (path: string) => request<(Project & { note?: string | null })[]>('POST', '/api/projects', { path }),
+  addProject: (path: string, workspaceId?: number) => request<(Project & { note?: string | null })[]>('POST', '/api/projects', { path, workspaceId }),
+  analyzeProject: (id: number) => request<ProjectAnalysis>('POST', `/api/projects/${id}/analyze`),
+  applyAnalysis: (id: number, patch: Partial<Record<AnalyzeField, string>>, env_keys: { key: string; reason: string }[]) =>
+    request<{ env_keys_added: number }>('POST', `/api/projects/${id}/analyze/apply`, { patch, env_keys }),
   updateProject: (id: number, patch: Partial<Project>) => request<Project>('PATCH', `/api/projects/${id}`, patch),
   deleteProject: (id: number) => request('DELETE', `/api/projects/${id}`),
   branches: (id: number) => request<string[]>('GET', `/api/projects/${id}/branches`),
 
   workspaces: () => request<Workspace[]>('GET', '/api/workspaces'),
   createWorkspace: (name: string, projectIds: number[]) => request<{ id: number }>('POST', '/api/workspaces', { name, projectIds }),
-  updateWorkspace: (id: number, patch: { jira_project?: string | null }) => request('PATCH', `/api/workspaces/${id}`, patch),
+  updateWorkspace: (id: number, patch: { jira_project?: string | null; name?: string }) => request('PATCH', `/api/workspaces/${id}`, patch),
+  setWorkspaceProjects: (id: number, projectIds: number[]) => request('PUT', `/api/workspaces/${id}/projects`, { projectIds }),
   jiraConfig: () => request<JiraConfig>('GET', '/api/jira/config'),
   jiraLoginUrl: (origin: string) => request<{ url: string }>('POST', '/api/jira/oauth/start', { origin }),
   jiraChooseSite: (cloudId: string) => request<JiraStatus>('POST', '/api/jira/site', { cloud_id: cloudId }),
@@ -129,6 +134,7 @@ export const api = {
   removeScreen: (screenId: number) => request('DELETE', `/api/screens/${screenId}`),
   capturePreview: (id: number, url: string) => request<{ data: string; warning: string | null }>('POST', `/api/sessions/${id}/preview/capture`, { url }),
 
+  usage: (days: number) => request<UsageReport>('GET', `/api/usage?days=${days}`),
   cleanup: () => request<{ rows: CleanupRow[]; startup: StartupReport | null }>('GET', '/api/cleanup'),
   clean: (sessionIds: number[], deleteRemote: boolean, force: boolean) => request<CleanResult[]>('POST', '/api/cleanup', { sessionIds, deleteRemote, force }),
   refreshPrs: () => request<{ changed: number }>('POST', '/api/cleanup/refresh'),

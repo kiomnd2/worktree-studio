@@ -210,6 +210,8 @@ db.prepare(`UPDATE projects SET repo_root = local_path WHERE repo_root IS NULL`)
 // 닫은 세션이 아직 가리키는 프로젝트는 지우지 않고 숨긴다(산출물 보관함·리소스 정리가 그 정보를 쓴다).
 addColumn('projects', 'deleted', 'deleted INTEGER NOT NULL DEFAULT 0');
 addColumn('workspaces', 'deleted', 'deleted INTEGER NOT NULL DEFAULT 0');
+// 개발 서버 접속 주소 틀. 비우면 http://localhost:{port}. HTTPS로 뜨는 서버는 https://localhost:{port}처럼 넣는다.
+addColumn('projects', 'app_url', 'app_url TEXT');
 
 // Claude 호출의 토큰·비용 기록(usage.ts). 보조 호출(PR 문안, 화면 테스트 등)은 대화 기록 파일을 남기지 않아 여기에만 남는다.
 // 행 하나가 결과 메시지 하나다. 숫자 열은 그 결과에서 늘어난 몫이고 cumulative는 SDK가 준 누적값 그대로다.
@@ -247,7 +249,7 @@ export type ProjectRow = {
   id: number; name: string; local_path: string; kind: string;
   start_cmd: string | null; check_cmd: string | null; health_path: string | null; created_at: string;
   port_env: string | null; api_env_key: string | null; baseline_url: string | null; login_path: string | null; setup_cmd: string | null; commit_template: string | null;
-  repo_root: string; subdir: string;
+  repo_root: string; subdir: string; app_url: string | null;
 };
 export type SessionRow = {
   id: number; workspace_id: number; ticket: string; summary: string; status: string;

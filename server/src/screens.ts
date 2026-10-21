@@ -294,7 +294,7 @@ export async function capturePreview(sessionId: number, url: string, accountId?:
   if (!state.preview_url || !url.startsWith(state.preview_url)) throw new Error('이 세션의 FE 미리보기 주소만 찍을 수 있습니다.');
   const browser = await launchBrowser();
   try {
-    const ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 });
+    const ctx = await browser.newContext({ ignoreHTTPSErrors: true, viewport: VIEWPORT, deviceScaleFactor: 1 });
     const account = accountOf(sessionId, accountId);
     const loginPath = state.fe_project ? getProject(state.fe_project.id)?.login_path ?? null : null;
     const loginWarning = account && loginPath ? await login(ctx, state.preview_url, loginPath, account) : null;

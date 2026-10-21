@@ -5,9 +5,26 @@ import type { Session } from '../types';
 import type { Thread } from './ChatView';
 import AnnotateDialog from './AnnotateDialog';
 
-const ACCEPT = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
-const MAX_BYTES = 5 * 1024 * 1024;
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+/** 확장자로 문서 형식을 정한다(.md 같은 파일은 브라우저가 형식을 비워 두는 경우가 많다). */
+const DOC_TYPES: Record<string, string> = {
+  pdf: 'application/pdf', md: 'text/markdown', markdown: 'text/markdown', html: 'text/html', htm: 'text/html',
+  txt: 'text/plain', log: 'text/plain', csv: 'text/csv', tsv: 'text/tab-separated-values', json: 'application/json',
+  yaml: 'application/yaml', yml: 'application/yaml', xml: 'application/xml', sql: 'application/sql', sh: 'application/x-sh',
+  css: 'text/css', js: 'text/javascript', mjs: 'text/javascript', ts: 'text/plain', tsx: 'text/plain', jsx: 'text/plain',
+  java: 'text/plain', kt: 'text/plain', kts: 'text/plain', gradle: 'text/plain', py: 'text/plain', go: 'text/plain',
+  properties: 'text/plain', toml: 'text/plain', ini: 'text/plain', svg: 'text/plain',
+};
+const ACCEPT = [...IMAGE_TYPES, ...Object.keys(DOC_TYPES).map((e) => `.${e}`)];
+const LIMIT = (type: string) => (IMAGE_TYPES.includes(type) ? 5 : type === 'application/pdf' ? 20 : 1) * 1024 * 1024;
 
+function typeOf(f: File): string | null {
+  if (IMAGE_TYPES.includes(f.type)) return f.type;
+  const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
+  return DOC_TYPES[ext] ?? (f.type.startsWith('text/') ? f.type : null);
+}
+
+/** preview는 이미지일 때만 있다. */
 type Attachment = { id: string; name: string; mediaType: string; data: string; preview: string; size: number };
 
 function readAsBase64(file: File): Promise<string> {
@@ -17,6 +34,11 @@ function readAsBase64(file: File): Promise<string> {
     r.onerror = () => reject(new Error('파일을 읽지 못했습니다.'));
     r.readAsDataURL(file);
   });
+}
+
+/** 문서 칩에 넣을 확장자 표시 */
+export function docLabel(name: string) {
+  return (name.split('.').pop() ?? '').slice(0, 4).toUpperCase() || 'DOC';
 }
 
 function formatSize(n: number) {
@@ -44,7 +66,7 @@ export default function PromptInput({ session, thread, onStarted }: { session: S
   const running = thread.status === 'running';
   const chat = thread.id === 'new' ? 0 : thread.id;
 
-  useEffect(() => () => attachments.forEach((a) => URL.revokeObjectURL(a.preview)), []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => attachments.forEach((a) => a.preview && URL.revokeObjectURL(a.preview)), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 새 대화 입력창은 도구 화면에서 넘긴 텍스트와 이미지를 받는다(나타날 때 기다리던 것과 그 뒤에 오는 것).
   useEffect(() => {
@@ -71,14 +93,16 @@ export default function PromptInput({ session, thread, onStarted }: { session: S
     setError(null);
     const next: Attachment[] = [];
     for (const f of Array.from(files)) {
-      if (!ACCEPT.includes(f.type)) { setError(`${f.name || '파일'}: PNG, JPG, GIF, WEBP만 첨부할 수 있습니다.`); continue; }
-      if (f.size > MAX_BYTES) { setError(`${f.name || '이미지'}: 5MB까지 첨부할 수 있습니다.`); continue; }
+      const type = typeOf(f);
+      if (!type) { setError(`${f.name || '파일'}: 이미지(PNG, JPG, GIF, WEBP), PDF, 텍스트 문서(md, html, txt, json, csv 등)만 첨부할 수 있습니다.`); continue; }
+      if (f.size > LIMIT(type)) { setError(`${f.name || '파일'}: ${LIMIT(type) / 1024 / 1024}MB까지 첨부할 수 있습니다.`); continue; }
+      const image = IMAGE_TYPES.includes(type);
       next.push({
         id: crypto.randomUUID(),
-        name: f.name || `붙여넣은 이미지.${f.type.split('/')[1]}`,
-        mediaType: f.type,
+        name: f.name || `붙여넣은 이미지.${type.split('/')[1]}`,
+        mediaType: type,
         data: await readAsBase64(f),
-        preview: URL.createObjectURL(f),
+        preview: image ? URL.createObjectURL(f) : '',
         size: f.size,
       });
     }
@@ -88,7 +112,7 @@ export default function PromptInput({ session, thread, onStarted }: { session: S
   function remove(id: string) {
     setAttachments((prev) => {
       const a = prev.find((x) => x.id === id);
-      if (a) URL.revokeObjectURL(a.preview);
+      if (a?.preview) URL.revokeObjectURL(a.preview);
       return prev.filter((x) => x.id !== id);
     });
   }
@@ -105,7 +129,7 @@ export default function PromptInput({ session, thread, onStarted }: { session: S
       const images = attachments.map(({ mediaType, data, name }) => ({ mediaType, data, name }));
       if (thread.id === 'new') onStarted((await api.startChat(session.id, text, images, plan)).id);
       else await api.prompt(session.id, text, images, plan, thread.id);
-      attachments.forEach((a) => URL.revokeObjectURL(a.preview));
+      attachments.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
       setText('');
       setAttachments([]);
     } catch (e) {
@@ -134,8 +158,8 @@ export default function PromptInput({ session, thread, onStarted }: { session: S
           {thread.queue.map((q) => (
             <li key={q.id}>
               {q.plan && <span className="plan-badge">계획</span>}
-              <span className="queue-text">{q.text || '(이미지만)'}</span>
-              {q.image_count > 0 && <span className="muted small">이미지 {q.image_count}</span>}
+              <span className="queue-text">{q.text || '(첨부만)'}</span>
+              {q.image_count > 0 && <span className="muted small">첨부 {q.image_count}</span>}
               <button type="button" className="icon" aria-label="대기열에서 빼기" onClick={() => api.removeQueued(session.id, q.id).catch((e) => setError(e.message))}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
               </button>
@@ -152,14 +176,16 @@ export default function PromptInput({ session, thread, onStarted }: { session: S
       onDrop={(e) => { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files); }}
     >
       {attachments.length > 0 && (
-        <ul className="attachments" aria-label="첨부한 이미지">
+        <ul className="attachments" aria-label="첨부한 파일">
           {attachments.map((a) => (
             <li key={a.id} className="chip">
-              <img src={a.preview} alt="" />
+              {a.preview ? <img src={a.preview} alt="" /> : <span className="chip-doc" aria-hidden="true">{docLabel(a.name)}</span>}
               <span className="chip-text"><span className="chip-name">{a.name}</span><span className="muted small">{formatSize(a.size)}</span></span>
-              <button type="button" className="icon" aria-label={`${a.name}에 표시하기`} title="화면에 표시하기" onClick={() => setEditing(a)}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
-              </button>
+              {a.preview && (
+                <button type="button" className="icon" aria-label={`${a.name}에 표시하기`} title="화면에 표시하기" onClick={() => setEditing(a)}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+                </button>
+              )}
               <button type="button" className="icon" aria-label={`${a.name} 첨부 빼기`} onClick={() => remove(a.id)}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
               </button>
@@ -176,7 +202,7 @@ export default function PromptInput({ session, thread, onStarted }: { session: S
         placeholder={willQueue
           ? `${running ? 'Claude가 작업 중입니다' : '대기열이 멈춰 있습니다'}. 지금 보내면 대기열 끝에 넣고 순서대로 실행합니다. (Enter 추가, Shift+Enter 줄바꿈)`
           : thread.id === 'new' ? '새 대화에서 맡길 일을 적어주세요. 메인 대화와 같은 워크트리에서 따로 실행합니다. (Enter 보내기, Shift+Enter 줄바꿈)'
-          : '이 워크트리에서 할 일을 적어주세요. 이미지는 끌어다 놓거나 붙여넣을 수 있습니다. (Enter 보내기, Shift+Enter 줄바꿈)'}
+          : '이 워크트리에서 할 일을 적어주세요. 이미지·문서(PDF, md, html 등)는 끌어다 놓거나 붙여넣을 수 있습니다. (Enter 보내기, Shift+Enter 줄바꿈)'}
         onChange={(e) => setText(e.target.value)}
         onPaste={(e) => {
           const files = Array.from(e.clipboardData.files);
@@ -189,7 +215,7 @@ export default function PromptInput({ session, thread, onStarted }: { session: S
       {error && <p className="error-text" role="alert">{error}</p>}
       <div className="prompt-bar">
         <input ref={fileInput} type="file" accept={ACCEPT.join(',')} multiple hidden onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }} />
-        <button type="button" className="icon bordered" aria-label="이미지 첨부" onClick={() => fileInput.current?.click()}>
+        <button type="button" className="icon bordered" aria-label="이미지·문서 첨부" title="이미지·문서 첨부" onClick={() => fileInput.current?.click()}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12.5l-8.5 8.5a5 5 0 0 1-7-7L14 5.5a3.3 3.3 0 0 1 4.7 4.7L10.2 18.7a1.7 1.7 0 0 1-2.4-2.4L15.5 8.6" /></svg>
         </button>
         <button type="button" className={`chip-btn${plan ? ' on' : ''}`} aria-pressed={plan} onClick={togglePlan}

@@ -1,8 +1,10 @@
+import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { db } from './db.js';
 import { broadcast, type LogLine } from './hub.js';
-import { getProject } from './projects.js';
+import { getProject, projectUrl } from './projects.js';
 import { getSession, type SessionView } from './sessions.js';
 import { missingRequired, resolveEnv } from './envstore.js';
 import { findFreePort, isPortFree } from './ports.js';
@@ -119,7 +121,7 @@ export function listServers(session: SessionView): ServerView[] {
       project_kind: w.project_kind,
       status,
       port,
-      url: port && r ? `http://localhost:${port}` : null,
+      url: port && r ? projectUrl(project, port) : null,
       exit_code: r?.exitCode ?? last?.exitCode ?? null,
       started_at: r?.startedAt ?? null,
       can_start: Boolean(project?.start_cmd),
@@ -132,12 +134,12 @@ export function listServers(session: SessionView): ServerView[] {
   });
 }
 
-export function serverPorts(sessionId: number): { project_name: string; kind: string; port: number; status: ServerStatus }[] {
+export function serverPorts(sessionId: number): { project_name: string; kind: string; port: number; status: ServerStatus; url: string }[] {
   const s = getSession(sessionId);
   if (!s) return [];
   return s.worktrees.flatMap((w) => {
     const r = servers.get(w.id);
-    return r ? [{ project_name: w.project_name, kind: w.project_kind, port: r.port, status: r.status }] : [];
+    return r ? [{ project_name: w.project_name, kind: w.project_kind, port: r.port, status: r.status, url: projectUrl(getProject(w.project_id), r.port) }] : [];
   });
 }
 
@@ -209,16 +211,20 @@ function setStatus(r: Running, status: ServerStatus) {
   broadcast({ type: 'server.updated', sessionId: r.sessionId });
 }
 
-async function checkHealth(port: number, healthPath: string): Promise<boolean> {
-  try {
-    const res = await fetch(`http://localhost:${port}${healthPath.startsWith('/') ? healthPath : `/${healthPath}`}`, {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(1500),
+/** 응답이 오면(500 미만) 뜬 것으로 본다. HTTPS 개발 서버는 자체 서명 인증서가 많아 인증서는 확인하지 않는다. */
+function checkHealth(baseUrl: string, healthPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let url: URL;
+    try { url = new URL(`${baseUrl}${healthPath.startsWith('/') ? healthPath : `/${healthPath}`}`); } catch { resolve(false); return; }
+    const mod = url.protocol === 'https:' ? https : http;
+    const req = mod.request(url, { method: 'GET', timeout: 1500, rejectUnauthorized: false }, (res) => {
+      res.resume();
+      resolve((res.statusCode ?? 500) < 500);
     });
-    return res.status < 500;
-  } catch {
-    return false;
-  }
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(false));
+    req.end();
+  });
 }
 
 function killGroup(child: ChildProcess, signal: NodeJS.Signals) {
@@ -301,7 +307,7 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
     if (p.port_env) auto[p.port_env] = String(port);
     if (p.api_env_key) {
       const be = session.worktrees.map((x) => servers.get(x.id)).find((r) => r && getProject(r.projectId)?.kind !== 'fe');
-      if (be) auto[p.api_env_key] = `http://localhost:${be.port}`;
+      if (be) auto[p.api_env_key] = projectUrl(getProject(be.projectId), be.port);
     }
     const startCmd = (commands[w.id]?.trim() || p.start_cmd!).replaceAll('{port}', String(port));
     // 새 워크트리에는 .venv나 node_modules가 없어 처음 한 번은 설치부터 한다. 설치가 실패하면 서버를 띄우지 않는다.
@@ -334,7 +340,7 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
     const healthPath = p.health_path || '/';
     r.healthTimer = setInterval(async () => {
       if (r.status !== 'starting' && r.status !== 'unhealthy') return;
-      if (await checkHealth(port, healthPath)) {
+      if (await checkHealth(projectUrl(p, port), healthPath)) {
         pushLine(r, 'sys', `헬스체크 통과 (${healthPath})`);
         if (setup) db.prepare(`UPDATE worktrees SET setup_done = 1 WHERE id = ?`).run(w.id);
         setStatus(r, 'running');

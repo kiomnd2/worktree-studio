@@ -153,7 +153,7 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
           </ol>
         </div>
         {workspaces && workspaces.length === 0 ? (
-          <p>워크스페이스가 없습니다. 프로젝트와 설정에서 로컬 폴더를 등록하고 워크스페이스를 만드세요.</p>
+          <p>워크스페이스가 없습니다. 설정에서 워크스페이스를 만들고 클론 폴더를 추가하세요.</p>
         ) : step === 1 ? (
           <>
             <label className="field">

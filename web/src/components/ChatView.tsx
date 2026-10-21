@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { api } from '../api';
 import { hasNewChatPending, openDoc, useServerEvents } from '../events';
 import type { Session, StoredMessage } from '../types';
-import PromptInput from './PromptInput';
+import PromptInput, { docLabel } from './PromptInput';
 import ApprovalCards from './ApprovalCards';
 import TaskBar from './TaskBar';
 
@@ -180,7 +180,10 @@ export default function ChatView({ session }: { session: Session }) {
   return (
     <main className="main chat">
       <ChatTabs session={session} sel={sel} onSelect={setSel} />
-      {thread.id === 0 && <TaskBar sessionId={session.id} running={running} />}
+      {thread.id === 0 && (
+        <TaskBar sessionId={session.id} running={running} queued={thread.queue.length > 0}
+          onNext={(text) => api.prompt(session.id, text, [], false, 0).catch((e) => setLoadError(e.message))} />
+      )}
       <div
         className="stream"
         ref={scroller}
@@ -262,8 +265,10 @@ function MessageItem({ message, toolResults, now }: { message: StoredMessage; to
         {p.images?.length > 0 && (
           <div className="msg-images">
             {p.images.map((img: { file: string; name?: string }) => (
-              <a key={img.file} href={`/api/uploads/${img.file}`} target="_blank" rel="noreferrer">
-                <img src={`/api/uploads/${img.file}`} alt={img.name ?? '첨부 이미지'} />
+              <a key={img.file} href={`/api/uploads/${img.file}`} target="_blank" rel="noreferrer" title={img.name}>
+                {/\.(pdf|txt)$/.test(img.file)
+                  ? <span className="msg-doc"><span className="chip-doc" aria-hidden="true">{docLabel(img.name ?? img.file)}</span>{img.name ?? '첨부 문서'}</span>
+                  : <img src={`/api/uploads/${img.file}`} alt={img.name ?? '첨부 이미지'} />}
               </a>
             ))}
           </div>

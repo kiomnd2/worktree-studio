@@ -458,12 +458,28 @@ function ScreensBlock({ session }: { session: Session }) {
   );
 }
 
+/** 미리보기 탭 하나. url은 전체 주소(다른 포트·https 주소도 담을 수 있다). */
+type PreviewTab = { id: number; url: string };
+let previewTabSeq = 1;
+
+/** 탭 이름: 미리보기 서버 주소면 경로만, 다른 곳이면 호스트와 경로 */
+function tabLabel(url: string, baseUrl: string) {
+  try {
+    const u = new URL(url), b = new URL(baseUrl);
+    const path = `${u.pathname}${u.search}` || '/';
+    return u.origin === b.origin ? path : `${u.host}${path}`;
+  } catch { return url; }
+}
+
 function Preview({ sessionId, baseUrl, ready }: { sessionId: number; baseUrl: string; ready: boolean }) {
-  const [path, setPath] = useState('/');
-  const [src, setSrc] = useState(`${baseUrl}/`);
+  // 탭마다 iframe을 하나씩 두고, 보이지 않는 탭도 그대로 살려 둬 페이지 상태가 남게 한다.
+  const [tabs, setTabs] = useState<PreviewTab[]>(() => [{ id: previewTabSeq++, url: `${baseUrl}/` }]);
+  const [active, setActive] = useState(tabs[0].id);
+  const current = tabs.find((t) => t.id === active) ?? tabs[0];
+  const [address, setAddress] = useState('/');
   const [capturing, setCapturing] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  const frame = useRef<HTMLIFrameElement>(null);
+  const frames = useRef<Map<number, HTMLIFrameElement>>(new Map());
   const [expanded, setExpanded] = useExpand();
   const block = useRef<HTMLDivElement>(null);
   const [flash, setFlash] = useState(false);
@@ -487,71 +503,117 @@ function Preview({ sessionId, baseUrl, ready }: { sessionId: number; baseUrl: st
     ro.observe(el);
     return () => ro.disconnect();
   }, [ready, expanded]);
+  // 주소 칸은 지금 탭의 주소를 보여 준다(미리보기 서버면 경로만).
+  useEffect(() => { setAddress(tabLabel(current.url, baseUrl).startsWith('/') ? tabLabel(current.url, baseUrl) : current.url); }, [current.url, baseUrl]);
+
+  /** 경로(/a/b)는 미리보기 서버 기준, http(s)://로 시작하면 그 주소 그대로 */
+  const resolve = (input: string) => (/^https?:\/\//.test(input.trim()) ? input.trim() : `${baseUrl}${input.startsWith('/') ? input : `/${input}`}`);
+  const navigate = (url: string, tabId = active) => setTabs((ts) => ts.map((t) => (t.id === tabId ? { ...t, url } : t)));
+  const openTab = (url: string) => { const id = previewTabSeq++; setTabs((ts) => [...ts, { id, url }]); setActive(id); };
+  const closeTab = (id: number) => setTabs((ts) => {
+    const left = ts.filter((t) => t.id !== id);
+    if (left.length === 0) return ts;
+    if (id === active) setActive(left[Math.max(0, ts.findIndex((t) => t.id === id) - 1)].id);
+    return left;
+  });
+
   useEffect(() => {
     const onOpen = (e: Event) => {
-      const p = (e as CustomEvent<string>).detail;
-      setPath(p);
-      setSrc(`${baseUrl}${p.startsWith('/') ? p : `/${p}`}`);
+      navigate(resolve((e as CustomEvent<string>).detail));
       // 체크리스트보다 아래에 있어 화면 밖일 수 있다. 미리보기로 스크롤하고 잠깐 강조해 바뀐 걸 알 수 있게 한다.
       block.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       setFlash(true);
       setTimeout(() => setFlash(false), 1200);
     };
+    // 앱(Electron)에서는 미리보기 페이지가 연 팝업을 새 미리보기 탭으로 받는다.
+    const onPopup = (e: Event) => openTab((e as CustomEvent<string>).detail);
     window.addEventListener('wts:preview-open', onOpen);
-    return () => window.removeEventListener('wts:preview-open', onOpen);
-  }, [baseUrl]);
-  const go = () => setSrc(`${baseUrl}${path.startsWith('/') ? path : `/${path}`}`);
+    window.addEventListener('wts:preview-popup', onPopup);
+    return () => { window.removeEventListener('wts:preview-open', onOpen); window.removeEventListener('wts:preview-popup', onPopup); };
+  }, [baseUrl, active]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** 지금 탭이 실제로 보고 있는 주소. 다른 출처라 못 읽으면 탭에 넣은 주소 */
+  const liveUrl = () => {
+    try { return frames.current.get(current.id)?.contentWindow?.location.href ?? current.url; } catch { return current.url; }
+  };
+  const inApp = navigator.userAgent.includes('Electron');
+  const capture = async () => {
+    setCapturing(true); setNote(null);
+    try {
+      // 미리보기 안에서 옮겨 다녔으면 그 주소를 찍는다. 다른 출처라 못 읽으면 탭 주소를 쓴다.
+      const url = liveUrl();
+      const r = await api.capturePreview(sessionId, url);
+      const pagePath = new URL(url).pathname;
+      const base = pagePath.replace(/^\/+|\/+$/g, '').replace(/\//g, '_');
+      attachToPrompt({ mediaType: 'image/png', data: r.data, name: `화면${base ? `_${base}` : ''}.png` });
+      insertIntoPrompt(`${pagePath} 화면`);
+      setNote(r.warning ?? null);
+      // 크게 보기 중이면 닫아서 바로 입력창을 보이게 한다.
+      setExpanded(false);
+    } catch (e) { setNote((e as Error).message); } finally { setCapturing(false); }
+  };
   return (
     <div ref={block} className={`panel-block preview${expanded ? ' expanded' : ''}${flash ? ' flash' : ''}`}>
-      <div className="block-head">
+      <div className="preview-top">
         <h2>미리보기</h2>
-        <div className="row">
-          {!ready && <span className="muted small">서버가 응답하기를 기다리는 중</span>}
-          <ExpandButton expanded={expanded} onToggle={() => setExpanded(!expanded)} />
-        </div>
-      </div>
-      <form className="url-bar" onSubmit={(e) => { e.preventDefault(); go(); }}>
-        <span className="mono small muted">{baseUrl.replace('http://', '')}</span>
-        <label className="sr-only" htmlFor="preview-path">경로</label>
-        <input id="preview-path" className="mono" value={path} onChange={(e) => setPath(e.target.value)} />
-        <button type="button" className="icon bordered" aria-label="새로고침" onClick={() => { const f = frame.current; if (f) f.src = src; }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2 5.3M20 4v7h-7" /></svg>
-        </button>
-        <a className="btn-link" href={src} target="_blank" rel="noreferrer">새 창</a>
-      </form>
-      <div className="row">
-        <button type="button" className="small-btn" disabled={!ready || capturing} onClick={async () => {
-          setCapturing(true); setNote(null);
-          try {
-            // 미리보기 안에서 옮겨 다녔으면 그 주소를 찍는다. 다른 출처라 못 읽으면 입력한 경로를 쓴다.
-            let url = src;
-            try { url = frame.current?.contentWindow?.location.href ?? src; } catch { /* cross-origin */ }
-            const r = await api.capturePreview(sessionId, url);
-            const pagePath = new URL(url).pathname;
-            const base = pagePath.replace(/^\/+|\/+$/g, '').replace(/\//g, '_');
-            attachToPrompt({ mediaType: 'image/png', data: r.data, name: `화면${base ? `_${base}` : ''}.png` });
-            insertIntoPrompt(`${pagePath} 화면`);
-            setNote(r.warning ?? '이 페이지를 프롬프트에 첨부했습니다.');
-            // 크게 보기 중이면 닫아서 바로 입력창을 보이게 한다.
-            setExpanded(false);
-          } catch (e) { setNote((e as Error).message); } finally { setCapturing(false); }
-        }}>{capturing ? '화면 찍는 중' : '새 대화로 보내기'}</button>
-        <label className="start-check small" title={`페이지를 ${DESKTOP_WIDTH}px 폭으로 그려 패널에 맞게 줄입니다`}>
+        {!ready && <span className="muted small">서버가 응답하기를 기다리는 중</span>}
+        <div className="spacer" />
+        <label className="preview-fit small" title={`페이지를 ${DESKTOP_WIDTH}px 폭으로 그려 패널에 맞게 줄입니다`}>
           <input type="checkbox" checked={fit} onChange={(e) => { setFit(e.target.checked); writeNumber(PREVIEW_FIT_KEY, e.target.checked ? 1 : 2); }} /> 화면 맞춤
         </label>
-        {note && <span className="muted small">{note}</span>}
+        <button type="button" className="small-btn" disabled={!ready || capturing} title="지금 탭 화면을 찍어 새 대화 탭에 첨부합니다" onClick={capture}>
+          {capturing ? '찍는 중' : '새 대화로 보내기'}
+        </button>
+        <ExpandButton expanded={expanded} onToggle={() => setExpanded(!expanded)} />
       </div>
-      {ready ? (
-        <div className={`frame-wrap${fit ? ' fit' : ''}`} ref={frameWrap} style={{ height: frameHeight }}>
-          <iframe
-            ref={frame}
-            title="FE 미리보기"
-            src={src}
-            style={fit ? { width: DESKTOP_WIDTH, height: `${100 / scale}%`, transform: `scale(${scale})`, transformOrigin: '0 0' } : undefined}
-          />
+      <div className="preview-chrome">
+        <div className="preview-tabs" role="tablist" aria-label="미리보기 탭">
+          {tabs.map((t) => (
+            <span key={t.id} className={`preview-tab${t.id === current.id ? ' on' : ''}`}>
+              <button role="tab" aria-selected={t.id === current.id} className="preview-tab-label" title={t.url} onClick={() => setActive(t.id)}>{tabLabel(t.url, baseUrl)}</button>
+              {tabs.length > 1 && (
+                <button className="icon preview-tab-close" aria-label="탭 닫기" onClick={() => closeTab(t.id)}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                </button>
+              )}
+            </span>
+          ))}
+          <button className="preview-tab-add" title="새 미리보기 탭" aria-label="새 미리보기 탭" onClick={() => openTab(`${baseUrl}/`)}>+</button>
         </div>
-      ) : <div className="frame-wait">시작 중</div>}
-      <p className="muted small">로그인 쿠키가 미리보기 안에서 안 붙으면 새 창으로 여세요.</p>
+        <form className="url-bar" onSubmit={(e) => { e.preventDefault(); navigate(resolve(address)); }}>
+          <button type="button" className="icon" aria-label="새로고침" title="새로고침" onClick={() => { const f = frames.current.get(current.id); if (f) f.src = current.url; }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2 5.3M20 4v7h-7" /></svg>
+          </button>
+          <div className="url-field">
+            <span className="mono small muted">{baseUrl.replace(/^https?:\/\//, '')}</span>
+            <label className="sr-only" htmlFor="preview-path">경로나 주소</label>
+            <input id="preview-path" className="mono" value={address} placeholder="/경로 또는 https://주소" onChange={(e) => setAddress(e.target.value)} />
+          </div>
+          {/* 출처(referrer)를 보내야 앱이 이 버튼을 미리보기 팝업과 구별해 브라우저로 연다 */}
+          <a className="icon" href={current.url} target="_blank" rel="noopener" aria-label="새 창으로 열기" title="이 탭을 새 창으로 열기">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></svg>
+          </a>
+        </form>
+        {ready ? (
+          <div className={`frame-wrap${fit ? ' fit' : ''}`} ref={frameWrap} style={{ height: frameHeight }}>
+            {tabs.map((t) => (
+              <iframe
+                key={t.id}
+                ref={(el) => { if (el) frames.current.set(t.id, el); else frames.current.delete(t.id); }}
+                title={`FE 미리보기 ${tabLabel(t.url, baseUrl)}`}
+                src={t.url}
+                hidden={t.id !== current.id}
+                // 패널이 데스크톱 폭보다 좁을 때만 줄인다. 더 넓으면(크게 보기 등) 패널 폭을 그대로 채운다.
+                style={fit && scale < 1 ? { width: DESKTOP_WIDTH, height: `${100 / scale}%`, transform: `scale(${scale})`, transformOrigin: '0 0' } : undefined}
+              />
+            ))}
+          </div>
+        ) : <div className="frame-wait">시작 중</div>}
+      </div>
+      {note && <p className="small warn-text">{note}</p>}
+      <p className="muted small preview-hint">
+        {inApp ? '페이지가 연 팝업은 앱 안 작은 창으로 열려 원래 페이지와 이어집니다. 로그인이 안 붙으면 ↗ 새 창으로 여세요.' : '다른 서버로 넘어가거나 팝업이 막히면 ↗ 새 창으로 여세요. 앱에서는 새 탭으로 열립니다.'}
+      </p>
     </div>
   );
 }

@@ -144,6 +144,15 @@ export function missingRequired(sessionId: number, projectId: number, autoKeys: 
 }
 
 /** 프로필이 비어 있으면 분석 결과로 채워 둔다. 출처 표시는 그대로 남겨 사용자가 확인하게 한다. */
+/** 프로필에 없는 키를 필수(값 비움)로 더한다. 있는 키는 그대로 둔다. 더한 키 수를 돌려준다. */
+export function addRequiredKeys(profileId: number, keys: { key: string; reason: string }[]): number {
+  const cur = profileVars(profileId);
+  const fresh = keys.filter((k) => !cur.some((v) => v.key === k.key.trim()));
+  if (fresh.length === 0) return 0;
+  writeVars(profileId, [...cur, ...fresh.map((k) => ({ key: k.key.trim(), value: '', required: true, secret: looksSecret(k.key), source: 'manual' as EnvSource, found_in: k.reason.slice(0, 200) }))], true);
+  return fresh.length;
+}
+
 export function seedProfileIfEmpty(profileId: number, found: EnvVar[]) {
   if (profileVars(profileId).length > 0 || found.length === 0) return false;
   writeVars(profileId, found, true);

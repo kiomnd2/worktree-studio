@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { CLAUDE_EXECUTABLE } from './config.js';
-import { getProject } from './projects.js';
+import { getProject, projectUrl } from './projects.js';
 import { getSession } from './sessions.js';
 import { resolveEnv } from './envstore.js';
 import { looksSecret } from './secret.js';
@@ -68,8 +68,8 @@ export async function suggestServerEnv(sessionId: number, ports: Record<number, 
     const port = ports[w.id] ?? null;
     const auto: Record<string, string> = {};
     if (port) { auto.PORT = String(port); if (p.port_env) auto[p.port_env] = String(port); }
-    const bePort = session.worktrees.map((x) => (x.project_kind !== 'fe' ? ports[x.id] : undefined)).find(Boolean);
-    if (p.api_env_key && bePort) auto[p.api_env_key] = `http://localhost:${bePort}`;
+    const be = session.worktrees.find((x) => x.project_kind !== 'fe' && ports[x.id]);
+    if (p.api_env_key && be) auto[p.api_env_key] = projectUrl(getProject(be.project_id), ports[be.id]);
     return { w, p, env, port, auto };
   });
 
@@ -79,7 +79,7 @@ export async function suggestServerEnv(sessionId: number, ports: Record<number, 
   if (hit && Date.now() - hit.at < TTL) return hit.result;
 
   const show = (k: string, v: string) => (hidden(k, v) ? '(비밀값, 설정됨)' : v);
-  const addr = (kind: 'fe' | 'be') => rows.filter((r) => (kind === 'fe') === (r.w.project_kind === 'fe') && r.port).map((r) => `http://localhost:${r.port}`)[0] ?? null;
+  const addr = (kind: 'fe' | 'be') => rows.filter((r) => (kind === 'fe') === (r.w.project_kind === 'fe') && r.port).map((r) => projectUrl(r.p, r.port!))[0] ?? null;
   const feUrl = addr('fe'), beUrl = addr('be');
   const prompt = [
     '이 세션의 개발 서버를 아래 포트로 띄우려 한다. FE와 BE가 이 포트로 서로 제대로 연결되고 로그인·인증 흐름이 이 세션 안에서 돌게 하려면 바꿔야 하는 환경값을 찾아 제안해줘.',

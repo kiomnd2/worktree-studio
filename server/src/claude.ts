@@ -23,10 +23,15 @@ const DISABLED_PLUGINS = ['bkit@bkit-marketplace'];
 
 export const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const;
 type ImageType = (typeof IMAGE_TYPES)[number];
+/** 이미지와 문서(PDF, md·html·txt 같은 텍스트 파일) 첨부. 이름은 예전 그대로 images로 둔다. */
 export type IncomingImage = { mediaType: string; data: string; name?: string };
-type StoredImage = { file: string; mediaType: ImageType; name?: string };
+type StoredImage = { file: string; mediaType: string; name?: string };
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_PDF_BYTES = 20 * 1024 * 1024;
+const MAX_TEXT_BYTES = 1024 * 1024;
+const TEXT_TYPES = ['application/json', 'application/xml', 'application/yaml', 'application/x-yaml', 'application/javascript', 'application/x-sh', 'application/sql'];
+const isTextType = (t: string) => t.startsWith('text/') || TEXT_TYPES.includes(t);
 /** 대화마다(세션:대화) 하나씩 돈다. 대화 0은 메인 대화 */
 const running = new Map<string, AbortController>();
 /** 실행 중인 프롬프트에서 저장한 문서 이름. 계획 승인 카드에 이번 계획의 문서만 보여 준다. */
@@ -35,14 +40,38 @@ const rkey = (sessionId: number, chatId: number) => `${sessionId}:${chatId}`;
 
 function storeImages(images: IncomingImage[]): StoredImage[] {
   return images.map((img) => {
-    if (!IMAGE_TYPES.includes(img.mediaType as ImageType)) throw new Error(`지원하지 않는 이미지 형식입니다: ${img.mediaType}`);
     const buf = Buffer.from(img.data, 'base64');
-    if (buf.length > MAX_IMAGE_BYTES) throw new Error('이미지는 한 장에 5MB까지 첨부할 수 있습니다.');
-    const ext = img.mediaType.split('/')[1].replace('jpeg', 'jpg');
+    const label = img.name || '첨부 파일';
+    let ext: string;
+    if (IMAGE_TYPES.includes(img.mediaType as ImageType)) {
+      if (buf.length > MAX_IMAGE_BYTES) throw new Error(`${label}: 이미지는 한 장에 5MB까지 첨부할 수 있습니다.`);
+      ext = img.mediaType.split('/')[1].replace('jpeg', 'jpg');
+    } else if (img.mediaType === 'application/pdf') {
+      if (buf.length > MAX_PDF_BYTES) throw new Error(`${label}: PDF는 20MB까지 첨부할 수 있습니다.`);
+      ext = 'pdf';
+    } else if (isTextType(img.mediaType)) {
+      if (buf.length > MAX_TEXT_BYTES) throw new Error(`${label}: 텍스트 문서는 1MB까지 첨부할 수 있습니다.`);
+      if (buf.includes(0)) throw new Error(`${label}: 텍스트 파일이 아닙니다.`);
+      ext = 'txt';
+    } else {
+      throw new Error(`${label}: 지원하지 않는 파일 형식입니다(${img.mediaType || '알 수 없음'}).`);
+    }
     const file = `${crypto.randomUUID()}.${ext}`;
     fs.writeFileSync(path.join(UPLOAD_DIR, file), buf);
-    return { file, mediaType: img.mediaType as ImageType, name: img.name };
+    return { file, mediaType: img.mediaType, name: img.name };
   });
+}
+
+/** 저장한 첨부를 Claude에 보낼 블록으로. 이미지는 image, PDF는 document, 텍스트 문서는 파일 이름을 붙인 text. */
+function attachmentBlock(a: StoredImage): Exclude<SDKUserMessage['message']['content'], string>[number] {
+  const buf = fs.readFileSync(path.join(UPLOAD_DIR, a.file));
+  if (a.file.endsWith('.pdf')) {
+    return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: buf.toString('base64') }, ...(a.name ? { title: a.name } : {}) } as never;
+  }
+  if (a.file.endsWith('.txt')) {
+    return { type: 'text', text: `첨부 문서 "${a.name ?? a.file}" (${a.mediaType}):\n<document>\n${buf.toString('utf8')}\n</document>` };
+  }
+  return { type: 'image', source: { type: 'base64', media_type: a.mediaType as ImageType, data: buf.toString('base64') } };
 }
 
 function buildSystemAppend(repos: RepoView[], side: boolean) {
@@ -79,7 +108,7 @@ function runtimeContext(sessionId: number, chatId: number): string | null {
   const accounts = accountsOf(sessionId);
   const lines: string[] = [];
   if (ports.length) {
-    lines.push('실행 중인 개발 서버:', ...ports.map((p) => `- ${p.project_name}: http://localhost:${p.port} (${p.status})`));
+    lines.push('실행 중인 개발 서버:', ...ports.map((p) => `- ${p.project_name}: ${p.url} (${p.status})`));
     lines.push('핫 리로드가 안 되는 서버(예: Spring)는 코드를 바꾼 뒤 사용자에게 서버 재시작을 부탁한다.');
   } else {
     lines.push('지금 실행 중인 개발 서버가 없다. 화면 확인이 필요하면 사용자에게 서버 실행을 부탁한다.');
@@ -253,10 +282,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
   appendMessage(sessionId, 'user', { text, images: stored, ...(opts.plan ? { plan: true } : {}) }, chatId);
 
   const content: SDKUserMessage['message']['content'] = [
-    ...stored.map((img) => ({
-      type: 'image' as const,
-      source: { type: 'base64' as const, media_type: img.mediaType, data: fs.readFileSync(path.join(UPLOAD_DIR, img.file)).toString('base64') },
-    })),
+    ...stored.map(attachmentBlock),
     ...(text.trim() ? [{ type: 'text' as const, text }] : []),
   ];
   const ctx = runtimeContext(sessionId, chatId);
