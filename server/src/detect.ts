@@ -13,6 +13,8 @@ export type Detected = {
   setupCmd: string | null;
   /** 등록할 때 사용자에게 알릴 것(예: 실행 모듈 후보가 여럿) */
   note?: string | null;
+  /** 개발 서버가 HTTPS로 뜨면 접속 주소 틀(예: https://localhost:{port}) */
+  appUrl?: string | null;
 };
 
 function exists(dir: string, file: string) {
@@ -176,6 +178,26 @@ function springHealth(root: string): string {
   return /actuator/.test(files) ? '/actuator/health' : '/';
 }
 
+/**
+ * 비밀값을 외부 서비스에서 받아 명령을 감싸 실행하는 도구(doppler run --, infisical run --, op run --, sixdrop run -- 등).
+ * 워크트리에서는 로그인·폴더별 설정이 없어 실패한다. "<도구> run|exec ... -- <명령>" 꼴이고 도구가 패키지 관리자가 아니면 감싼 것으로 본다.
+ */
+const RUNNERS = new Set(['npm', 'pnpm', 'yarn', 'bun', 'deno', 'npx', 'uv', 'poetry', 'pipenv', 'cargo', 'go', 'dotnet', 'docker', 'gradle', 'mvn', 'turbo', 'nx', 'lerna']);
+const WRAP = /^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*([a-z][\w.-]*)\s+(?:run|exec)\b([^&|;]*?)\s--\s+(.+)$/;
+const SECRET_WRAPPER = {
+  exec(cmd: string): [string, string] | null {
+    const m = WRAP.exec(cmd);
+    return m && !RUNNERS.has(m[1]) ? [m[0], m[1]] : null;
+  },
+  test(cmd: string): boolean { return this.exec(cmd) !== null; },
+};
+
+/** "doppler run -- next dev" → "next dev". 꺼낼 수 없으면 null */
+function unwrapSecrets(cmd: string): string | null {
+  const m = WRAP.exec(cmd);
+  return m && !RUNNERS.has(m[1]) ? m[3].trim() : null;
+}
+
 export type DetectedApp = { subdir: string; detected: Detected };
 
 /**
@@ -251,18 +273,41 @@ export function detectProject(dir: string, opts: { ignoreCompose?: boolean } = {
     const runScript = (s: string) => (pm === 'npm' ? `npm run ${s}` : `${pm} ${s}`);
     const scripts = pkg.scripts ?? {};
     const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
-    const script = scripts.dev ? 'dev' : scripts.start ? 'start' : null;
+    // 실행 스크립트가 비밀값 서비스(Doppler 등)를 거치면 새 워크트리에서 로그인·폴더별 설정이 없어 뜨지 않는다.
+    // 같은 개발 서버를 바로 띄우는 다른 스크립트(dev:dev, dev:local 등)가 있으면 그것을, 없으면 감싼 명령을 꺼내 쓴다.
+    const preferred = scripts.dev ? 'dev' : scripts.start ? 'start' : null;
+    let script = preferred;
+    let direct: string | null = null;
+    let note: string | null = null;
+    const wrapper = preferred ? SECRET_WRAPPER.exec(scripts[preferred]) : null;
+    if (preferred && wrapper) {
+      const inner = unwrapSecrets(scripts[preferred]);
+      const alt = Object.keys(scripts).find((k) => k !== preferred && /^(dev|start)([:_-].+)?$/.test(k) && !SECRET_WRAPPER.test(scripts[k])
+        && inner !== null && scripts[k].includes(inner.split(' ').slice(0, 2).join(' ')) && !/concurrently|ssl-proxy/.test(scripts[k]));
+      if (alt) {
+        script = alt;
+        note = `${preferred} 스크립트가 ${wrapper[1]}를 거쳐 실행돼(로그인·폴더별 설정 필요) 바로 뜨는 ${alt} 스크립트(${scripts[alt]})를 씁니다. 필요한 환경값은 환경값 화면에서 넣으세요.`;
+      } else if (inner) {
+        direct = inner;
+        note = `${preferred} 스크립트가 ${wrapper[1]}를 거쳐 실행돼(로그인·폴더별 설정 필요) 감싼 명령(${inner})을 바로 실행합니다. 필요한 환경값은 환경값 화면에서 넣으세요.`;
+      }
+    }
     // 개발 서버마다 포트를 받는 방식이 달라 인자로 넘긴다. npm은 스크립트 인자 앞에 --가 필요하다.
     const sep = pm === 'npm' ? ' --' : '';
     let portArgs = '';
     if ('vite' in deps) portArgs = `${sep} --port {port} --strictPort`;
     else if ('next' in deps) portArgs = `${sep} -p {port}`;
     else if ('nuxt' in deps) portArgs = `${sep} --port {port}`;
-    const start = script ? `${runScript(script)}${portArgs}` : null;
-    const checks = ['build', 'test'].filter((s) => scripts[s]).map(runScript);
+    // 감싼 명령을 바로 실행하면 npm 스크립트가 아니므로 npx로 띄우고 인자 앞의 --는 빼야 한다.
+    const start = direct ? `npx ${direct}${portArgs.replace(/^ --/, '')}` : script ? `${runScript(script)}${portArgs}` : null;
+    // 끝나지 않는 감시 모드(jest --watch 등)는 PR 전 검사로 쓰면 멈춘다.
+    const checks = ['build', 'test'].filter((s) => scripts[s] && !/--watch\b|\bwatch\b/.test(scripts[s])).map(runScript);
     // 워크트리에는 node_modules가 없다. 락 파일대로 설치한다.
     const setupCmd = pm === 'npm' ? (exists(dir, 'package-lock.json') ? 'npm ci' : 'npm install') : `${pm} install`;
-    return { kind, startCmd: start, checkCmd: checks.length ? checks.join(' && ') : null, healthPath: '/', portEnv: 'PORT', setupCmd };
+    // 개발 서버가 HTTPS로 뜨는지: Next의 --experimental-https, Vite의 server.https나 basicSsl 플러그인
+    const viteConfig = ['vite.config.ts', 'vite.config.js', 'vite.config.mts', 'vite.config.mjs'].map((f) => read(dir, f)).join('\n');
+    const https = (script && /--experimental-https/.test(scripts[script])) || /basicSsl|mkcert\(|\bhttps\s*:\s*(true|\{)/.test(viteConfig);
+    return { kind, startCmd: start, checkCmd: checks.length ? checks.join(' && ') : null, healthPath: '/', portEnv: 'PORT', setupCmd, appUrl: https ? 'https://localhost:{port}' : null, note };
   }
   return { kind, startCmd: null, checkCmd: null, healthPath: null, portEnv: null, setupCmd: null };
 }

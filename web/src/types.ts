@@ -14,6 +14,8 @@ export type Project = {
   port_env: string | null;
   api_env_key: string | null;
   login_path: string | null;
+  /** 개발 서버 접속 주소 틀. 비우면 http://localhost:{port} */
+  app_url: string | null;
   setup_cmd: string | null;
   commit_template: string | null;
   current_branch: string | null;
@@ -199,6 +201,16 @@ export type CleanupRow = {
   worktrees: { id: number; project_name: string; path: string; branch: string; exists: boolean; dirty: number; size_kb: number | null }[];
   screens_kb: number; state: CleanupState; reason: string;
 };
+export type UsageSum = { calls: number; input: number; output: number; cache_read: number; cache_write: number; cost_usd: number };
+export type UsageReport = {
+  days: number;
+  totals: UsageSum & { errors: number };
+  carried: number;
+  by_purpose: (UsageSum & { purpose: string })[];
+  by_model: (UsageSum & { model: string })[];
+  by_day: (UsageSum & { day: string })[];
+  by_session: (UsageSum & { session_id: number; ticket: string; summary: string; workspace_name: string; closed: boolean })[];
+};
 export type StartupReport = { at: string; orphans_killed: number; pruned: { project: string; lines: string[] }[]; missing_worktrees: number };
 export type CleanResult = { session_id: number; steps: { name: string; ok: boolean; detail: string }[]; error: string | null };
 
@@ -248,3 +260,11 @@ export type Account = {
 /** 이 워크스페이스 세션에서 쓸 수 있는 계정인지: 그 워크스페이스 계정이나 공용 계정. 여러 세션이 같이 쓴다. */
 export const usableIn = (a: Account, workspaceId: number) => a.workspace_id === null || a.workspace_id === workspaceId;
 export type MissingEnv = { projectId: number; project: string; keys: string[] };
+
+export type AnalyzeField = 'start_cmd' | 'setup_cmd' | 'check_cmd' | 'health_path' | 'port_env' | 'api_env_key' | 'app_url' | 'login_path';
+/** 등록한 프로젝트를 Claude가 읽고 낸 실행 설정 제안 */
+export type ProjectAnalysis = {
+  suggestions: { field: AnalyzeField; value: string; current: string | null; reason: string }[];
+  env_keys: { key: string; reason: string }[];
+  notes: string[];
+};

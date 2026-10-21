@@ -6,12 +6,14 @@ type Props = {
   settingsOpen: boolean;
   cleanupOpen: boolean;
   archiveOpen: boolean;
+  usageOpen: boolean;
   cleanupCount: number;
   onSelect: (id: number) => void;
   onNew: () => void;
   onSettings: () => void;
   onCleanup: () => void;
   onArchive: () => void;
+  onUsage: () => void;
 };
 
 function statusOf(s: Session) {
@@ -20,8 +22,8 @@ function statusOf(s: Session) {
   return { label: '대기', cls: 'idle' };
 }
 
-export default function Sidebar({ sessions, selectedId, settingsOpen, cleanupOpen, archiveOpen, cleanupCount, onSelect, onNew, onSettings, onCleanup, onArchive }: Props) {
-  const elsewhere = settingsOpen || cleanupOpen || archiveOpen;
+export default function Sidebar({ sessions, selectedId, settingsOpen, cleanupOpen, archiveOpen, usageOpen, cleanupCount, onSelect, onNew, onSettings, onCleanup, onArchive, onUsage }: Props) {
+  const elsewhere = settingsOpen || cleanupOpen || archiveOpen || usageOpen;
   const groups = new Map<string, Session[]>();
   for (const s of sessions) groups.set(s.workspace_name, [...(groups.get(s.workspace_name) ?? []), s]);
 
@@ -52,10 +54,11 @@ export default function Sidebar({ sessions, selectedId, settingsOpen, cleanupOpe
       </nav>
       <div className="sidebar-foot">
         <button className={`link-row${archiveOpen ? ' active' : ''}`} onClick={onArchive}>산출물 보관함</button>
+        <button className={`link-row${usageOpen ? ' active' : ''}`} onClick={onUsage}>사용량 보고서</button>
         <button className={`link-row${cleanupOpen ? ' active' : ''}`} onClick={onCleanup}>
           리소스 정리{cleanupCount > 0 && <span className="count-badge">대기 {cleanupCount}</span>}
         </button>
-        <button className={`link-row${settingsOpen ? ' active' : ''}`} onClick={onSettings}>프로젝트와 설정</button>
+        <button className={`link-row${settingsOpen ? ' active' : ''}`} onClick={onSettings}>설정</button>
       </div>
     </aside>
   );

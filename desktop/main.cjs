@@ -150,16 +150,100 @@ function createWindow() {
     webPreferences: { contextIsolation: true, sandbox: true },
   });
   win.once('ready-to-show', () => win.show());
-  // 새 창(PR, Jira, 미리보기의 새 창 등)은 기본 브라우저로 연다. 로그인 쿠키도 브라우저 쪽에 있다.
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/.test(url)) shell.openExternal(url);
+  // 새 창 요청.
+  // - 미리보기(개발 서버) 페이지가 연 팝업: 앱 안의 작은 창으로 연다. 원래 페이지와의 연결(window.opener)이 살아 있어
+  //   인증서 팝업처럼 결과를 원래 페이지로 돌려주고 스스로 닫는 흐름이 브라우저와 똑같이 동작한다.
+  //   연결이 필요 없다고 밝힌 팝업(noopener)은 새 미리보기 탭으로 연다.
+  // - 그 밖(PR·Jira 링크, "새 창" 버튼 등)은 기본 브라우저로 연다.
+  win.webContents.setWindowOpenHandler((details) => {
+    const { url, referrer, features } = details;
+    if (!/^https?:/.test(url)) return { action: 'deny' };
+    const ui = safeOrigin(baseUrl);
+    const from = referrer && referrer.url ? safeOrigin(referrer.url) : null;
+    // noreferrer로 연 팝업은 출처가 비어 온다. 그때는 주소가 로컬 서버(이 화면이 아닌 localhost·127.0.0.1)면 미리보기에서 연 것으로 본다.
+    // 이 화면의 링크(새 창 버튼 등)는 출처를 보내도록 해 두어 여기에 걸리지 않는다.
+    const host = (() => { try { return new URL(url).hostname; } catch { return ''; } })();
+    const fromPreview = from ? from !== ui : (safeOrigin(url) !== ui && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(host));
+    if (fromPreview) {
+      if (/\bnoopener\b/.test(features || '') || details.disposition === 'background-tab') {
+        win.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('wts:preview-popup', { detail: ${JSON.stringify(url)} }))`).catch(() => {});
+        return { action: 'deny' };
+      }
+      return { action: 'allow', overrideBrowserWindowOptions: popupOptions(features) };
+    }
+    shell.openExternal(url);
     return { action: 'deny' };
   });
+  // 미리보기 팝업 창 안에서 또 여는 팝업도 같은 방식으로 앱 안 창으로 연다.
+  win.webContents.on('did-create-window', attachPopup);
   win.webContents.on('will-navigate', (e, url) => {
     if (baseUrl && !url.startsWith(baseUrl) && !url.startsWith('data:')) { e.preventDefault(); shell.openExternal(url); }
   });
   win.on('closed', () => { win = null; });
   win.loadURL(baseUrl);
+}
+
+function safeOrigin(u) {
+  try { return new URL(u).origin; } catch { return null; }
+}
+
+const loopbackCache = new Map();
+/** 그 호스트가 이 PC(루프백)를 가리키는지. 개발 서버·로컬 목업 인증 서버만 골라 낸다. */
+function isLoopbackHost(host) {
+  if (loopbackCache.has(host)) return Promise.resolve(loopbackCache.get(host));
+  return new Promise((resolve) => {
+    require('node:dns').lookup(host, (err, address) => {
+      const ok = !err && (/^127\./.test(address) || address === '::1');
+      loopbackCache.set(host, ok);
+      resolve(ok);
+    });
+  });
+}
+
+/**
+ * 미리보기 iframe에서 로컬 서버(이 PC를 가리키는 주소)가 X-Frame-Options·CSP frame-ancestors로 프레임을 막으면
+ * "연결을 거부했습니다"가 뜬다. 앱 안의 미리보기에서만 쓰는 것이라 로컬 서버의 프레임 안 응답에서는 그 헤더를 뺀다.
+ */
+function allowLocalFraming(ses) {
+  ses.webRequest.onHeadersReceived((details, callback) => {
+    if (details.resourceType !== 'subFrame') { callback({}); return; }
+    let host;
+    try { host = new URL(details.url).hostname.replace(/^\[|\]$/g, ''); } catch { callback({}); return; }
+    isLoopbackHost(host).then((local) => {
+      if (!local) { callback({}); return; }
+      const headers = {};
+      for (const [k, v] of Object.entries(details.responseHeaders || {})) {
+        const key = k.toLowerCase();
+        if (key === 'x-frame-options') continue;
+        if (key === 'content-security-policy') {
+          headers[k] = v.map((x) => x.split(';').filter((d) => !/^\s*frame-ancestors\b/i.test(d)).join(';'));
+          continue;
+        }
+        headers[k] = v;
+      }
+      callback({ responseHeaders: headers });
+    });
+  });
+}
+
+/** window.open의 features(width=600,height=700 등)를 앱 안 팝업 창 크기로 옮긴다. */
+function popupOptions(features) {
+  const num = (k) => { const m = new RegExp(`\\b${k}\\s*=\\s*(\\d+)`).exec(features || ''); return m ? Number(m[1]) : null; };
+  return {
+    parent: win,
+    width: Math.max(360, num('width') ?? 900),
+    height: Math.max(320, num('height') ?? 760),
+    autoHideMenuBar: true,
+    backgroundColor: '#FFFFFF',
+    webPreferences: { contextIsolation: true, sandbox: true },
+  };
+}
+
+function attachPopup(child) {
+  child.webContents.setWindowOpenHandler(({ url, features }) => (/^https?:/.test(url)
+    ? { action: 'allow', overrideBrowserWindowOptions: { ...popupOptions(features), parent: child } }
+    : { action: 'deny' }));
+  child.webContents.on('did-create-window', attachPopup);
 }
 
 function showWindow() {
@@ -209,13 +293,14 @@ async function boot() {
   // 개발 서버처럼 이미 떠 있는 Worktree Studio가 있으면 같은 데이터를 두 서버가 동시에 다루지 않도록 그 서버에 붙는다.
   if (await isStudio(DEFAULT_PORT)) {
     apiPort = DEFAULT_PORT;
-    baseUrl = (await devUiUrl()) || `http://127.0.0.1:${DEFAULT_PORT}`;
+    baseUrl = (await devUiUrl()) || `http://localhost:${DEFAULT_PORT}`;
   } else {
     const port = await pickPort();
     server = startServer(port);
     await waitReady(port, 60_000);
     apiPort = port;
-    baseUrl = `http://127.0.0.1:${port}`;
+    // 화면은 localhost로 연다. 미리보기 개발 서버(localhost:포트)와 같은 사이트로 취급돼야 프레임 안 로그인 쿠키가 막히지 않는다.
+    baseUrl = `http://localhost:${port}`;
   }
   if (win) win.loadURL(baseUrl); else createWindow();
 }
@@ -270,12 +355,23 @@ function fail(err) {
   app.quit();
 }
 
+// 미리보기의 HTTPS 개발 서버(자체 서명·mkcert 인증서)를 연다. 주소가 이 PC(루프백)를 가리킬 때만 인증서 오류를 넘긴다.
+app.on('certificate-error', (event, _webContents, url, _error, _cert, callback) => {
+  let host;
+  try { host = new URL(url).hostname.replace(/^\[|\]$/g, ''); } catch { callback(false); return; }
+  event.preventDefault();
+  require('node:dns').lookup(host, (err, address) => {
+    callback(!err && (/^127\./.test(address) || address === '::1'));
+  });
+});
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', showWindow);
   app.whenReady().then(() => {
     buildMenu();
+    allowLocalFraming(require('electron').session.defaultSession);
     boot().then(() => { watchServer(); connectNotifier(); }).catch(fail);
   });
   app.on('activate', showWindow);

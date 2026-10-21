@@ -48,8 +48,8 @@ function insertApp(root: string, subdir: string, d: Detected, name: string): Pro
   const dir = subdir ? path.join(root, subdir) : root;
   const apiKey = d.kind === 'fe' ? guessApiEnvKey(scanEnv(dir)) : null;
   const info = db
-    .prepare(`INSERT INTO projects (name, local_path, kind, start_cmd, check_cmd, health_path, port_env, api_env_key, setup_cmd, repo_root, subdir) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(name, dir, d.kind, d.startCmd, d.checkCmd, d.healthPath, d.portEnv, apiKey, setupFor(root, subdir, d), root, subdir);
+    .prepare(`INSERT INTO projects (name, local_path, kind, start_cmd, check_cmd, health_path, port_env, api_env_key, setup_cmd, repo_root, subdir, app_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(name, dir, d.kind, d.startCmd, d.checkCmd, d.healthPath, d.portEnv, apiKey, setupFor(root, subdir, d), root, subdir, d.appUrl ?? null);
   return { ...getProject(Number(info.lastInsertRowid))!, note: d.note ?? null };
 }
 
@@ -84,12 +84,23 @@ export async function addProject(inputPath: string): Promise<(ProjectRow & { not
     .map((p) => (multi && !p.subdir && p.kind === 'full' ? { ...updateProject(p.id, { kind: 'be' }), note: p.note } : p));
 }
 
-export function updateProject(id: number, patch: Partial<Pick<ProjectRow, 'name' | 'kind' | 'start_cmd' | 'check_cmd' | 'health_path' | 'port_env' | 'api_env_key' | 'baseline_url' | 'login_path' | 'setup_cmd' | 'commit_template'>>) {
+/**
+ * 개발 서버 주소. 프로젝트의 접속 주소 틀(app_url)이 있으면 그대로 쓰고 {port}에 포트를 넣는다.
+ * 틀에 {port}가 없으면 그 주소의 포트를 바꾼다. 틀이 없으면 http://localhost:{port}.
+ */
+export function projectUrl(p: Pick<ProjectRow, 'app_url'> | undefined | null, port: number): string {
+  const t = p?.app_url?.trim();
+  if (!t) return `http://localhost:${port}`;
+  if (t.includes('{port}')) return t.replaceAll('{port}', String(port)).replace(/\/+$/, '');
+  try { const u = new URL(t); u.port = String(port); return u.origin; } catch { return `http://localhost:${port}`; }
+}
+
+export function updateProject(id: number, patch: Partial<Pick<ProjectRow, 'name' | 'kind' | 'start_cmd' | 'check_cmd' | 'health_path' | 'port_env' | 'api_env_key' | 'baseline_url' | 'login_path' | 'setup_cmd' | 'commit_template' | 'app_url'>>) {
   const cur = getProject(id);
   if (!cur) throw new Error('프로젝트가 없습니다.');
   const next = { ...cur, ...patch };
-  db.prepare(`UPDATE projects SET name = ?, kind = ?, start_cmd = ?, check_cmd = ?, health_path = ?, port_env = ?, api_env_key = ?, baseline_url = ?, login_path = ?, setup_cmd = ?, commit_template = ? WHERE id = ?`)
-    .run(next.name, next.kind, next.start_cmd, next.check_cmd, next.health_path, next.port_env, next.api_env_key, next.baseline_url, next.login_path, next.setup_cmd, next.commit_template, id);
+  db.prepare(`UPDATE projects SET name = ?, kind = ?, start_cmd = ?, check_cmd = ?, health_path = ?, port_env = ?, api_env_key = ?, baseline_url = ?, login_path = ?, setup_cmd = ?, commit_template = ?, app_url = ? WHERE id = ?`)
+    .run(next.name, next.kind, next.start_cmd, next.check_cmd, next.health_path, next.port_env, next.api_env_key, next.baseline_url, next.login_path, next.setup_cmd, next.commit_template, next.app_url, id);
   return getProject(id)!;
 }
 
@@ -119,12 +130,33 @@ export function listWorkspaces(): WorkspaceView[] {
   return ws.map((w) => ({ ...w, projects: rows.filter((r) => r.workspace_id === w.id).map(({ id, name, kind, repo_root }) => ({ id, name, kind, repo_root })) }));
 }
 
-export function updateWorkspace(id: number, patch: { jira_project?: string | null }) {
+export function updateWorkspace(id: number, patch: { jira_project?: string | null; name?: string }) {
+  if (patch.name !== undefined) {
+    if (!patch.name.trim()) throw new Error('워크스페이스 이름을 넣어 주세요.');
+    db.prepare(`UPDATE workspaces SET name = ? WHERE id = ?`).run(patch.name.trim(), id);
+  }
   if (patch.jira_project !== undefined) {
     const key = patch.jira_project?.trim().toUpperCase() || null;
     if (key && !/^[A-Z][A-Z0-9_]*$/.test(key)) throw new Error('Jira 프로젝트 키는 KERE처럼 영문 대문자와 숫자로 넣어 주세요.');
     db.prepare(`UPDATE workspaces SET jira_project = ? WHERE id = ?`).run(key, id);
   }
+}
+
+/** 워크스페이스의 프로젝트와 순서를 통째로 정한다. 첫 프로젝트가 세션에서 Claude의 작업 위치가 된다. */
+export function setWorkspaceProjects(id: number, projectIds: number[]) {
+  const ids = [...new Set(projectIds)];
+  db.transaction(() => {
+    db.prepare(`DELETE FROM workspace_projects WHERE workspace_id = ?`).run(id);
+    const ins = db.prepare(`INSERT INTO workspace_projects (workspace_id, project_id, position) VALUES (?, ?, ?)`);
+    ids.forEach((pid, i) => { if (getProject(pid)) ins.run(id, pid, i); });
+  })();
+}
+
+/** 프로젝트를 워크스페이스 끝에 넣는다(이미 있으면 그대로). */
+export function addToWorkspace(id: number, projectIds: number[]) {
+  const cur = getWorkspace(id);
+  if (!cur) throw new Error('워크스페이스가 없습니다.');
+  setWorkspaceProjects(id, [...cur.projects.map((p) => p.id), ...projectIds]);
 }
 
 export function getWorkspace(id: number): WorkspaceView | undefined {
@@ -133,7 +165,6 @@ export function getWorkspace(id: number): WorkspaceView | undefined {
 
 export function createWorkspace(name: string, projectIds: number[]) {
   if (!name.trim()) throw new Error('워크스페이스 이름을 넣어 주세요.');
-  if (projectIds.length === 0) throw new Error('프로젝트를 하나 이상 고르세요.');
   const tx = db.transaction(() => {
     const id = Number(db.prepare(`INSERT INTO workspaces (name) VALUES (?)`).run(name.trim()).lastInsertRowid);
     const ins = db.prepare(`INSERT INTO workspace_projects (workspace_id, project_id, position) VALUES (?, ?, ?)`);

@@ -421,7 +421,8 @@ async function runCase(sessionId: number, t: TestCase, appUrl: string, loginPath
           browser: {
             type: 'stdio',
             command: process.execPath,
-            args: [playwrightMcpCli(), '--headless', '--browser', 'chrome', '--isolated', '--viewport-size', '1440,900', '--output-dir', dir],
+            // 로컬 HTTPS 개발 서버의 자체 서명 인증서를 받아들인다.
+            args: [playwrightMcpCli(), '--headless', '--browser', 'chrome', '--isolated', '--ignore-https-errors', '--viewport-size', '1440,900', '--output-dir', dir],
           },
         },
         allowedTools: ['mcp__browser'],

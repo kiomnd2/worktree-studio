@@ -118,10 +118,11 @@ npm run build && npm start   # 서버 하나로 실행 → http://localhost:4317
 
 <section id="setup">
   <h2>처음 설정</h2>
-  <p>왼쪽 아래 <span class="ui">프로젝트와 설정</span>에서 한 번만 해 두면 됩니다.</p>
+  <p>왼쪽 아래 <span class="ui">설정</span>에서 한 번만 해 두면 됩니다. 설정은 <span class="ui">워크스페이스·프로젝트</span>, <span class="ui">Jira</span>, <span class="ui">테스트 계정</span>, <span class="ui">Claude와 알림</span> 탭으로 나뉩니다.</p>
   <ol class="steps">
-    <li><strong>프로젝트 등록.</strong> 로컬에 클론한 폴더 경로를 넣고 <span class="ui">폴더 분석 후 추가</span>를 누릅니다. BE·FE 종류, 실행 명령, 설치 명령, 헬스체크 경로가 채워집니다. 포트를 인자로 받는 FE는 실행 명령에 <code>{port}</code>를 넣고, Spring은 포트 변수 <code>SERVER_PORT</code>로 받습니다.</li>
-    <li><strong>워크스페이스 만들기.</strong> 함께 개발하는 BE·FE 프로젝트를 묶습니다. 워크스페이스마다 <strong>Jira 프로젝트 키</strong>(예: <code>KERE</code>)를 넣어 두면 세션을 만들 때 티켓을 고르거나 바로 만들 수 있습니다.</li>
+    <li><strong>워크스페이스 만들기.</strong> <span class="ui">새 워크스페이스</span>에 이름(예: RE100)을 넣어 만듭니다. 워크스페이스마다 <strong>Jira 프로젝트 키</strong>(예: <code>KERE</code>)를 넣어 두면 세션을 만들 때 티켓을 고르거나 바로 만들 수 있습니다.</li>
+    <li><strong>프로젝트 추가.</strong> 워크스페이스 카드 아래 칸에 로컬에 클론한 폴더 경로를 넣고 <span class="ui">폴더 분석 후 추가</span>를 누릅니다. BE·FE 종류, 실행 명령, 설치 명령, 헬스체크 경로가 채워집니다. 포트를 인자로 받는 FE는 실행 명령에 <code>{port}</code>를 넣고, Spring은 포트 변수 <code>SERVER_PORT</code>로 받습니다. 개발 서버가 HTTPS로 뜨면 <strong>접속 주소</strong>에 <code>https://localhost:{port}</code>를, 인증서의 도메인으로 열어야 하면 <code>https://local.example.com:{port}</code>처럼 넣습니다. 미리보기·헬스체크·화면 캡처·화면 테스트가 이 주소를 쓰고, 로컬 개발 인증서(자체 서명 포함)는 그대로 받아들입니다.</li>
+    <li><strong>프로젝트 정리.</strong> 프로젝트는 한 줄 요약으로 보이고 <span class="ui">설정</span>으로 자세한 설정을 엽니다. 위아래 버튼으로 순서를 바꾸며 맨 위 프로젝트가 Claude의 작업 위치가 됩니다. <span class="ui">다시 분석</span>은 Claude가 저장소를 읽고 로그인 없이 바로 뜨는 실행 방법을 제안합니다. 이미 등록한 프로젝트는 <span class="ui">등록된 프로젝트 넣기</span>로 다른 워크스페이스에도 넣을 수 있습니다.</li>
     <li><strong>Jira 로그인.</strong> Jira 영역에서 <span class="ui">Jira로 로그인</span>을 누르고 Atlassian 화면에서 허용합니다. API 키나 앱 등록은 필요 없습니다. 사이트가 여러 개면 쓸 사이트를 고릅니다.</li>
     <li><strong>테스트 계정 풀.</strong> 화면 확인과 화면 테스트에 쓸 계정을 넣습니다. 메모에 역할(예: 관리자, 수요기업)을 적어 두면 Claude가 역할에 맞는 계정을 고르는 데 씁니다. 워크스페이스를 지정하면 그 워크스페이스 세션에서만 씁니다.</li>
   </ol>
@@ -141,12 +142,12 @@ npm run build && npm start   # 서버 하나로 실행 → http://localhost:4317
       <div class="mock-col">
         <div class="mb">+ 새 세션</div>
         <div class="mb grow"><span class="pin">2</span>워크스페이스별 세션 목록</div>
-        <div class="mb">산출물 보관함<br>리소스 정리<br>프로젝트와 설정</div>
+        <div class="mb">산출물 보관함<br>사용량 보고서<br>리소스 정리<br>설정</div>
       </div>
       <div class="mock-col">
         <div class="mb grow"><span class="pin">3</span>대화 (Claude 응답, 도구 카드, 문서 카드)</div>
         <div class="mb"><span class="pin">4</span>승인 카드 (계획·환경값·계정)</div>
-        <div class="mb"><span class="pin">5</span>프롬프트 입력 · 이미지 첨부 · 계획 먼저 · 보내기</div>
+        <div class="mb"><span class="pin">5</span>프롬프트 입력 · 이미지·문서 첨부 · 계획 먼저 · 보내기</div>
       </div>
       <div class="mock-col">
         <div class="mb"><span class="pin">6</span>변경 파일 ▾ 산출물 ▾ 화면 테스트 ▾ 세션 ▾</div>
@@ -191,12 +192,13 @@ npm run build && npm start   # 서버 하나로 실행 → http://localhost:4317
 <section id="claude">
   <h2>Claude와 작업하기</h2>
   <ul>
-    <li><strong>이미지 첨부</strong>: 클립 버튼, 끌어다 놓기, 붙여넣기. 첨부한 이미지의 ✏️를 누르면 펜·네모·화살표·글자로 표시해서 보낼 수 있습니다.</li>
+    <li><strong>이미지·문서 첨부</strong>: 클립 버튼, 끌어다 놓기, 붙여넣기. 이미지(PNG·JPG·GIF·WEBP, 5MB), PDF(20MB), 텍스트 문서(md·html·txt·json·csv·yaml·코드 파일 등, 1MB)를 붙일 수 있고 Claude가 내용을 읽습니다. 첨부한 이미지의 ✏️를 누르면 펜·네모·화살표·글자로 표시해서 보낼 수 있습니다.</li>
     <li><strong>대기열</strong>: Claude가 작업 중일 때 보내면 차례로 실행합니다. 중단하거나 오류로 끝나면 대기열이 멈추고, <span class="ui">이어서 실행</span>을 눌러야 다음 것이 돕니다.</li>
     <li><strong>추가 대화</strong>: 대화 위쪽의 <span class="ui">+ 새 대화</span>로 같은 워크트리에서 Claude를 하나 더 돌립니다. 메인 대화가 작업 중이어도 바로 시작하고, 대화마다 따로 이어집니다. 로그를 보다 생긴 작은 수정처럼 메인 작업과 겹치지 않는 일에 쓰세요(같은 파일을 동시에 고치면 서로 덮어쓸 수 있습니다). 작업 목록은 메인 대화만 바꿉니다. 대화를 닫아도 고친 코드는 워크트리에 남습니다. 로그, 변경 파일, 문서, 화면 테스트, 미리보기 캡처, PR 검사 실패에서 넘기는 내용은 메인 대화가 아니라 새 대화 탭에 들어갑니다. 새 대화 탭이 이미 열려 있으면 거기에 더하고, 보내기는 직접 누릅니다.</li>
     <li><strong>중단</strong>: 작업 중에 <span class="ui">중단</span>을 누르면 멈춥니다. 다음 프롬프트는 앞 대화를 이어서 받습니다.</li>
     <li><strong>환경값 요청</strong>: Claude가 서버 실행에 필요한 값을 찾으면 승인 카드로 요청합니다. 값을 확인·수정해 "이번 세션에만" 또는 "프로필에 저장"으로 승인합니다. Claude는 <code>.env</code> 파일을 직접 만들지 않습니다.</li>
     <li><strong>테스트 계정</strong>: 세션은 워크스페이스 계정과 공용 계정을 모두 쓰고, 다른 세션과 같이 씁니다. Claude는 메모(역할)를 보고 맞는 계정을 고릅니다. 맞는 역할 계정이 없으면 설정의 테스트 계정 풀에 추가해 달라고 합니다.</li>
+    <li><strong>다음 작업 진행</strong>: 작업 목록에 남은 항목이 있는데 Claude가 멈춰 있으면 목록 오른쪽에 <span class="ui">다음 작업 진행</span>이 나옵니다. 누르면 다음 항목 하나만 진행하고 멈춥니다. 중단돼 하는 중으로 남은 항목이 있으면 <span class="ui">이어서 진행</span>으로 바뀝니다. 대기열에 프롬프트가 있으면 나오지 않습니다.</li>
     <li>Claude는 매 메시지마다 실행 중인 서버 주소, 쓸 수 있는 테스트 계정, 작업 목록, 이 세션의 산출물 목록을 받습니다.</li>
   </ul>
   <p class="note">권한은 설정의 권한 모드를 따릅니다. Claude가 커밋·푸시·서버 실행은 하지 않도록 안내받지만 강제는 아니므로, auto 모드에서는 도구 카드로 실행한 명령을 확인하세요.</p>
@@ -238,7 +240,9 @@ npm run build && npm start   # 서버 하나로 실행 → http://localhost:4317
   <ul>
     <li>FE가 실행 중이면 패널에 화면이 나옵니다. 경로 이동, 새로고침, 새 창, 크게 보기, 화면 맞춤이 있습니다.</li>
     <li><span class="ui">새 대화로 보내기</span>: 지금 화면을 찍어 새 대화 탭에 첨부하고 경로를 입력창에 넣습니다.</li>
-    <li>로그인 쿠키가 미리보기 안에서 안 붙으면 새 창으로 여세요.</li>
+    <li><strong>탭</strong>: <span class="ui">+</span>로 미리보기 탭을 더 열고 ×로 닫습니다. 탭마다 페이지가 따로 유지되고, 주소 칸에는 경로(<code>/login</code>)나 전체 주소(<code>https://localhost:8081/...</code>)를 넣을 수 있습니다. 화면 찍기·새 창은 지금 탭 기준입니다.</li>
+    <li><strong>앱에서</strong>: 미리보기 페이지가 연 팝업은 앱 안 작은 창으로 열려 원래 페이지와 이어집니다(인증서 팝업이 결과를 원래 페이지로 돌려주고 닫히는 흐름이 그대로 동작). 원래 페이지와 연결하지 않는 팝업(noopener)은 새 미리보기 탭으로 엽니다. 이 PC의 로컬 서버(목업 인증 서버 등)가 프레임을 막아도(X-Frame-Options) 미리보기 안에서 보입니다.</li>
+    <li><strong>브라우저에서</strong>: 다른 서버로 넘어가거나 팝업이 뜨면 "연결을 거부했습니다"로 막힐 수 있습니다. 그 탭은 새 창으로 여세요. 로그인 쿠키가 안 붙을 때도 새 창으로 엽니다.</li>
   </ul>
   <h3>로그</h3>
   <p>프로젝트별 탭, WARN 이상 필터, 검색. 오류 줄의 <span class="ui">새 대화로 보내기</span>는 앞뒤 줄과 함께 새 대화 탭의 입력창에 넣습니다. 비밀값은 가려집니다.</p>
@@ -329,7 +333,7 @@ npm run build && npm start   # 서버 하나로 실행 → http://localhost:4317
       <tr><td>알림</td><td>작업 완료, 오류, 서버 멈춤, PR, 정리 알림과 OS 알림·소리. 보고 있는 세션은 알리지 않게 할 수 있습니다.</td></tr>
       <tr><td>자동 정리 규칙</td><td>PR을 만들면 서버 끄기, 머지되면 자동 정리, 원격 브랜치 삭제, PR 확인 간격(기본 10분), 미활동 알림 기준일</td></tr>
       <tr><td>Jira</td><td>로그인·로그아웃, 사이트 선택. 워크스페이스마다 Jira 프로젝트 키</td></tr>
-      <tr><td>프로젝트</td><td>실행·설치·PR 전 검사 명령, 헬스체크 경로, 포트 변수, BE 주소 변수, FE 로그인 경로, 커밋 템플릿</td></tr>
+      <tr><td>프로젝트</td><td>실행·설치·PR 전 검사 명령, 헬스체크 경로, 접속 주소(http/https), 포트 변수, BE 주소 변수, FE 로그인 경로, 커밋 템플릿</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -361,7 +365,7 @@ npm run build && npm start   # 서버 하나로 실행 → http://localhost:4317
       <tr><td><code>secret.key</code></td><td>암호화 키. 지우면 저장된 비밀값을 읽을 수 없습니다.</td></tr>
       <tr><td><code>artifacts/&lt;세션&gt;/</code></td><td>산출물(계획서, 화면설계서, 테스트 결과서와 예전 판, index.html, meta.json)</td></tr>
       <tr><td><code>tests/</code>, <code>screens/</code></td><td>화면 테스트 원본 스크린샷. 리소스 정리 때 지웁니다.</td></tr>
-      <tr><td><code>uploads/</code></td><td>프롬프트에 첨부한 이미지</td></tr>
+      <tr><td><code>uploads/</code></td><td>프롬프트에 첨부한 이미지·문서</td></tr>
     </tbody>
   </table></div>
 </section>

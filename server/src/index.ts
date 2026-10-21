@@ -10,7 +10,7 @@ import { HOST, PORT, UPLOAD_DIR } from './config.js';
 import { addClient } from './hub.js';
 import {
   addProject, createWorkspace, deleteProject, deleteWorkspace, describeProject,
-  getProject, getWorkspace, listProjectRows, listWorkspaces, updateProject, updateWorkspace,
+  addToWorkspace, getProject, getWorkspace, listProjectRows, listWorkspaces, setWorkspaceProjects, updateProject, updateWorkspace,
 } from './projects.js';
 import { listBranches } from './git.js';
 import { closeChat, closeSession, createSession, getSession, listMessages, listSessions, removeQueued, setChat } from './sessions.js';
@@ -25,11 +25,13 @@ import { chooseSite, createIssue, getIssue, issueTypes, jiraConfigView, required
 import { confirmRoleAccount, deleteCase, generateCases, runTests, saveCase, stopTests, testShotPath, testState } from './tests.js';
 import { getSettings, saveSettings, type Settings } from './settings.js';
 import { HELPER_PURPOSES } from './models.js';
+import { usageReport } from './usage.js';
 import { sendNotification } from './notify.js';
 import { cleanupOrphans, clearFailure, getLogs, listServers, planPorts, startServers, stopAll, stopServers } from './runner.js';
 import { suggestServerEnv } from './envsuggest.js';
 import { sessionEnvState } from './envapi.js';
-import { deleteProfile, saveSessionEnv, selectProfile, setSessionValues, type EnvVar } from './envstore.js';
+import { addRequiredKeys, deleteProfile, ensureDefaultProfile, saveSessionEnv, seedProfileIfEmpty, selectProfile, setSessionValues, type EnvVar } from './envstore.js';
+import { ANALYZE_FIELDS, analyzeProject } from './projectanalyze.js';
 import { analyzeEnvWithAI, parseDotenv, scanEnv } from './envscan.js';
 import {
   accountPassword, accountsForWorkspace, addAccount, deleteAccount, listAccounts, updateAccount,
@@ -46,7 +48,9 @@ await app.register(websocket);
 
 app.setErrorHandler((err: Error & { statusCode?: number; details?: Record<string, unknown> }, _req, reply) => {
   const status = err instanceof z.ZodError ? 400 : err.statusCode && err.statusCode < 500 ? err.statusCode : 400;
-  reply.status(status).send({ error: err instanceof z.ZodError ? '입력값을 확인하세요.' : err.message, ...(err.details ?? {}) });
+  // 직접 적은 검증 문구(refine 등)는 그대로 보여 주고, 형식 오류는 짧게 알린다.
+  const zodMessage = err instanceof z.ZodError ? (err.issues.find((i) => i.code === 'custom')?.message ?? '입력값을 확인하세요.') : null;
+  reply.status(status).send({ error: zodMessage ?? err.message, ...(err.details ?? {}) });
 });
 
 
@@ -55,9 +59,11 @@ const idParam = z.object({ id: z.coerce.number().int().positive() });
 // 프로젝트 (로컬 클론 폴더 기준)
 app.get('/api/projects', async () => Promise.all(listProjectRows().map(describeProject)));
 app.post('/api/projects', async (req) => {
-  const { path: p } = z.object({ path: z.string().min(1) }).parse(req.body);
-  // 모노레포면 앱 여러 개가 한 번에 등록된다.
-  return Promise.all((await addProject(p)).map(async (row) => ({ ...(await describeProject(row)), note: row.note })));
+  const { path: p, workspaceId } = z.object({ path: z.string().min(1), workspaceId: z.number().int().optional() }).parse(req.body);
+  // 모노레포면 앱 여러 개가 한 번에 등록된다. 워크스페이스에서 추가했으면 바로 그 워크스페이스에 넣는다.
+  const rows = await addProject(p);
+  if (workspaceId) addToWorkspace(workspaceId, rows.map((r) => r.id));
+  return Promise.all(rows.map(async (row) => ({ ...(await describeProject(row)), note: row.note })));
 });
 app.patch('/api/projects/:id', async (req) => {
   const { id } = idParam.parse(req.params);
@@ -72,8 +78,32 @@ app.patch('/api/projects/:id', async (req) => {
     login_path: z.string().nullable().optional(),
     setup_cmd: z.string().nullable().optional(),
     commit_template: z.string().nullable().optional(),
+    app_url: z.string().nullable().optional().refine((v) => !v || /^https?:\/\/[^\s/]+/.test(v.trim()), '접속 주소는 http:// 또는 https://로 시작해야 합니다. 예: https://localhost:{port}'),
   }).parse(req.body);
   return describeProject(updateProject(id, patch));
+});
+// 등록한 프로젝트를 Claude가 읽고 실행 설정을 제안한다(읽기만, 1분쯤). 적용은 사용자가 고른 것만.
+app.post('/api/projects/:id/analyze', async (req) => analyzeProject(idParam.parse(req.params).id));
+app.post('/api/projects/:id/analyze/apply', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const b = z.object({
+    patch: z.record(z.string(), z.string()).default({}),
+    env_keys: z.array(z.object({ key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_.-]*$/), reason: z.string().default('') })).default([]),
+  }).parse(req.body);
+  const p = getProject(id);
+  if (!p) throw new Error('프로젝트가 없습니다.');
+  // 제안할 수 있는 항목만 바꾼다.
+  const patch = Object.fromEntries(Object.entries(b.patch).filter(([k]) => (ANALYZE_FIELDS as readonly string[]).includes(k)).map(([k, v]) => [k, v.trim() || null]));
+  if (patch.app_url && !/^https?:\/\/[^\s/]+/.test(patch.app_url)) throw new Error('접속 주소는 http:// 또는 https://로 시작해야 합니다.');
+  updateProject(id, patch);
+  let added = 0;
+  if (b.env_keys.length) {
+    // 빈 프로필에 키를 먼저 넣으면 나중에 코드에서 찾은 키로 채우지 않으므로, 찾은 키부터 채운 뒤 더한다.
+    const profile = ensureDefaultProfile(id);
+    seedProfileIfEmpty(profile.id, scanEnv(p.local_path));
+    added = addRequiredKeys(profile.id, b.env_keys);
+  }
+  return { project: await describeProject(getProject(id)!), env_keys_added: added };
 });
 app.delete('/api/projects/:id', async (req) => {
   deleteProject(idParam.parse(req.params).id);
@@ -88,12 +118,17 @@ app.get('/api/projects/:id/branches', async (req) => {
 // 워크스페이스
 app.get('/api/workspaces', async () => listWorkspaces());
 app.post('/api/workspaces', async (req) => {
-  const body = z.object({ name: z.string(), projectIds: z.array(z.number().int()) }).parse(req.body);
+  const body = z.object({ name: z.string(), projectIds: z.array(z.number().int()).default([]) }).parse(req.body);
   return { id: createWorkspace(body.name, body.projectIds) };
 });
 app.patch('/api/workspaces/:id', async (req) => {
-  const b = z.object({ jira_project: z.string().nullable().optional() }).parse(req.body);
+  const b = z.object({ jira_project: z.string().nullable().optional(), name: z.string().optional() }).parse(req.body);
   updateWorkspace(idParam.parse(req.params).id, b);
+  return { ok: true };
+});
+app.put('/api/workspaces/:id/projects', async (req) => {
+  const { projectIds } = z.object({ projectIds: z.array(z.number().int()) }).parse(req.body);
+  setWorkspaceProjects(idParam.parse(req.params).id, projectIds);
   return { ok: true };
 });
 
@@ -343,6 +378,8 @@ app.delete('/api/sessions/:id/docs/:name', async (req) => {
   deleteDoc(id, name);
   return { ok: true };
 });
+// 사용량 보고서: Claude 호출의 토큰·비용 집계
+app.get('/api/usage', async (req) => usageReport(z.object({ days: z.coerce.number().int().min(0).max(3650).default(30) }).parse(req.query).days));
 // Claude가 프롬프트 중에 요청한 환경값·테스트 계정 확인
 app.get('/api/sessions/:id/tasks', async (req) => getTasks(idParam.parse(req.params).id));
 app.delete('/api/sessions/:id/tasks', async (req) => { clearTasks(idParam.parse(req.params).id); return { ok: true }; });
@@ -526,13 +563,14 @@ app.post('/api/cleanup', async (req) => {
 });
 app.post('/api/cleanup/refresh', async () => ({ changed: await refreshPrStates() }));
 
-// 첨부 이미지
+// 첨부 이미지·문서. 텍스트 문서(html 포함)는 이 서버 주소에서 실행되지 않게 일반 텍스트로 보낸다.
 app.get('/api/uploads/:file', async (req, reply) => {
-  const { file } = z.object({ file: z.string().regex(/^[0-9a-f-]+\.(png|jpg|gif|webp)$/) }).parse(req.params);
+  const { file } = z.object({ file: z.string().regex(/^[0-9a-f-]+\.(png|jpg|gif|webp|pdf|txt)$/) }).parse(req.params);
   const full = path.join(UPLOAD_DIR, file);
   if (!fs.existsSync(full)) return reply.status(404).send();
   const ext = path.extname(file).slice(1);
-  reply.type(`image/${ext === 'jpg' ? 'jpeg' : ext}`);
+  reply.header('X-Content-Type-Options', 'nosniff');
+  reply.type(ext === 'pdf' ? 'application/pdf' : ext === 'txt' ? 'text/plain; charset=utf-8' : `image/${ext === 'jpg' ? 'jpeg' : ext}`);
   return fs.createReadStream(full);
 });
 

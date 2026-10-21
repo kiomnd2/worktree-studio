@@ -25,7 +25,7 @@ export function sessionEnvState(sessionId: number): ProjectEnvState[] {
   const s = getSession(sessionId);
   if (!s) throw new Error('세션이 없습니다.');
   const running = listServers(s);
-  const bePort = running.find((r) => r.project_kind !== 'fe' && r.url)?.port ?? null;
+  const beUrl = running.find((r) => r.project_kind !== 'fe' && r.url)?.url ?? null;
   return s.worktrees.map((w) => {
     const project = getProject(w.project_id)!;
     ensureDefaultProfile(project.id);
@@ -41,7 +41,7 @@ export function sessionEnvState(sessionId: number): ProjectEnvState[] {
     const portText = srv?.url && srv.port ? String(srv.port) : '실행할 때 배정';
     const auto = [{ key: 'PORT', value: portText }];
     if (project.port_env && project.port_env !== 'PORT') auto.push({ key: project.port_env, value: portText });
-    if (project.api_env_key) auto.push({ key: project.api_env_key, value: bePort ? `http://localhost:${bePort}` : '같은 세션 BE 포트로 연결' });
+    if (project.api_env_key) auto.push({ key: project.api_env_key, value: beUrl ?? '같은 세션 BE 포트로 연결' });
     const autoKeys = auto.map((a) => a.key);
     const missing = vars.filter((v) => v.required && !v.value && !autoKeys.includes(v.key)).map((v) => v.key);
     return {
