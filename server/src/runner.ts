@@ -11,6 +11,7 @@ import { findFreePort, isPortFree } from './ports.js';
 import { maskSecrets } from './secret.js';
 import { getSettings } from './settings.js';
 import { sendNotification } from './notify.js';
+import { copyFilesOf, copyIntoWorktree, dockerBin, stacksOf, upCommand } from './localenv.js';
 
 export type ServerStatus = 'starting' | 'running' | 'unhealthy' | 'failed' | 'stopped';
 
@@ -36,7 +37,7 @@ type Running = {
 
 const MAX_LOG_LINES = 3000;
 const HEALTH_TIMEOUT_MS = 5 * 60 * 1000;
-/** 처음 실행은 의존성 설치까지 하므로 더 기다린다. */
+/** 처음 실행은 의존성 설치(도커 이미지 받기)까지 하므로 더 기다린다. */
 const SETUP_HEALTH_TIMEOUT_MS = 15 * 60 * 1000;
 const servers = new Map<number, Running>();
 // 서버가 꺼진 뒤에도 마지막 로그와 상태를 볼 수 있게 남겨 둔다.
@@ -242,40 +243,68 @@ export class MissingEnvError extends Error {
   }
 }
 
-async function allocate(kind: string, want?: number): Promise<number> {
+/** 다음 실행에도 같은 포트를 쓰도록 기록한다. */
+function reservePort(worktreeId: number, port: number) {
+  db.prepare(`UPDATE worktrees SET port = ? WHERE id = ?`).run(port, worktreeId);
+}
+
+async function allocate(worktreeId: number, kind: string, want?: number): Promise<number> {
   const taken = new Set<number>([...servers.values()].map((r) => r.port));
-  // 실행 전에 정해 둔 포트(설정 제안이 그 포트를 기준으로 했다)가 아직 비어 있으면 그대로 쓴다.
-  if (want && !taken.has(want) && (await isPortFree(want))) return want;
-  return findFreePort(kind === 'fe' ? 3401 : 8081, taken);
+  // 잡아 둔 포트(같은 세션 다른 앱의 설정이 이 포트를 기준으로 했다)가 아직 비어 있으면 그대로 쓴다.
+  const port = want && !taken.has(want) && (await isPortFree(want))
+    ? want
+    : await findFreePort(kind === 'fe' ? 3401 : 8081, new Set([...taken, ...reservedElsewhere(worktreeId)]));
+  reservePort(worktreeId, port);
+  return port;
+}
+
+/** 열린 세션의 다른 워크트리가 잡아 둔 포트. 꺼져 있어도 다음에 그 포트로 뜰 것이라 새로 배정하지 않는다. */
+function reservedElsewhere(worktreeId: number): number[] {
+  return (db.prepare(`SELECT w.port FROM worktrees w JOIN sessions s ON s.id = w.session_id
+    WHERE w.port IS NOT NULL AND w.id != ? AND s.closed = 0`).all(worktreeId) as { port: number }[]).map((r) => r.port);
 }
 
 /**
- * 서버를 띄우기 전에 쓸 포트를 미리 정한다. 이미 실행 중인 서버는 지금 포트, 재시작할 서버는 지금 포트를 그대로,
- * 새로 띄울 서버는 빈 포트. 설정 제안이 이 포트를 기준으로 하고, 실행할 때 같은 포트를 쓴다.
+ * 세션의 모든 앱(FE·BE)에 쓸 포트를 정한다. 이번에 띄우지 않는 앱도 정해 두어, FE나 BE를 따로 띄워도
+ * 서로의 주소를 미리 알고 맞물리게 한다. 실행 중이면 지금 포트, 아니면 잡아 둔 포트, 그것도 쓸 수 없으면 새 빈 포트.
+ * 정한 포트는 워크트리에 기록해 다음 실행에도 같은 포트를 쓴다.
  */
-export async function planPorts(sessionId: number, worktreeIds?: number[], restart = false): Promise<Record<number, number>> {
+export async function planPorts(sessionId: number): Promise<Record<number, number>> {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
   const out: Record<number, number> = {};
-  const taken = new Set<number>([...servers.values()].map((r) => r.port));
+  // 실행 중인 서버 포트와 열린 다른 세션이 잡아 둔 포트는 피한다.
+  const foreign = (db.prepare(`SELECT w.port FROM worktrees w JOIN sessions s ON s.id = w.session_id
+    WHERE w.port IS NOT NULL AND w.session_id != ? AND s.closed = 0`).all(sessionId) as { port: number }[]).map((r) => r.port);
+  const taken = new Set<number>([...[...servers.values()].map((r) => r.port), ...foreign]);
   for (const w of session.worktrees) {
     const r = servers.get(w.id);
-    if (r && (!restart || !worktreeIds || worktreeIds.includes(w.id))) out[w.id] = r.port;
+    if (r) out[w.id] = r.port;
   }
   for (const w of session.worktrees) {
-    if (out[w.id] || (worktreeIds && !worktreeIds.includes(w.id))) continue;
-    const p = await findFreePort(w.project_kind === 'fe' ? 3401 : 8081, taken);
-    taken.add(p);
-    out[w.id] = p;
+    if (out[w.id]) continue;
+    out[w.id] = w.port && !taken.has(w.port) && (await isPortFree(w.port))
+      ? w.port
+      : await findFreePort(w.project_kind === 'fe' ? 3401 : 8081, taken);
+    taken.add(out[w.id]);
   }
+  for (const w of session.worktrees) if (w.port !== out[w.id]) reservePort(w.id, out[w.id]);
   return out;
+}
+
+/** 이 세션 BE 주소. 꺼져 있어도 잡아 둔 포트로 알려 준다. */
+export function sessionBeUrl(session: SessionView, ports: Record<number, number> = {}): string | null {
+  const be = session.worktrees.find((w) => w.project_kind !== 'fe');
+  if (!be) return null;
+  const port = servers.get(be.id)?.port ?? ports[be.id] ?? be.port;
+  return port ? projectUrl(getProject(be.project_id), port) : null;
 }
 
 /**
  * 세션 워크트리의 서버를 띄운다. worktreeIds가 없으면 전부. BE를 먼저 띄워 FE가 BE 주소를 받게 한다.
  * commands에 워크트리 ID별 명령이 있으면 이번 실행에만 프로젝트 실행 명령 대신 쓴다.
  */
-export async function startServers(sessionId: number, worktreeIds?: number[], commands: Record<number, string> = {}, ports: Record<number, number> = {}) {
+export async function startServers(sessionId: number, worktreeIds?: number[], commands: Record<number, string> = {}, ports: Record<number, number> = {}, opts: { docker?: boolean } = {}) {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
   const targets = session.worktrees
@@ -297,22 +326,36 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
     if (keys.length) missing.push({ projectId: p.id, project: p.name, keys });
   }
   if (missing.length) throw new MissingEnvError({ missing });
+  // 도커로 띄울 인프라가 있으면 docker 명령부터 확인한다. 하나라도 띄운 뒤에 실패하면 반쯤 뜬 상태로 남는다.
+  const needDocker = opts.docker === false ? [] : targets.filter((w) => stacksOf(getProject(w.project_id)!).length);
+  const bin = needDocker.length ? await dockerBin() : null;
+  if (needDocker.length && !bin) {
+    throw new Error(`${needDocker.map((w) => w.project_name).join(', ')}은(는) 도커로 DB 등을 띄워야 하는데 docker 명령을 찾지 못했습니다. Docker Desktop을 설치하거나, 서버 실행 창에서 도커 띄우기를 끄세요.`);
+  }
 
+  // 이번에 띄우지 않는 앱의 포트도 정해 두어, FE만 또는 BE만 띄워도 상대 주소를 넘겨줄 수 있게 한다.
+  const plan = { ...(await planPorts(sessionId)), ...ports };
   for (const w of targets) {
     const p = getProject(w.project_id)!;
-    const port = await allocate(w.project_kind, ports[w.id]);
-    const { env, vars } = resolveEnv(sessionId, p.id);
+    const port = await allocate(w.id, w.project_kind, plan[w.id]);
+    const { env, vars, db: dbVars } = resolveEnv(sessionId, p.id);
     const secretKeys = new Set(vars.filter((v) => v.secret).map((v) => v.key));
     const auto: Record<string, string> = { PORT: String(port) };
     if (p.port_env) auto[p.port_env] = String(port);
     if (p.api_env_key) {
-      const be = session.worktrees.map((x) => servers.get(x.id)).find((r) => r && getProject(r.projectId)?.kind !== 'fe');
-      if (be) auto[p.api_env_key] = projectUrl(getProject(be.projectId), be.port);
+      // BE가 꺼져 있어도 잡아 둔 포트로 넣는다. 나중에 BE를 띄우면 같은 포트로 뜬다.
+      const beUrl = sessionBeUrl(session, plan);
+      if (beUrl) auto[p.api_env_key] = beUrl;
     }
     const startCmd = (commands[w.id]?.trim() || p.start_cmd!).replaceAll('{port}', String(port));
+    // 클론에만 있는 로컬 설정 파일(.env, application-local.yml 등)을 워크트리에 없을 때만 복사한다.
+    const copied = copyIntoWorktree(p.repo_root, w.path, await copyFilesOf(p));
+    // DB·Redis 같은 인프라를 먼저 띄운다. 이미 떠 있으면 compose가 그대로 둔다.
+    const stacks = opts.docker === false ? [] : stacksOf(p);
+    const docker = bin && stacks.length ? stacks.map((s) => upCommand(bin, p, s)).join(' && ') : null;
     // 새 워크트리에는 .venv나 node_modules가 없어 처음 한 번은 설치부터 한다. 설치가 실패하면 서버를 띄우지 않는다.
     const setup = p.setup_cmd && !w.setup_done ? p.setup_cmd : null;
-    const cmd = setup ? `${setup} && ${startCmd}` : startCmd;
+    const cmd = [docker, setup, startCmd].filter(Boolean).join(' && ');
     const child = spawn(cmd, {
       // 모노레포면 앱 폴더(frontend/ 등)에서 띄운다.
       cwd: w.app_path,
@@ -324,12 +367,19 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
     const r: Running = {
       worktreeId: w.id, sessionId, projectId: p.id, port, child, status: 'starting', stopping: false, exitCode: null,
       startedAt: Date.now(), logs: [], seq: 0, pending: [], flushTimer: null, healthTimer: null,
-      secrets: Object.entries(env).filter(([k, v]) => secretKeys.has(k) && v.length >= 4).map(([, v]) => v),
+      secrets: [
+        ...Object.entries(env).filter(([k, v]) => secretKeys.has(k) && v.length >= 4).map(([, v]) => v),
+        ...dbVars.filter((d) => d.secret && d.value.length >= 4).map((d) => d.value),
+      ],
     };
     servers.set(w.id, r);
     lastRun.delete(w.id);
     failures.delete(w.id);
     db.prepare(`INSERT OR REPLACE INTO servers (worktree_id, port, pid, status) VALUES (?, ?, ?, 'starting')`).run(w.id, port, child.pid ?? null);
+    if (plan[w.id] && plan[w.id] !== port) pushLine(r, 'sys', `잡아 둔 포트 ${plan[w.id]}를 다른 프로그램이 쓰고 있어 ${port}로 띄웁니다. 이 주소를 쓰는 다른 서버는 다시 띄워야 맞물립니다.`);
+    if (copied.length) pushLine(r, 'sys', `클론에서 로컬 설정 파일을 복사했습니다: ${copied.join(', ')}`);
+    if (docker) pushLine(r, 'sys', `도커를 띄웁니다: ${stacks.flatMap((s) => s.services).join(', ')} (처음이면 이미지를 받느라 몇 분 걸릴 수 있습니다)`);
+    if (dbVars.length) pushLine(r, 'sys', `DB 설정에서 넣는 값: ${dbVars.map((d) => d.key).join(', ')}`);
     if (setup) pushLine(r, 'sys', `이 워크트리에서 처음 실행해 의존성부터 설치합니다: ${setup}`);
     pushLine(r, 'sys', `$ ${cmd}`);
     pushLine(r, 'sys', `포트 ${port}${Object.keys(auto).length > 1 ? ` · 자동 값 ${Object.entries(auto).map(([k, v]) => `${k}=${v}`).join(', ')}` : ''}`);
@@ -344,8 +394,8 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
         pushLine(r, 'sys', `헬스체크 통과 (${healthPath})`);
         if (setup) db.prepare(`UPDATE worktrees SET setup_done = 1 WHERE id = ?`).run(w.id);
         setStatus(r, 'running');
-      } else if (r.status === 'starting' && Date.now() - r.startedAt > (setup ? SETUP_HEALTH_TIMEOUT_MS : HEALTH_TIMEOUT_MS)) {
-        pushLine(r, 'sys', `${setup ? '15분' : '5분'} 안에 ${healthPath} 응답이 없습니다. 실행 명령이나 헬스체크 경로를 확인하세요.`);
+      } else if (r.status === 'starting' && Date.now() - r.startedAt > (setup || docker ? SETUP_HEALTH_TIMEOUT_MS : HEALTH_TIMEOUT_MS)) {
+        pushLine(r, 'sys', `${setup || docker ? '15분' : '5분'} 안에 ${healthPath} 응답이 없습니다. 실행 명령이나 헬스체크 경로를 확인하세요.`);
         recordFailure(r, 'unhealthy', cmd);
         setStatus(r, 'unhealthy');
       }

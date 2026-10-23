@@ -146,6 +146,8 @@ addColumn('projects', 'login_path', 'login_path TEXT');
 // 새 워크트리에서 처음 실행하기 전에 돌릴 의존성 설치 명령(uv sync, npm ci 등)과 설치를 마쳤는지
 addColumn('projects', 'setup_cmd', 'setup_cmd TEXT');
 addColumn('worktrees', 'setup_done', 'setup_done INTEGER NOT NULL DEFAULT 0');
+// 세션마다 앱별로 잡아 두는 포트. FE·BE를 따로 띄워도 서로의 주소가 바뀌지 않게 한다.
+addColumn('worktrees', 'port', 'port INTEGER');
 // 한 세션에 계정 여러 개: 배정 순서를 기억하고, 화면마다 어느 계정으로 찍을지 고른다.
 addColumn('test_accounts', 'assigned_at', 'assigned_at TEXT');
 addColumn('screen_checks', 'account_id', 'account_id INTEGER REFERENCES test_accounts(id) ON DELETE SET NULL');
@@ -195,6 +197,8 @@ CREATE TABLE IF NOT EXISTS chats (
 `);
 addColumn('messages', 'chat_id', 'chat_id INTEGER NOT NULL DEFAULT 0');
 addColumn('prompt_queue', 'chat_id', 'chat_id INTEGER NOT NULL DEFAULT 0');
+// DB 대화: 이 DB 연결에만 질의하는 추가 대화. 코드는 읽기만 한다.
+addColumn('chats', 'db_connection_id', 'db_connection_id INTEGER');
 db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(session_id, chat_id, id)`);
 
 
@@ -241,6 +245,30 @@ CREATE INDEX IF NOT EXISTS idx_usage_claude ON usage_log(claude_session_id, id);
 CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_log(session_id, id);
 `);
 
+// 로컬 실행 환경(localenv.ts). 새 워크트리에는 커밋하지 않은 로컬 설정 파일과 DB가 없어 서버가 뜨지 않는 일이 많다.
+// copy_files: 클론에서 워크트리로 복사할 파일(저장소 기준 상대 경로 JSON 배열, NULL이면 자동으로 찾은 것).
+// docker_stacks: 서버 실행 전에 띄울 docker compose 파일과 서비스([{file, services}] JSON). 파일은 저장소 기준 상대 경로나 Studio가 만든 절대 경로.
+addColumn('projects', 'copy_files', 'copy_files TEXT');
+addColumn('projects', 'docker_stacks', `docker_stacks TEXT NOT NULL DEFAULT '[]'`);
+// DB 연결 설정. 환경값 프로필과 따로 프로젝트마다 두고, 서버를 띄울 때 env_map대로 환경변수를 만들어 넣는다.
+db.exec(`
+CREATE TABLE IF NOT EXISTS db_connections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  engine TEXT NOT NULL,
+  host TEXT NOT NULL DEFAULT 'localhost',
+  port INTEGER,
+  database TEXT NOT NULL DEFAULT '',
+  username TEXT NOT NULL DEFAULT '',
+  password TEXT,
+  env_map TEXT NOT NULL DEFAULT '{}',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
+
 // 도구가 비정상 종료됐다면 실행 중으로 남은 세션을 되돌린다.
 db.prepare(`UPDATE sessions SET status = 'idle' WHERE status = 'running'`).run();
 db.prepare(`UPDATE chats SET status = 'idle' WHERE status = 'running'`).run();
@@ -250,6 +278,7 @@ export type ProjectRow = {
   start_cmd: string | null; check_cmd: string | null; health_path: string | null; created_at: string;
   port_env: string | null; api_env_key: string | null; baseline_url: string | null; login_path: string | null; setup_cmd: string | null; commit_template: string | null;
   repo_root: string; subdir: string; app_url: string | null;
+  copy_files: string | null; docker_stacks: string;
 };
 export type SessionRow = {
   id: number; workspace_id: number; ticket: string; summary: string; status: string;
@@ -258,7 +287,10 @@ export type SessionRow = {
 };
 export type WorktreeRow = {
   id: number; session_id: number; project_id: number; path: string; branch: string; base_branch: string; setup_done: number;
+  /** 이 세션에서 이 앱에 잡아 둔 포트(아직 안 정했으면 null) */
+  port: number | null;
 };
 export type ChatRow = {
   id: number; session_id: number; title: string; status: string; claude_session_id: string | null; unread: number; closed: number; created_at: string;
+  db_connection_id: number | null;
 };

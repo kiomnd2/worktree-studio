@@ -1,5 +1,6 @@
 import { db } from './db.js';
 import { decrypt, encrypt, looksSecret } from './secret.js';
+import { dbEnv, type DbEnvEntry } from './dbconn.js';
 
 export type EnvSource = 'detected' | 'ai' | 'clone' | 'profile' | 'manual';
 export type EnvVar = { key: string; value: string; required: boolean; secret: boolean; source: EnvSource; found_in: string | null };
@@ -119,23 +120,27 @@ export function saveSessionEnv(sessionId: number, projectId: number, mode: SaveM
   return current;
 }
 
-/** 서버를 띄울 때 쓸 값: 프로필 값 위에 이번 세션 덮어쓰기를 얹는다. */
-export function resolveEnv(sessionId: number, projectId: number): { env: Record<string, string>; vars: EnvVar[]; overrides: Record<string, string> } {
+/** 서버를 띄울 때 쓸 값: 프로필 값 위에 DB 설정이 만든 값, 그 위에 이번 세션 덮어쓰기를 얹는다. */
+export function resolveEnv(sessionId: number, projectId: number): { env: Record<string, string>; vars: EnvVar[]; overrides: Record<string, string>; db: DbEnvEntry[] } {
   const p = selectedProfile(sessionId, projectId);
   const vars = profileVars(p.id);
   const overrides = sessionOverrides(sessionId, projectId);
+  const dbVars = dbEnv(projectId);
   const env: Record<string, string> = {};
   for (const v of vars) if (v.value) env[v.key] = v.value;
+  for (const d of dbVars) env[d.key] = d.value;
   for (const [k, v] of Object.entries(overrides)) { if (v) env[k] = v; else delete env[k]; }
-  return { env, vars, overrides };
+  return { env, vars, overrides, db: dbVars };
 }
 
 /** 이번 세션에만 몇 개 값을 얹는다(나머지는 그대로). */
 export function setSessionValues(sessionId: number, projectId: number, values: Record<string, string>) {
-  const cur = resolveEnv(sessionId, projectId).env;
-  const vars: EnvVar[] = Object.entries({ ...cur, ...values })
-    .map(([key, value]) => ({ key, value, required: false, secret: looksSecret(key), source: 'manual', found_in: null }));
-  saveSessionEnv(sessionId, projectId, 'session', vars);
+  // DB 설정이 만든 값은 덮어쓰기에 넣지 않는다(넣으면 DB 설정을 바꿔도 이 세션에 옛 값이 남는다).
+  const current = selectedProfile(sessionId, projectId);
+  const base = new Map(profileVars(current.id).map((v) => [v.key, v.value]));
+  const next = { ...sessionOverrides(sessionId, projectId), ...values };
+  for (const [k, v] of Object.entries(next)) if (base.get(k) === v) delete next[k];
+  upsertSessionEnv(sessionId, projectId, current.id, next);
 }
 
 export function missingRequired(sessionId: number, projectId: number, autoKeys: string[]): string[] {

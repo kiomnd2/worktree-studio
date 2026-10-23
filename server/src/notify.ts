@@ -21,8 +21,11 @@ export function sendNotification(title: string, message: string, sessionId?: num
     process.send({ type: 'notify', title, message, url, sound: s.notify.sound });
     return;
   }
-  notifier.notify({ title, message, sound: s.notify.sound, wait: true }, () => {});
-  notifier.once('click', () => openUrl(url));
+  // terminal-notifier 실행 파일을 못 띄우면(Apple Silicon에서 Rosetta 없음 등) 동기로 던져 서버가 죽는다. 알림만 건너뛴다.
+  try {
+    notifier.notify({ title, message, sound: s.notify.sound, wait: true }, () => {});
+    notifier.once('click', () => openUrl(url));
+  } catch { /* 알림을 띄울 수 없음 */ }
 }
 
 /** 프롬프트 작업이 끝났을 때 설정에 맞으면 알린다. */
