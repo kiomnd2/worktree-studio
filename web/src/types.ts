@@ -80,7 +80,10 @@ export type Session = {
 
 export type QueuedPrompt = { id: number; text: string; image_count: number; plan: boolean; created_at: string };
 
-export type Chat = { id: number; title: string; status: 'idle' | 'running'; unread: number; created_at: string; queue: QueuedPrompt[]; queue_paused: boolean };
+/** db_connection_id가 있으면 그 DB에만 질의하는 DB 대화 */
+export type Chat = { id: number; title: string; status: 'idle' | 'running'; unread: number; created_at: string; queue: QueuedPrompt[]; queue_paused: boolean; db_connection_id: number | null };
+/** DB 대화를 열 수 있는 세션 앱들의 DB 연결 */
+export type SessionDb = { id: number; name: string; engine: DbEngine; project_name: string; target: string; enabled: boolean; queryable: boolean };
 
 export type StoredMessage = { id: number; chat_id: number; kind: 'user' | 'sdk' | 'event'; payload: any; created_at: string };
 
@@ -145,15 +148,16 @@ export type Approval = {
     | { kind: 'env'; project_id: number; project_name: string; profile_name: string; vars: { key: string; value: string; reason: string; secret: boolean; current: string | null }[] }
     | { kind: 'plan'; plan: string; docs: { name: string; title: string; kind: DocKind }[] }
     | { kind: 'question'; questions: { question: string; header: string; options: { label: string; description: string }[]; multiSelect: boolean }[] }
-    | { kind: 'testdata'; case_id: number; case_title: string; need: string; plan: string; role: string };
+    | { kind: 'testdata'; case_id: number; case_title: string; need: string; plan: string; role: string }
+    | { kind: 'dbwrite'; connection_id: number; connection_name: string; target: string; sql: string };
 };
 
-/** 개발 산출물. plan: 계획서, screen: 화면설계서, test: 테스트 결과서 */
-export type DocKind = 'plan' | 'screen' | 'test' | 'other';
+/** 개발 산출물. plan: 계획서, screen: 화면설계서, test: 테스트 결과서, report: 완료 보고서 */
+export type DocKind = 'plan' | 'screen' | 'test' | 'report' | 'other';
 export type DocMeta = { name: string; title: string; kind: DocKind; version: number; updated_at: string; path: string };
 export type ArchiveEntry = {
   session_id: number; ticket: string; summary: string; workspace_name: string; closed: boolean; updated_at: string;
-  branches: string[]; prs: { number: number; url: string; title: string; state: string }[]; docs: DocMeta[]; dir: string;
+  branches: string[]; projects: string[]; prs: { number: number; url: string; title: string; state: string }[]; docs: DocMeta[]; dir: string;
 };
 
 export type PrState = 'OPEN' | 'MERGED' | 'CLOSED';
@@ -248,7 +252,40 @@ export type ProjectEnvState = {
   selectedProfileId: number;
   vars: EnvVar[];
   auto: { key: string; value: string }[];
+  /** DB 설정이 넣는 값. 프로필 값보다 우선한다. 비밀값은 가려져 온다. */
+  db: { key: string; value: string; connection: string }[];
   missing: string[];
+};
+
+export type DbEngine = 'postgres' | 'mysql' | 'mariadb' | 'oracle' | 'mssql' | 'mongodb' | 'redis';
+export type DbConnection = {
+  id: number; project_id: number; name: string; engine: DbEngine;
+  host: string; port: number | null; database: string; username: string; password: string;
+  /** 환경변수 이름 → 틀({jdbc_url}, {url}, {host}, {port}, {database}, {username}, {password}) */
+  env_map: Record<string, string>; enabled: boolean; note: string;
+};
+export type DbConnectionInput = Omit<DbConnection, 'id' | 'project_id'>;
+export type DockerStack = { file: string; services: string[] };
+export type DockerState = 'ok' | 'no-cli' | 'daemon-down';
+export type DbCandidate = { from: string; engine: DbEngine; host: string; port: number; database: string; username: string; password: string; stack: DockerStack | null };
+/** 프로젝트 로컬 실행 환경: 클론에서 복사할 파일, 서버 앞에 띄울 도커, DB 연결 */
+export type LocalSetup = {
+  copy_files: { auto: boolean; files: string[]; detected: string[] };
+  stacks: DockerStack[];
+  compose: { file: string; services: { name: string; image: string | null; infra: DbEngine | 'other' | null; ports: { host: number; container: number }[] }[] }[];
+  candidates: DbCandidate[];
+  needs: DbEngine[];
+  docker: DockerState;
+  connections: DbConnection[];
+  studio_engines: DbEngine[];
+};
+/** 서버 실행 창의 실행 전 준비 */
+export type StartPrep = {
+  items: {
+    worktree_id: number; project_id: number; project_name: string;
+    docker: DockerStack[]; copies: string[]; db: { name: string; engine: string; target: string }[]; db_missing: DbEngine[];
+  }[];
+  docker: DockerState | null;
 };
 
 export type Account = {

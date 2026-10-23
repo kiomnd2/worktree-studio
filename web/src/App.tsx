@@ -222,7 +222,7 @@ export default function App() {
           />
         ) : selected ? (
           <>
-            <ChatView key={selected.id} session={selected} />
+            <ChatView key={selected.id} session={selected} onOpenDocs={(name) => setView({ kind: 'docs', id: selected.id, name })} />
             <RightPanel
               key={`panel-${selected.id}`}
               session={selected}

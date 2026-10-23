@@ -127,7 +127,7 @@ export default function PromptInput({ session, thread, onStarted }: { session: S
     setError(null);
     try {
       const images = attachments.map(({ mediaType, data, name }) => ({ mediaType, data, name }));
-      if (thread.id === 'new') onStarted((await api.startChat(session.id, text, images, plan)).id);
+      if (thread.id === 'new') onStarted((await api.startChat(session.id, text, images, plan, thread.db?.id)).id);
       else await api.prompt(session.id, text, images, plan, thread.id);
       attachments.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
       setText('');
@@ -201,6 +201,7 @@ export default function PromptInput({ session, thread, onStarted }: { session: S
         value={text}
         placeholder={willQueue
           ? `${running ? 'Claude가 작업 중입니다' : '대기열이 멈춰 있습니다'}. 지금 보내면 대기열 끝에 넣고 순서대로 실행합니다. (Enter 추가, Shift+Enter 줄바꿈)`
+          : thread.db ? `${thread.db.name}에 물어볼 것을 적어주세요. 예: 오늘 가입한 회원 수, 주문 상태별 건수 (Enter 보내기, Shift+Enter 줄바꿈)`
           : thread.id === 'new' ? '새 대화에서 맡길 일을 적어주세요. 메인 대화와 같은 워크트리에서 따로 실행합니다. (Enter 보내기, Shift+Enter 줄바꿈)'
           : '이 워크트리에서 할 일을 적어주세요. 이미지·문서(PDF, md, html 등)는 끌어다 놓거나 붙여넣을 수 있습니다. (Enter 보내기, Shift+Enter 줄바꿈)'}
         onChange={(e) => setText(e.target.value)}

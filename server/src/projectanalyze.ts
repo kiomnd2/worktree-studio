@@ -74,7 +74,8 @@ export async function analyzeProject(id: number): Promise<ProjectAnalysis> {
     '- api_env_key: FE가 BE 주소를 읽는 환경변수 이름(NEXT_PUBLIC_API_URL 등). 코드에서 실제로 읽는 이름만.',
     '- login_path: FE 로그인 화면 경로(예: /login). 없으면 제안하지 않는다.',
     '- 지금 값이 이미 맞으면 그 항목은 제안하지 않는다. reason은 왜 바꾸는지 한 문장(근거 파일 포함).',
-    '- env_keys: 바로 실행할 때 꼭 넣어야 하는 환경값 이름과 이유(값이나 비밀값은 적지 않는다). 없으면 빈 배열.',
+    '- env_keys: 바로 실행할 때 꼭 넣어야 하는 환경값 이름과 이유(값이나 비밀값은 적지 않는다). 없으면 빈 배열. DB 접속값(URL·계정·비밀번호)은 도구의 DB 설정 화면이 따로 넣으므로 넣지 않는다.',
+    '- 로컬 프로필이 있으면(application-local.yml, .env.local 등) 실행 명령이 그 프로필로 뜨게 한다(예: SPRING_PROFILES_ACTIVE=local은 env_keys가 아니라 명령에 넣는다: SPRING_PROFILES_ACTIVE=local ./gradlew :app:bootRun).',
     '- notes: 사람이 알아야 할 것 두세 개까지(예: Node 버전, X-Frame-Options로 미리보기 iframe이 막힘, DB·docker 필요). 모두 한국어로.',
   ].join('\n');
 

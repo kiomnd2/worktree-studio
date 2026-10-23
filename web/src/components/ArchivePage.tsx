@@ -11,18 +11,21 @@ import { DOC_KIND } from './DocsPage';
 export default function ArchivePage({ onOpen }: { onOpen: (e: ArchiveEntry, name?: string) => void }) {
   const [list, setList] = useState<ArchiveEntry[] | null>(null);
   const [q, setQ] = useState('');
+  const [project, setProject] = useState('');
   const [error, setError] = useState<string | null>(null);
   const reload = () => { api.archive().then(setList).catch((e) => setError(e.message)); };
   useEffect(reload, []);
   useServerEvents((e) => { if (e.type === 'docs.updated' || e.type === 'sessions.changed') reload(); });
 
+  const projects = useMemo(() => [...new Set((list ?? []).flatMap((e) => e.projects))].sort(), [list]);
+
   const groups = useMemo(() => {
     const t = q.trim().toLowerCase();
-    const hit = (e: ArchiveEntry) => !t || [e.ticket, e.summary, ...e.branches, ...e.docs.map((d) => d.title)].some((x) => x.toLowerCase().includes(t));
+    const hit = (e: ArchiveEntry) => (!project || e.projects.includes(project)) && (!t || [e.ticket, e.summary, ...e.branches, ...e.docs.map((d) => d.title)].some((x) => x.toLowerCase().includes(t)));
     const m = new Map<string, ArchiveEntry[]>();
     for (const e of (list ?? []).filter(hit)) m.set(e.workspace_name, [...(m.get(e.workspace_name) ?? []), e]);
     return [...m];
-  }, [list, q]);
+  }, [list, q, project]);
 
   return (
     <main className="main scroll">
@@ -37,8 +40,15 @@ export default function ArchivePage({ onOpen }: { onOpen: (e: ArchiveEntry, name
           </div>
         </div>
         {error && <p className="banner error" role="alert">{error}</p>}
-        <label className="sr-only" htmlFor="archive-q">티켓, 제목, 브랜치, 문서 이름으로 찾기</label>
-        <input id="archive-q" className="archive-search" placeholder="티켓, 제목, 브랜치, 문서 이름으로 찾기" value={q} onChange={(e) => setQ(e.target.value)} />
+        <div className="archive-filters">
+          <label className="sr-only" htmlFor="archive-project">프로젝트</label>
+          <select id="archive-project" className="archive-project" value={project} onChange={(e) => setProject(e.target.value)}>
+            <option value="">모든 프로젝트</option>
+            {projects.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <label className="sr-only" htmlFor="archive-q">티켓, 제목, 브랜치, 문서 이름으로 찾기</label>
+          <input id="archive-q" className="archive-search" placeholder="티켓, 제목, 브랜치, 문서 이름으로 찾기" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
         {!list && <p className="muted small">불러오는 중</p>}
         {list?.length === 0 && (
           <div className="card">

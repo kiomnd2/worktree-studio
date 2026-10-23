@@ -178,6 +178,9 @@ export async function analyzeEnvWithAI(dir: string, known: string[]): Promise<Fo
     '이 프로젝트를 로컬에서 개발 서버로 실행하는 데 필요한 환경변수를 찾아줘.',
     '설정 파일(application*.yml, .env.example 등), 코드의 환경변수 참조, README의 실행 방법을 확인해.',
     '포트(PORT, SERVER_PORT)는 도구가 정하니 빼고, 기본값이 있어 비워도 실행되는 값은 required=false로 해.',
+    '목표는 이 컴퓨터에서 바로 뜨는 로컬 실행이다. default에는 로컬 기준 값을 넣어: localhost 주소, docker-compose 파일에 적힌 로컬 DB·Redis 계정과 포트, 로컬 프로필(application-local.yml, .env.example 등)의 개발용 값, mock·local 모드 스위치(예: AUTH_MODE=mock).',
+    '운영·스테이징 주소, 실제 비밀값(토큰·키)은 default에 넣지 않는다(로컬에서 꼭 필요하면 required=true로 비워 둔다).',
+    'DB 접속값(DB URL·계정·비밀번호, SPRING_DATASOURCE_*, DATABASE_URL 등)은 도구의 DB 설정이 따로 넣으므로 required=false로 하고 reason에 "DB 설정에서 넣음"이라고 적어.',
     'found_in은 "상대경로:줄번호", reason은 한 문장 한국어로.',
     known.length ? `이미 찾은 키: ${known.join(', ')}. 이것들도 필수 여부를 다시 판단해서 포함해.` : '',
   ].join('\n');

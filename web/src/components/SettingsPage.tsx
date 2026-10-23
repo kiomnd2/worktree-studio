@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
+import LocalSetupPanel from './LocalSetupPanel';
 import type { Account, AnalyzeField, JiraConfig, JiraStatus, PermissionMode, Project, ProjectAnalysis, ProjectKind, Settings, Workspace } from '../types';
 
 const KINDS: { value: ProjectKind; label: string }[] = [
@@ -252,6 +253,7 @@ const KIND_LABEL: Record<ProjectKind, string> = { be: 'BE', fe: 'FE', full: '통
 /** 프로젝트 한 줄 요약. "설정"으로 자세한 설정을 펼치고, Claude 분석 제안은 이 줄 아래에 뜬다. */
 function ProjectItem({ p, run, state, first, extra }: { p: Project; run: Run; state: AnalysisState; first?: boolean; extra?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  const [local, setLocal] = useState(false);
   const analysis = state.analyses[p.id];
   return (
     <div className="pj">
@@ -271,6 +273,7 @@ function ProjectItem({ p, run, state, first, extra }: { p: Project; run: Run; st
           <button className="small-btn" disabled={analysis?.status === 'running'} title="Claude가 저장소를 읽고 로그인 없이 바로 뜨는 실행 방법을 제안합니다" onClick={() => state.analyze(p)}>
             {analysis?.status === 'running' ? '분석 중' : '다시 분석'}
           </button>
+          <button className="small-btn" aria-expanded={local} title="DB 연결, 서버 앞에 띄울 도커, 클론에서 복사할 로컬 설정 파일" onClick={() => setLocal(!local)}>{local ? '로컬 실행 접기' : '로컬 실행 (DB·도커)'}</button>
           <button className="small-btn" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? '접기' : '설정'}</button>
           <button className="small-btn danger" title="프로젝트 등록을 지웁니다. 폴더는 지우지 않습니다"
             onClick={() => { if (confirm(`${p.name} 등록을 지울까요? 폴더는 지우지 않고, 모든 워크스페이스에서 빠집니다.`)) run(() => api.deleteProject(p.id), `${p.name} 등록을 지웠습니다.`)(); }}>삭제</button>
@@ -281,6 +284,7 @@ function ProjectItem({ p, run, state, first, extra }: { p: Project; run: Run; st
           onApplied={(text) => { state.close(p.id); run(async () => {}, text)(); }} />
       )}
       {open && <ProjectEditor p={p} run={run} />}
+      {local && <LocalSetupPanel p={p} notify={(text) => run(async () => {}, text)()} />}
     </div>
   );
 }
