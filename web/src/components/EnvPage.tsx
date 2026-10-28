@@ -143,7 +143,7 @@ export default function EnvPage({ session, message, onBack, onStarted }: Props) 
             <button onClick={onBack}>세션 화면으로</button>
           </div>
         </div>
-        <p className="muted">워크트리를 분석해 목록을 만들었습니다. 분석 결과는 틀릴 수 있으니 키, 값, 필수 여부를 고치거나 지우고, 빠진 변수는 직접 추가하세요. 포트와 BE 연결 주소는 도구가 정하고, DB 접속값은 설정 › 프로젝트 › 로컬 실행의 DB 연결에서 넣습니다.</p>
+        <p className="muted">워크트리를 분석해 목록을 만들었습니다. 분석 결과는 틀릴 수 있으니 키, 값, 필수 여부를 고치거나 지우고, 빠진 변수는 직접 추가하세요. 포트와 BE 연결 주소는 도구가 정하고, DB 접속값은 설정 › 프로젝트 › 로컬 실행의 DB 연결에서 넣습니다. 상대 앱 주소가 들어가는 값(콜백·CORS 등)은 <code>{'{be_url}'}</code>·<code>{'{fe_url}'}</code>·<code>{'{be_port}'}</code>·<code>{'{fe_port}'}</code> 자리로 쓰면 실행할 때 그 세션 포트로 채워집니다.</p>
         <div className="legend">
           {(['ai', 'clone', 'profile', 'manual', 'session'] as const).map((k) => <span key={k} className={`src ${SOURCE[k].cls}`}>{SOURCE[k].label}</span>)}
         </div>

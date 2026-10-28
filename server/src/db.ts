@@ -148,6 +148,8 @@ addColumn('projects', 'setup_cmd', 'setup_cmd TEXT');
 addColumn('worktrees', 'setup_done', 'setup_done INTEGER NOT NULL DEFAULT 0');
 // 세션마다 앱별로 잡아 두는 포트. FE·BE를 따로 띄워도 서로의 주소가 바뀌지 않게 한다.
 addColumn('worktrees', 'port', 'port INTEGER');
+// 서버 실행 전 포트 설정 제안을 살펴봤는지. 살펴본 프로젝트는 값이 포트 자리로 저장돼 있어 다음부터는 묻지 않는다.
+addColumn('projects', 'port_env_checked', 'port_env_checked INTEGER NOT NULL DEFAULT 0');
 // 한 세션에 계정 여러 개: 배정 순서를 기억하고, 화면마다 어느 계정으로 찍을지 고른다.
 addColumn('test_accounts', 'assigned_at', 'assigned_at TEXT');
 addColumn('screen_checks', 'account_id', 'account_id INTEGER REFERENCES test_accounts(id) ON DELETE SET NULL');
@@ -278,7 +280,7 @@ export type ProjectRow = {
   start_cmd: string | null; check_cmd: string | null; health_path: string | null; created_at: string;
   port_env: string | null; api_env_key: string | null; baseline_url: string | null; login_path: string | null; setup_cmd: string | null; commit_template: string | null;
   repo_root: string; subdir: string; app_url: string | null;
-  copy_files: string | null; docker_stacks: string;
+  copy_files: string | null; docker_stacks: string; port_env_checked: number;
 };
 export type SessionRow = {
   id: number; workspace_id: number; ticket: string; summary: string; status: string;

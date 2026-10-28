@@ -12,6 +12,7 @@ import { maskSecrets } from './secret.js';
 import { getSettings } from './settings.js';
 import { sendNotification } from './notify.js';
 import { copyFilesOf, copyIntoWorktree, dockerBin, stacksOf, upCommand } from './localenv.js';
+import { renderPorts, sessionAddrs } from './portvars.js';
 
 export type ServerStatus = 'starting' | 'running' | 'unhealthy' | 'failed' | 'stopped';
 
@@ -338,7 +339,12 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
   for (const w of targets) {
     const p = getProject(w.project_id)!;
     const port = await allocate(w.id, w.project_kind, plan[w.id]);
-    const { env, vars, db: dbVars } = resolveEnv(sessionId, p.id);
+    // 잡아 둔 포트가 막혀 다른 포트로 떴으면, 뒤에 띄우는 앱(FE)은 실제 포트를 받아야 한다.
+    plan[w.id] = port;
+    const resolved = resolveEnv(sessionId, p.id);
+    const { vars, db: dbVars } = resolved;
+    // 프로필의 {be_url}·{fe_url} 같은 포트 자리를 이 세션 주소로 채운다.
+    const { env, unresolved } = renderPorts(resolved.env, sessionAddrs(session, plan), port);
     const secretKeys = new Set(vars.filter((v) => v.secret).map((v) => v.key));
     const auto: Record<string, string> = { PORT: String(port) };
     if (p.port_env) auto[p.port_env] = String(port);
@@ -377,6 +383,7 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
     failures.delete(w.id);
     db.prepare(`INSERT OR REPLACE INTO servers (worktree_id, port, pid, status) VALUES (?, ?, ?, 'starting')`).run(w.id, port, child.pid ?? null);
     if (plan[w.id] && plan[w.id] !== port) pushLine(r, 'sys', `잡아 둔 포트 ${plan[w.id]}를 다른 프로그램이 쓰고 있어 ${port}로 띄웁니다. 이 주소를 쓰는 다른 서버는 다시 띄워야 맞물립니다.`);
+    if (unresolved.length) pushLine(r, 'sys', `이 세션에 상대 앱이 없어 포트 자리를 채우지 못한 값: ${unresolved.join(', ')}`);
     if (copied.length) pushLine(r, 'sys', `클론에서 로컬 설정 파일을 복사했습니다: ${copied.join(', ')}`);
     if (docker) pushLine(r, 'sys', `도커를 띄웁니다: ${stacks.flatMap((s) => s.services).join(', ')} (처음이면 이미지를 받느라 몇 분 걸릴 수 있습니다)`);
     if (dbVars.length) pushLine(r, 'sys', `DB 설정에서 넣는 값: ${dbVars.map((d) => d.key).join(', ')}`);

@@ -143,6 +143,20 @@ export function setSessionValues(sessionId: number, projectId: number, values: R
   upsertSessionEnv(sessionId, projectId, current.id, next);
 }
 
+/** 세션이 쓰는 프로필에 몇 개 값을 넣는다(나머지는 그대로). 이 세션 덮어쓰기에 같은 키가 있으면 지워 프로필 값이 쓰이게 한다. */
+export function setProfileValues(sessionId: number, projectId: number, values: { key: string; value: string; found_in?: string | null }[]) {
+  const current = selectedProfile(sessionId, projectId);
+  const merged = new Map(profileVars(current.id).map((v) => [v.key, v]));
+  for (const v of values) {
+    const prev = merged.get(v.key);
+    merged.set(v.key, { key: v.key, value: v.value, required: prev?.required ?? false, secret: prev?.secret ?? false, source: prev?.source ?? 'ai', found_in: v.found_in ?? prev?.found_in ?? null });
+  }
+  writeVars(current.id, [...merged.values()], true);
+  const overrides = sessionOverrides(sessionId, projectId);
+  for (const v of values) delete overrides[v.key];
+  upsertSessionEnv(sessionId, projectId, current.id, overrides);
+}
+
 export function missingRequired(sessionId: number, projectId: number, autoKeys: string[]): string[] {
   const { env, vars } = resolveEnv(sessionId, projectId);
   return vars.filter((v) => v.required && !env[v.key] && !autoKeys.includes(v.key)).map((v) => v.key);

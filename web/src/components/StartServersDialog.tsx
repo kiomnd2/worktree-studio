@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import type { EnvSuggestion, ServerView, StartPrep } from '../types';
 
@@ -13,11 +13,12 @@ type Props = {
   onConfirm: (commands: Record<number, string>, ports: Record<number, number>, docker: boolean) => Promise<void>;
 };
 
-type Row = EnvSuggestion & { on: boolean };
+type Row = EnvSuggestion & { on: boolean; orig: string };
 
 /**
  * 서버를 띄우기 전에 어느 폴더에서 어떤 명령이 어느 포트로 실행되는지 보여 주고, 이번 실행에 한해 고칠 수 있게 한다.
  * 세션의 모든 앱 포트를 미리 정해 두고(따로 띄워도 같은 포트), 그 포트로 FE·BE가 맞물리려면 바꿔야 할 환경값을 제안받아 골라 적용한다.
+ * 적용한 값은 포트 자리({be_url} 등)로 프로필에 저장해, 다음 세션부터는 포트가 달라도 다시 맞추지 않는다.
  */
 export default function StartServersDialog({ sessionId, targets, all, restart, onCancel, onConfirm }: Props) {
   // BE를 먼저 띄우는 서버 순서와 맞춘다.
@@ -30,6 +31,7 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
   const [rows, setRows] = useState<Row[] | null>(null);
   const [note, setNote] = useState('');
   const [suggestError, setSuggestError] = useState<string | null>(null);
+  const [skipped, setSkipped] = useState(false);
   const [prep, setPrep] = useState<StartPrep | null>(null);
   const [docker, setDocker] = useState(true);
   const [dockerOpening, setDockerOpening] = useState(false);
@@ -53,21 +55,28 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
     } catch (e) { setError((e as Error).message); } finally { setDockerOpening(false); }
   }
 
-  // 포트를 정하고, 그 포트를 기준으로 설정 제안을 받는다. 제안을 기다리지 않고 실행해도 된다.
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+
+  function suggest(p: Record<number, number>, force: boolean) {
+    setRows(null); setSkipped(false); setSuggestError(null);
+    return api.suggestServerEnv(sessionId, p, force).then((r) => {
+      if (!alive.current) return;
+      setRows(r.suggestions.map((s) => ({ ...s, on: true, orig: s.value })));
+      setNote(r.note);
+      setSkipped(Boolean(r.skipped));
+    });
+  }
+
+  // 포트를 정하고, 그 포트를 기준으로 설정 제안을 받는다. 이미 살펴본 프로젝트면 저장해 둔 포트 자리 값을 쓰고 건너뛴다.
   useEffect(() => {
-    let alive = true;
     api.planPorts(sessionId)
       .then(({ ports: p }) => {
-        if (!alive) return;
+        if (!alive.current) return;
         setPorts(p);
-        return api.suggestServerEnv(sessionId, p).then((r) => {
-          if (!alive) return;
-          setRows(r.suggestions.map((s) => ({ ...s, on: true })));
-          setNote(r.note);
-        });
+        return suggest(p, false);
       })
-      .catch((e) => { if (alive) { setSuggestError((e as Error).message); setRows([]); } });
-    return () => { alive = false; };
+      .catch((e) => { if (alive.current) { setSuggestError((e as Error).message); setRows([]); } });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -90,7 +99,7 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
       if (saveDefault) {
         for (const s of changed) await api.updateProject(s.project_id, { start_cmd: cmds[s.worktree_id].trim() });
       }
-      if (chosen.length) await api.applySessionEnv(sessionId, chosen.map((r) => ({ project_id: r.project_id, key: r.key, value: r.value.trim() })));
+      if (chosen.length) await api.applySessionEnv(sessionId, chosen.map((r) => ({ project_id: r.project_id, key: r.key, value: r.value.trim(), found_in: r.found_in })));
       await onConfirm(Object.fromEntries(changed.map((s) => [s.worktree_id, cmds[s.worktree_id].trim()])), ports ?? {}, docker);
     } catch (err) {
       setError((err as Error).message);
@@ -142,9 +151,14 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
         <section className="env-suggest" aria-label="설정 제안">
           <div className="env-suggest-head">
             <strong>이 포트에 맞춰 바꿀 설정</strong>
-            <span className="muted small">이번 세션 환경값에만 넣습니다</span>
+            <span className="muted small">주소는 <code>{'{be_url}'}</code>·<code>{'{fe_url}'}</code> 자리로 프로필에 저장해, 다음 세션부터는 포트가 달라도 자동으로 맞습니다</span>
           </div>
-          {rows === null ? (
+          {skipped ? (
+            <p className="muted small">
+              이미 살펴본 프로젝트라 저장해 둔 포트 자리 값으로 이 세션 포트에 맞춥니다.{' '}
+              <button type="button" className="small-btn" onClick={() => ports && suggest(ports, true).catch((e) => { setSuggestError((e as Error).message); setRows([]); })}>다시 살펴보기</button>
+            </p>
+          ) : rows === null ? (
             <p className="muted small"><span className="spinner" aria-hidden="true" /> FE·BE 설정을 살펴보는 중 (30초~1분). 기다리지 않고 실행해도 됩니다.</p>
           ) : suggestError ? (
             <p className="muted small">설정을 살펴보지 못했습니다: {suggestError}</p>
@@ -162,6 +176,11 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
                         {live(r.worktree_id) && <span className="pill warn">이 서버는 다시 띄워야 반영</span>}
                       </div>
                       <input className="mono" aria-label={`${r.key} 값`} value={r.value} disabled={!r.on} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} />
+                      <div className="muted small">
+                        {r.value === r.orig
+                          ? (r.template !== r.value ? <>프로필에 <code>{r.template}</code>로 저장</> : '포트 자리로 바꿀 수 없어 이번 세션에만 넣습니다')
+                          : '고친 값이 이 세션 주소면 포트 자리로 바꿔 프로필에, 아니면 이번 세션에만 넣습니다'}
+                      </div>
                       <div className="muted small">{r.reason}{r.current !== null && <> · 지금 <code>{r.current || '(빈 값)'}</code></>}</div>
                       <div className="muted small mono">{r.found_in}</div>
                     </div>

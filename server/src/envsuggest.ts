@@ -11,13 +11,17 @@ import { looksSecret } from './secret.js';
 import { git } from './git.js';
 import { recordUsage } from './usage.js';
 import { helperModel } from './models.js';
+import { db } from './db.js';
+import { renderPorts, sameServer, sessionAddrs, toTemplate } from './portvars.js';
 
 /**
  * 서버를 띄우기 전에, 이 세션의 포트로 FE와 BE가 서로 맞물리려면 바꿔야 할 환경값을 제안한다.
  * (FE가 부르는 API 주소, BE의 CORS 허용 주소, 인증·로그인 콜백 주소, 프론트 주소 등)
- * 코드는 읽기만 하고, 값은 사용자가 고르고 승인해야 이번 세션 환경값에 들어간다.
+ * 코드는 읽기만 하고, 값은 사용자가 고르고 승인해야 환경값에 들어간다.
+ * 이 세션 주소는 포트 자리({be_url} 등)로 바꿔 프로필에 저장하므로, 한 번 승인하면 다른 세션·포트에서도 맞물린다.
  */
-export type EnvSuggestion = { worktree_id: number; project_id: number; project_name: string; key: string; value: string; current: string | null; reason: string; found_in: string };
+export type EnvSuggestion = { worktree_id: number; project_id: number; project_name: string; key: string; value: string; template: string; current: string | null; reason: string; found_in: string };
+export type EnvSuggestResult = { suggestions: EnvSuggestion[]; note: string; skipped?: boolean };
 
 /** 주소·포트 값. 키 이름에 AUTH 같은 말이 있어도(CERT_AUTH_CALLBACK_URL) 주소는 비밀값이 아니다. */
 const isAddress = (v: string) => /^(https?|wss?):\/\/\S+$/i.test(v.trim()) || /^\d{2,5}$/.test(v.trim());
@@ -46,7 +50,7 @@ const SCHEMA = {
 };
 
 // 포트·환경값·실행 명령·코드가 그대로면 다시 읽지 않고 같은 결과를 쓴다. FE와 BE를 따로 띄워도 제안이 흔들리지 않는다.
-const cache = new Map<number, { key: string; result: { suggestions: EnvSuggestion[]; note: string } }>();
+const cache = new Map<number, { key: string; result: EnvSuggestResult }>();
 
 /** 코드가 바뀌었는지 알아볼 표시: HEAD와 커밋 안 한 파일들의 수정 시각. */
 async function codeStamp(dir: string): Promise<string> {
@@ -62,15 +66,9 @@ async function codeStamp(dir: string): Promise<string> {
 /** 제안 값이 이 세션 FE·BE 주소(경로가 붙어도 된다)나 포트 숫자인지. */
 function pointsToSession(value: string, urls: (string | null)[], ports: string[]): boolean {
   if (/^\d+$/.test(value)) return ports.includes(value);
-  const loopback = (h: string) => ['localhost', '127.0.0.1', '0.0.0.0', '[::1]'].includes(h);
-  const portOf = (u: URL) => u.port || (/^(https|wss):$/.test(u.protocol) ? '443' : '80');
   try {
     const v = new URL(value);
-    return urls.some((x) => {
-      if (!x) return false;
-      const u = new URL(x);
-      return portOf(u) === portOf(v) && (u.hostname === v.hostname || (loopback(u.hostname) && loopback(v.hostname)));
-    });
+    return urls.some((x) => x !== null && sameServer(new URL(x), v));
   } catch { return false; }
 }
 
@@ -82,13 +80,25 @@ function evidenceExists(foundIn: string, dirs: string[]): boolean {
   return dirs.some((d) => fs.existsSync(path.join(d, file)));
 }
 
-export async function suggestServerEnv(sessionId: number, ports: Record<number, number>): Promise<{ suggestions: EnvSuggestion[]; note: string }> {
+/** 살펴본 프로젝트로 표시한다. 다음 세션부터는 다시 살펴보기를 누를 때만 Claude가 읽는다. */
+export function markPortEnvChecked(projectIds: number[]) {
+  const up = db.prepare(`UPDATE projects SET port_env_checked = 1 WHERE id = ?`);
+  for (const id of new Set(projectIds)) up.run(id);
+}
+
+export async function suggestServerEnv(sessionId: number, ports: Record<number, number>, force = false): Promise<EnvSuggestResult> {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
+  // 모든 앱을 이미 살펴봤으면 저장해 둔 포트 자리 값으로 충분하다.
+  if (!force && !cache.has(sessionId) && session.worktrees.every((w) => getProject(w.project_id)?.port_env_checked)) {
+    return { suggestions: [], note: '', skipped: true };
+  }
+  const addrs = sessionAddrs(session, ports);
   const rows = session.worktrees.map((w) => {
     const p = getProject(w.project_id)!;
-    const { env } = resolveEnv(sessionId, p.id);
     const port = ports[w.id] ?? null;
+    // 포트 자리로 저장한 값은 이 세션 주소로 채워 보여 준다. 이미 맞으니 다시 제안하지 않는다.
+    const { env } = renderPorts(resolveEnv(sessionId, p.id).env, addrs, port);
     const auto: Record<string, string> = {};
     if (port) { auto.PORT = String(port); if (p.port_env) auto[p.port_env] = String(port); }
     const beUrl = sessionBeUrl(session, ports);
@@ -99,7 +109,7 @@ export async function suggestServerEnv(sessionId: number, ports: Record<number, 
   const code = await Promise.all(rows.map((r) => codeStamp(r.w.path)));
   const key = crypto.createHash('sha1').update(JSON.stringify([code, rows.map((r) => [r.w.id, r.p.start_cmd, r.port, r.env, r.auto])])).digest('hex');
   const hit = cache.get(sessionId);
-  if (hit?.key === key) return hit.result;
+  if (hit?.key === key && !force) return hit.result;
 
   const show = (k: string, v: string) => (hidden(k, v) ? '(비밀값, 설정됨)' : v);
   const addr = (kind: 'fe' | 'be') => rows.filter((r) => (kind === 'fe') === (r.w.project_kind === 'fe') && r.port).map((r) => projectUrl(r.p, r.port!))[0] ?? null;
@@ -174,9 +184,10 @@ export async function suggestServerEnv(sessionId: number, ports: Record<number, 
     // 근거 파일이 실제로 있어야 한다.
     if (!evidenceExists(s.found_in, [r.w.app_path, r.w.path])) continue;
     const cur = r.env[k] ?? null;
-    suggestions.push({ worktree_id: r.w.id, project_id: r.p.id, project_name: r.p.name, key: k, value: s.value.trim(), current: cur !== null && hidden(k, cur) ? '(비밀값)' : cur, reason: s.reason, found_in: s.found_in });
+    suggestions.push({ worktree_id: r.w.id, project_id: r.p.id, project_name: r.p.name, key: k, value: s.value.trim(), template: toTemplate(s.value, addrs), current: cur !== null && hidden(k, cur) ? '(비밀값)' : cur, reason: s.reason, found_in: s.found_in });
   }
   const result = { suggestions, note: d?.note ?? '' };
   cache.set(sessionId, { key, result });
+  if (suggestions.length === 0) markPortEnvChecked(rows.map((r) => r.p.id));
   return result;
 }

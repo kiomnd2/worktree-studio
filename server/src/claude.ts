@@ -11,6 +11,7 @@ import { setTasks, startFirstTask, tasksForContext } from './tasks.js';
 import { CLAUDE_EXECUTABLE, UPLOAD_DIR } from './config.js';
 import { type RepoView, appendMessage, createChat, enqueuePrompt, getChat, getSession, isQueuePaused, queueLength, setChat, setQueuePaused, shiftQueue } from './sessions.js';
 import { getSettings } from './settings.js';
+import { chatModel } from './models.js';
 import { notifyRunFinished } from './notify.js';
 import { serverPorts } from './runner.js';
 import { accountsOf } from './accounts.js';
@@ -428,6 +429,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
         // 저장한 문서를 다음 프롬프트에서 읽을 수 있게 문서 폴더도 연다.
         additionalDirectories: [...others, docsDir(sessionId)],
         resume: (chat ? chat.claude_session_id : session.claude_session_id) ?? undefined,
+        model: chatModel(),
         permissionMode: opts.plan ? 'plan' : mode,
         // 추가 대화는 세션 작업 목록을 건드리지 않으므로 목록을 올리는 단계를 뺀다.
         ...(opts.plan ? { planModeInstructions: chatId === 0 ? PLAN_INSTRUCTIONS : PLAN_INSTRUCTIONS.split('\n').filter((l) => !l.includes('set_tasks')).join('\n') } : {}),

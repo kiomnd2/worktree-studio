@@ -28,14 +28,15 @@ import { HELPER_PURPOSES } from './models.js';
 import { usageReport } from './usage.js';
 import { sendNotification } from './notify.js';
 import { cleanupOrphans, clearFailure, getLogs, listServers, planPorts, startServers, stopAll, stopServers } from './runner.js';
-import { suggestServerEnv } from './envsuggest.js';
+import { markPortEnvChecked, suggestServerEnv } from './envsuggest.js';
+import { hasPortVar, sessionAddrs, toTemplate } from './portvars.js';
 import { sessionEnvState, startPrep } from './envapi.js';
-import { addRequiredKeys, deleteProfile, ensureDefaultProfile, profileVars, saveSessionEnv, seedProfileIfEmpty, selectProfile, setSessionValues, type EnvVar } from './envstore.js';
+import { addRequiredKeys, deleteProfile, ensureDefaultProfile, profileVars, saveSessionEnv, seedProfileIfEmpty, selectProfile, setProfileValues, setSessionValues, type EnvVar } from './envstore.js';
 import { ENGINES, defaultEnvMap, deleteConnection, enableConnection, getConnection, guessFromEnv, listConnections, probe, saveConnection, sessionDbs, type Engine } from './dbconn.js';
 import { describeConnection, engineSupported } from './dbquery.js';
 import { STUDIO_ENGINES, createStudioDb, localSetup, openDockerDesktop, setCopyFiles, setStacks } from './localenv.js';
 import { ANALYZE_FIELDS, analyzeProject } from './projectanalyze.js';
-import { analyzeEnvWithAI, parseDotenv, scanEnv } from './envscan.js';
+import { analyzeEnvWithAI, parseDotenv, scanEnv, springProfiles } from './envscan.js';
 import {
   accountPassword, accountsForWorkspace, addAccount, deleteAccount, listAccounts, updateAccount,
 } from './accounts.js';
@@ -103,7 +104,7 @@ app.post('/api/projects/:id/analyze/apply', async (req) => {
   if (b.env_keys.length) {
     // 빈 프로필에 키를 먼저 넣으면 나중에 코드에서 찾은 키로 채우지 않으므로, 찾은 키부터 채운 뒤 더한다.
     const profile = ensureDefaultProfile(id);
-    seedProfileIfEmpty(profile.id, scanEnv(p.local_path));
+    seedProfileIfEmpty(profile.id, scanEnv(p.local_path, undefined, springProfiles(getProject(id)!.start_cmd)));
     added = addRequiredKeys(profile.id, b.env_keys);
   }
   return { project: await describeProject(getProject(id)!), env_keys_added: added };
@@ -114,7 +115,7 @@ function knownKeys(projectId: number): { key: string; value: string }[] {
   const p = getProject(projectId);
   if (!p) throw new Error('프로젝트가 없습니다.');
   const prof = profileVars(ensureDefaultProfile(projectId).id);
-  const scanned = fs.existsSync(p.local_path) ? scanEnv(p.local_path) : [];
+  const scanned = fs.existsSync(p.local_path) ? scanEnv(p.local_path, undefined, springProfiles(p.start_cmd)) : [];
   return [...prof, ...scanned.filter((v) => !prof.some((x) => x.key === v.key))].map((v) => ({ key: v.key, value: v.value }));
 }
 const engineSchema = z.enum(ENGINES as [Engine, ...Engine[]]);
@@ -368,7 +369,7 @@ app.post('/api/sessions/:id/env/analyze', async (req) => {
   const wt = s?.worktrees.find((w) => w.project_id === body.projectId);
   const project = projectById(body.projectId);
   if (!s || !wt || !project) throw new Error('세션이나 프로젝트를 찾을 수 없습니다.');
-  const scanned = scanEnv(wt.app_path, project.local_path);
+  const scanned = scanEnv(wt.app_path, project.local_path, springProfiles(project.start_cmd));
   if (!body.ai) return scanned;
   const ai = await analyzeEnvWithAI(wt.path, [...new Set([...body.known, ...scanned.map((v) => v.key)])]);
   // AI 판단을 앞에 두고, AI가 놓친 정적 분석 결과를 덧붙인다.
@@ -417,16 +418,28 @@ app.get('/api/sessions/:id/servers/prep', async (req) => {
 });
 app.post('/api/sessions/:id/servers/suggest-env', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { ports } = z.object({ ports: z.record(z.string(), z.number().int()) }).parse(req.body);
-  return suggestServerEnv(id, portMap(ports));
+  const { ports, force } = z.object({ ports: z.record(z.string(), z.number().int()), force: z.boolean().optional() }).parse(req.body);
+  return suggestServerEnv(id, portMap(ports), force);
 });
+// 이 세션 주소가 들어간 값은 포트 자리({be_url} 등)로 바꿔 프로필에 넣는다. 자리로 바꿀 수 없는 값만 이번 세션에 넣는다.
 app.post('/api/sessions/:id/env/apply', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { items } = z.object({ items: z.array(z.object({ project_id: z.number().int(), key: z.string().min(1), value: z.string() })).min(1) }).parse(req.body);
-  const byProject = new Map<number, Record<string, string>>();
-  for (const it of items) byProject.set(it.project_id, { ...byProject.get(it.project_id), [it.key.trim()]: it.value });
-  for (const [projectId, values] of byProject) setSessionValues(id, projectId, values);
-  return { ok: true };
+  const { items } = z.object({ items: z.array(z.object({ project_id: z.number().int(), key: z.string().min(1), value: z.string(), found_in: z.string().optional() })).min(1) }).parse(req.body);
+  const session = getSession(id);
+  if (!session) throw new Error('세션이 없습니다.');
+  const addrs = sessionAddrs(session);
+  const profile = new Map<number, { key: string; value: string; found_in?: string }[]>();
+  const only = new Map<number, Record<string, string>>();
+  for (const it of items) {
+    const key = it.key.trim();
+    const tpl = toTemplate(it.value, addrs);
+    if (hasPortVar(tpl)) profile.set(it.project_id, [...(profile.get(it.project_id) ?? []), { key, value: tpl, found_in: it.found_in }]);
+    else only.set(it.project_id, { ...only.get(it.project_id), [key]: it.value });
+  }
+  for (const [projectId, values] of profile) setProfileValues(id, projectId, values);
+  for (const [projectId, values] of only) setSessionValues(id, projectId, values);
+  markPortEnvChecked(session.worktrees.map((w) => w.project_id));
+  return { profile: [...profile.values()].flat().map((v) => `${v.key}=${v.value}`), session: [...only.values()].flatMap((v) => Object.keys(v)) };
 });
 app.post('/api/sessions/:id/servers/start', async (req) => {
   const { id } = idParam.parse(req.params);
@@ -679,6 +692,7 @@ app.put('/api/settings', async (req) => {
       stopServersOnPr: z.boolean(), autoCleanMerged: z.boolean(), deleteRemoteBranch: z.boolean(),
       pollMinutes: z.number().int().min(1).max(1440), staleDays: z.number().int().min(0).max(365),
     }).default(getSettings().cleanup),
+    defaultModel: z.string().max(100).default(getSettings().defaultModel),
     // 고른 작업만 온다(z.record는 enum 키를 모두 요구한다).
     helperModels: z.partialRecord(z.enum(HELPER_PURPOSES), z.string().max(100)).default(getSettings().helperModels),
   }).parse(req.body);

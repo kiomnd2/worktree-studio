@@ -93,7 +93,9 @@ export type Settings = {
   permissionMode: PermissionMode;
   notify: { onComplete: boolean; onError: boolean; onServerFail: boolean; os: boolean; sound: boolean; skipWhenViewing: boolean; minSeconds: number; onPr: boolean; onCleanup: boolean };
   cleanup: { stopServersOnPr: boolean; autoCleanMerged: boolean; deleteRemoteBranch: boolean; pollMinutes: number; staleDays: number };
-  /** 보조 작업마다 쓸 모델. 빈 값이면 Claude Code 기본 모델. */
+  /** 대화에 쓸 모델. 빈 값이면 Claude Code 기본 모델. */
+  defaultModel: string;
+  /** 보조 작업마다 쓸 모델. 빈 값이면 defaultModel. */
   helperModels: Record<string, string>;
 };
 
@@ -138,7 +140,8 @@ export type WorktreeChanges = {
 };
 
 /** 서버를 띄우기 전에 이 세션 포트에 맞춰 바꾸자고 제안된 환경값 */
-export type EnvSuggestion = { worktree_id: number; project_id: number; project_name: string; key: string; value: string; current: string | null; reason: string; found_in: string };
+/** template은 프로필에 저장될 값. 이 세션 주소가 {be_url}·{fe_url} 같은 포트 자리로 바뀐다. */
+export type EnvSuggestion = { worktree_id: number; project_id: number; project_name: string; key: string; value: string; template: string; current: string | null; reason: string; found_in: string };
 
 export type TaskList = { title: string; tasks: { title: string; status: 'todo' | 'doing' | 'done' | 'skipped'; note: string }[]; updated_at: string };
 
