@@ -13,7 +13,7 @@ export type QueueView = {
 };
 
 /** 메인 대화 말고 따로 연 대화. 같은 워크트리에서 돈다. */
-export type ChatView = Pick<ChatRow, 'id' | 'title' | 'status' | 'unread' | 'created_at'> & QueueView;
+export type ChatView = Pick<ChatRow, 'id' | 'title' | 'status' | 'unread' | 'created_at' | 'db_connection_id'> & QueueView;
 
 export type SessionView = SessionRow & QueueView & {
   workspace_name: string;
@@ -51,20 +51,20 @@ function view(r: SessionRow & { workspace_name: string }): SessionView {
 }
 
 function chatsOf(sessionId: number): ChatView[] {
-  const rows = db.prepare(`SELECT id, title, status, unread, created_at FROM chats WHERE session_id = ? AND closed = 0 ORDER BY id`).all(sessionId) as ChatRow[];
-  return rows.map((c) => ({ id: c.id, title: c.title, status: c.status, unread: c.unread, created_at: c.created_at, ...queueView(sessionId, c.id) }));
+  const rows = db.prepare(`SELECT id, title, status, unread, created_at, db_connection_id FROM chats WHERE session_id = ? AND closed = 0 ORDER BY id`).all(sessionId) as ChatRow[];
+  return rows.map((c) => ({ id: c.id, title: c.title, status: c.status, unread: c.unread, created_at: c.created_at, db_connection_id: c.db_connection_id, ...queueView(sessionId, c.id) }));
 }
 
 export function getChat(sessionId: number, chatId: number): ChatRow | undefined {
   return db.prepare(`SELECT * FROM chats WHERE id = ? AND session_id = ?`).get(chatId, sessionId) as ChatRow | undefined;
 }
 
-/** 제목을 주지 않으면 첫 프롬프트의 첫 줄로 짓는다. */
-export function createChat(sessionId: number, firstText: string, givenTitle?: string): ChatRow {
+/** 제목을 주지 않으면 첫 프롬프트의 첫 줄로 짓는다. dbConnectionId를 주면 그 DB에 질의하는 DB 대화다. */
+export function createChat(sessionId: number, firstText: string, givenTitle?: string, dbConnectionId?: number): ChatRow {
   const line = firstText.split('\n').map((l) => l.trim()).find(Boolean) ?? '';
   const n = (db.prepare(`SELECT COUNT(*) AS n FROM chats WHERE session_id = ?`).get(sessionId) as { n: number }).n;
   const title = givenTitle?.trim() || (line ? (line.length > 40 ? `${line.slice(0, 40)}…` : line) : `대화 ${n + 2}`);
-  const id = Number(db.prepare(`INSERT INTO chats (session_id, title) VALUES (?, ?)`).run(sessionId, title).lastInsertRowid);
+  const id = Number(db.prepare(`INSERT INTO chats (session_id, title, db_connection_id) VALUES (?, ?, ?)`).run(sessionId, title, dbConnectionId ?? null).lastInsertRowid);
   broadcast({ type: 'session.updated', sessionId });
   return getChat(sessionId, id)!;
 }

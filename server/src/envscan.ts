@@ -24,6 +24,10 @@ const CODE_EXT = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue', 
 /** 테스트 코드는 환경변수를 직접 넣어 쓰는 경우가 많아 필요한 값으로 보지 않는다. */
 const PY_TEST = /(^|[\\/])(tests?|conftest\.py$|test_[^\\/]*\.py$)/;
 const CONF_EXT = new Set(['.yml', '.yaml', '.properties']);
+/** Spring이 읽는 설정 파일. 1번 묶음이 프로필 이름(application-local.yml의 local). */
+const SPRING_CONF = /^(?:application|bootstrap)(?:-([\w.-]+))?\.(ya?ml|properties)$/;
+/** 테스트 코드·리소스는 실행할 때 읽지 않는다. */
+const TEST_PATH = /(^|[\\/])(src[\\/]test|__tests__|tests?)[\\/]/;
 const EXAMPLE_FILE = /^\.env(\.[\w-]+)*\.(example|sample|template|dist)$|^\.env\.(example|sample|template)$/;
 const VITE_BUILTIN = new Set(['MODE', 'DEV', 'PROD', 'SSR', 'BASE_URL']);
 const NODE_BUILTIN = new Set(['NODE_ENV', 'HOME', 'PATH', 'PWD', 'USER', 'SHELL', 'TZ', 'CI']);
@@ -67,11 +71,70 @@ export function parseDotenv(text: string): { key: string; value: string; line: n
   return out;
 }
 
+/** 실행 명령에서 Spring 활성 프로필을 읽는다. 없으면 local로 본다. */
+export function springProfiles(startCmd?: string | null): string[] {
+  const m = startCmd?.match(/(?:SPRING_PROFILES_ACTIVE=|spring\.profiles\.active=)['"]?([\w,-]+)/);
+  return m ? m[1].split(',').filter(Boolean) : ['local'];
+}
+
+/** relaxed binding처럼 대소문자·-·_를 무시하고 속성 경로를 비교한다. */
+const normPath = (k: string) => k.toLowerCase().replace(/[-_]/g, '');
+
+/** 값 안의 ${KEY}가 모두 기본값을 가져 환경변수 없이도 정해지는지. */
+const resolvable = (v: string) => [...v.matchAll(/\$\{([^}]*)\}/g)].every((m) => m[1].includes(':'));
+
+/** on-profile 식(local | dev, !prod 등)이 활성 프로필과 맞는지. */
+function profileMatches(expr: string, active: string[]): boolean {
+  return expr.split(/[\s,|&()]+/).filter(Boolean).some((t) => (t.startsWith('!') ? !active.includes(t.slice(1)) : active.includes(t)));
+}
+
+/** 설정 파일 한 줄: 속성 경로(모르면 null), 값, 지금 프로필에서 기본(base)·프로필(profile)·안 읽힘(off) 중 어디인지. */
+type ConfLine = { path: string | null; value: string; scope: 'base' | 'profile' | 'off' };
+
+/** Spring 설정 파일의 줄마다 속성 경로와 값, 활성 프로필에서 읽히는지를 매긴다. */
+function springLines(base: string, text: string, active: string[]): ConfLine[] {
+  const [, fileProfile, ext] = base.match(SPRING_CONF)!;
+  const fileScope: ConfLine['scope'] = fileProfile ? (active.includes(fileProfile) ? 'profile' : 'off') : 'base';
+  const lines = text.split('\n');
+  if (ext === 'properties') {
+    return lines.map((l) => {
+      const e = /^\s*[#!]/.test(l) ? null : l.match(/^\s*([\w.\-[\]]+)\s*[=:]\s*(.*)$/);
+      return { path: e ? normPath(e[1]) : null, value: e?.[2].trim() ?? '', scope: fileScope };
+    });
+  }
+  // YAML은 --- 로 나뉜 문서마다 on-profile로 다른 프로필을 가리킬 수 있다.
+  const out: ConfLine[] = [];
+  let stack: { indent: number; key: string }[] = [];
+  let doc: ConfLine[] = [];
+  const close = () => {
+    const cond = doc.find((d) => d.value && (d.path === 'spring.config.activate.onprofile' || d.path === 'spring.profiles'));
+    const scope = fileScope === 'off' || !cond ? fileScope : profileMatches(cond.value.replace(/^["']|["']$/g, ''), active) ? 'profile' : 'off';
+    out.push(...doc.map((d) => ({ ...d, scope })));
+    doc = [];
+    stack = [];
+  };
+  for (const l of lines) {
+    if (/^---\s*$/.test(l)) { close(); doc.push({ path: null, value: '', scope: fileScope }); continue; }
+    const e = l.match(/^(\s*)(["']?)([\w.\-[\]]+)\2\s*:(?:\s+(.*))?$/);
+    if (!e) { doc.push({ path: null, value: '', scope: fileScope }); continue; }
+    const indent = e[1].length;
+    while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
+    const value = (e[4] ?? '').replace(/\s+#.*$/, '').trim();
+    const keyPath = normPath([...stack.map((x) => x.key), e[3]].join('.'));
+    if (!value) stack.push({ indent, key: e[3] });
+    doc.push({ path: keyPath, value, scope: fileScope });
+  }
+  close();
+  return out;
+}
+
 /**
  * 워크트리를 정적으로 훑어 필요한 환경변수를 찾는다.
  * cloneDir가 있으면 원본 클론 폴더의 .env(커밋되지 않아 워크트리에는 없는 파일)에서 값을 가져온다.
+ * 필수로 보는 것은 실제로 읽히는 곳뿐이다: Spring 기본 설정과 활성 프로필(profiles) 설정, 테스트가 아닌 코드.
+ * 다른 프로필·테스트·Spring이 아닌 yml(compose, k8s 등)의 ${KEY}와 .env.example의 빈 값은 선택으로 둔다.
  */
-export function scanEnv(dir: string, cloneDir?: string): FoundVar[] {
+export function scanEnv(dir: string, cloneDir?: string, profiles: string[] = ['local']): FoundVar[] {
   const found = new Map<string, FoundVar>();
   const add = (v: FoundVar) => {
     const cur = found.get(v.key);
@@ -82,14 +145,27 @@ export function scanEnv(dir: string, cloneDir?: string): FoundVar[] {
   };
   const rel = (f: string, line: number) => `${path.relative(dir, f)}:${line}`;
 
-  for (const file of walk(dir)) {
+  const files = [...walk(dir)];
+  // Spring 설정 줄을 먼저 매겨 두고, 활성 프로필이 값을 정해 둔 속성을 모은다.
+  // 기본 설정의 ${KEY}라도 application-local.yml 등이 그 속성을 값으로 덮으면 실행에 필요 없다.
+  const spring = new Map<string, ConfLine[]>();
+  for (const file of files) {
+    const base = path.basename(file);
+    if (!SPRING_CONF.test(base) || TEST_PATH.test(path.relative(dir, file))) continue;
+    const text = readSmall(file);
+    if (text) spring.set(file, springLines(base, text, profiles));
+  }
+  const overridden = new Set([...spring.values()].flat().filter((c) => c.scope === 'profile' && c.path && c.value && resolvable(c.value)).map((c) => c.path!));
+
+  for (const file of files) {
     const base = path.basename(file);
     const ext = path.extname(file);
     if (EXAMPLE_FILE.test(base)) {
       const text = readSmall(file);
       if (!text) continue;
+      // 예시 파일은 선택 값도 비워 적는 경우가 많아, 빈 값이어도 필수로 보지 않는다.
       for (const e of parseDotenv(text)) {
-        add({ key: e.key, value: e.value, required: e.value === '', secret: looksSecret(e.key), source: 'detected', found_in: rel(file, e.line) });
+        add({ key: e.key, value: e.value, required: false, secret: looksSecret(e.key), source: 'detected', found_in: rel(file, e.line) });
       }
       continue;
     }
@@ -97,6 +173,16 @@ export function scanEnv(dir: string, cloneDir?: string): FoundVar[] {
     const text = readSmall(file);
     if (!text) continue;
     const lines = text.split('\n');
+    const isTest = TEST_PATH.test(path.relative(dir, file));
+    const conf = spring.get(file);
+    // 그 줄의 ${KEY}가 비어 있으면 실행이 안 될 수 있는지. Spring이 아닌 설정 파일은 앱이 읽지 않는다.
+    const canRequire = (i: number) => {
+      if (isTest) return false;
+      if (!CONF_EXT.has(ext)) return true;
+      const c = conf?.[i];
+      if (!c || c.scope === 'off') return false;
+      return c.scope === 'profile' || !c.path || !overridden.has(c.path);
+    };
     lines.forEach((line, i) => {
       // ${KEY} 또는 ${KEY:default} (Spring 설정, @Value)
       for (const m of line.matchAll(/\$\{([A-Z][A-Z0-9_]*)(?::([^}]*))?\}/g)) {
@@ -104,7 +190,7 @@ export function scanEnv(dir: string, cloneDir?: string): FoundVar[] {
         if (!CONF_EXT.has(ext) && !/@Value|getProperty|environment\./.test(line)) continue;
         // 셸·compose 문법 ${KEY:-기본값}의 "-"는 기본값에 들어가지 않는다.
         const def = m[2]?.replace(/^-/, '');
-        add({ key: m[1], value: def ?? '', required: def === undefined, secret: looksSecret(m[1]), source: 'detected', found_in: rel(file, i + 1) });
+        add({ key: m[1], value: def ?? '', required: def === undefined && canRequire(i), secret: looksSecret(m[1]), source: 'detected', found_in: rel(file, i + 1) });
       }
       if (!CODE_EXT.has(ext)) return;
       for (const m of line.matchAll(/process\.env(?:\.([A-Z_][A-Z0-9_]*)|\[['"]([A-Z_][A-Z0-9_]*)['"]\])/g)) {
@@ -178,6 +264,9 @@ export async function analyzeEnvWithAI(dir: string, known: string[]): Promise<Fo
     '이 프로젝트를 로컬에서 개발 서버로 실행하는 데 필요한 환경변수를 찾아줘.',
     '설정 파일(application*.yml, .env.example 등), 코드의 환경변수 참조, README의 실행 방법을 확인해.',
     '포트(PORT, SERVER_PORT)는 도구가 정하니 빼고, 기본값이 있어 비워도 실행되는 값은 required=false로 해.',
+    '목표는 이 컴퓨터에서 바로 뜨는 로컬 실행이다. default에는 로컬 기준 값을 넣어: localhost 주소, docker-compose 파일에 적힌 로컬 DB·Redis 계정과 포트, 로컬 프로필(application-local.yml, .env.example 등)의 개발용 값, mock·local 모드 스위치(예: AUTH_MODE=mock).',
+    '운영·스테이징 주소, 실제 비밀값(토큰·키)은 default에 넣지 않는다(로컬에서 꼭 필요하면 required=true로 비워 둔다).',
+    'DB 접속값(DB URL·계정·비밀번호, SPRING_DATASOURCE_*, DATABASE_URL 등)은 도구의 DB 설정이 따로 넣으므로 required=false로 하고 reason에 "DB 설정에서 넣음"이라고 적어.',
     'found_in은 "상대경로:줄번호", reason은 한 문장 한국어로.',
     known.length ? `이미 찾은 키: ${known.join(', ')}. 이것들도 필수 여부를 다시 판단해서 포함해.` : '',
   ].join('\n');

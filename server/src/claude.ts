@@ -3,12 +3,15 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { createSdkMcpServer, query, tool, type CanUseTool, type PermissionMode, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { cancelApprovals, requestAccount, requestAnswers, requestEnv, requestPlanApproval, type Question } from './approvals.js';
+import { cancelApprovals, requestAccount, requestAnswers, requestDbWrite, requestEnv, requestPlanApproval, type Question } from './approvals.js';
+import { type DbConnection, sessionDbs } from './dbconn.js';
+import { MAX_ROWS, describeConnection, engineSupported, formatResult, isReadOnly, runQuery } from './dbquery.js';
 import { docsDir, listDocs, saveDoc } from './docs.js';
 import { setTasks, startFirstTask, tasksForContext } from './tasks.js';
 import { CLAUDE_EXECUTABLE, UPLOAD_DIR } from './config.js';
 import { type RepoView, appendMessage, createChat, enqueuePrompt, getChat, getSession, isQueuePaused, queueLength, setChat, setQueuePaused, shiftQueue } from './sessions.js';
 import { getSettings } from './settings.js';
+import { chatModel } from './models.js';
 import { notifyRunFinished } from './notify.js';
 import { serverPorts } from './runner.js';
 import { accountsOf } from './accounts.js';
@@ -74,11 +77,29 @@ function attachmentBlock(a: StoredImage): Exclude<SDKUserMessage['message']['con
   return { type: 'image', source: { type: 'base64', media_type: a.mediaType as ImageType, data: buf.toString('base64') } };
 }
 
-function buildSystemAppend(repos: RepoView[], side: boolean) {
+/** DB 대화에서 따를 것. 코드는 고치지 않고 이 연결에만 질의한다. */
+function dbChatLines(c: DbConnection) {
+  return [
+    `이 대화는 DB 대화다. DB 연결 #${c.id} ${c.name} (${describeConnection(c)})에만 mcp__studio__db_query로 질의한다. 다른 연결이 필요하면 사용자에게 다른 DB 대화를 열어 달라고 한다.`,
+    '코드와 파일은 고치지 않는다. 테이블·컬럼을 모르면 DB 메타데이터(information_schema, ALL_TAB_COLUMNS 같은 것)를 먼저 조회하고, 의미가 애매하면 워크트리의 엔티티·매퍼·마이그레이션 파일을 Read·Grep으로 읽어 확인한다.',
+    '조회는 필요한 컬럼만, 행 수를 제한(LIMIT, FETCH FIRST, TOP)해서 한다. 답할 때는 결과를 요약하고 실행한 SQL을 함께 보여 준다.',
+    '데이터를 바꾸는 질의는 한 문장씩 보낸다. 사용자가 SQL을 확인하고 승인해야 실행된다. 보내기 전에 영향받을 행을 SELECT로 먼저 세어 보여 준다.',
+  ];
+}
+
+function buildSystemAppend(repos: RepoView[], side: boolean, db: DbConnection | null) {
   // 저장소 하나에 앱이 여럿이면(모노레포) 앱 폴더도 알려 준다.
   const lines = repos.map((w) => `- ${w.project_name}: ${w.path} (브랜치 ${w.branch}, ${w.base_branch}에서 분기)${w.apps.length > 1
     ? `. 이 저장소의 앱: ${w.apps.map((a) => `${a.project_kind.toUpperCase()} ${a.subdir ? `${a.subdir}/` : '루트'}`).join(', ')}`
     : ''}`);
+  if (db) {
+    return [
+      ...dbChatLines(db),
+      '이 세션의 워크트리(읽기만 한다):',
+      ...lines,
+      '사용자가 정해야 할 것이 생기면 추측하지 말고 AskUserQuestion으로 묻는다.',
+    ].join('\n');
+  }
   const sideLines = side ? [
     '이 대화는 세션의 추가 대화다. 같은 워크트리에서 메인 대화의 Claude가 다른 작업을 동시에 하고 있을 수 있다.',
     '요청받은 일만 좁게 고치고, 관련 없는 파일은 건드리지 않는다. 파일을 고치기 직전에 다시 읽어 최신 내용 위에 고친다. git stash, checkout, reset처럼 워크트리 전체를 바꾸는 명령은 쓰지 않는다.',
@@ -94,16 +115,19 @@ function buildSystemAppend(repos: RepoView[], side: boolean) {
     '화면 확인은 mcp__browser 도구로 한다.',
     '환경값은 도구가 관리한다. 필요한 값이 없거나 틀렸으면 .env 파일을 만들거나 고치지 말고 mcp__studio__request_env_values로 요청한다.',
     '다른 역할의 테스트 계정이 필요하면 mcp__studio__request_test_account로 요청한다. 두 요청 모두 사용자가 화면에서 확인해야 적용된다.',
+    '개발 DB의 데이터를 확인해야 하면 <tool_context>의 DB 연결에 mcp__studio__db_query로 질의한다. 읽기는 바로 실행되고, 데이터를 바꾸는 질의는 사용자가 SQL을 확인하고 승인해야 실행된다. DB 클라이언트를 Bash로 직접 쓰지 않는다.',
     '작업 중에 사용자가 정해야 할 것(요구사항이 애매함, 방법이 여럿임, 데이터를 바꿔도 되는지 등)이 생기면 추측하지 말고 AskUserQuestion으로 바로 묻는다. 답을 받으면 이어서 작업한다.',
     '계획서, 화면설계서처럼 사람이 읽을 산출물은 mcp__studio__save_doc으로 HTML 문서로 저장한다. 저장소에 문서 파일을 만들지 않는다.',
     '저장한 문서 목록은 메시지의 <tool_context>에 나온다. 사용자가 문서를 언급하면 그 경로의 파일을 Read로 읽어 따른다.',
+    '개발을 마치고 완료 보고서를 요청받으면 아래 순서를 따른다.',
+    REPORT_INSTRUCTIONS,
     '<tool_context>에 작업 목록이 있으면 그 목록대로 진행한다. 항목을 시작하기 전에 doing으로, 끝나면 바로 done으로 mcp__studio__set_tasks를 불러 바꾼다(목록 전체를 보낸다). doing은 지금 하는 한 항목만 둔다. 하지 않기로 한 항목은 skipped와 이유를 note에 적는다.',
     '작업 목록은 사용자 화면에 항상 보인다. 계획에 없던 일을 하게 되면 목록에 항목을 더한다. 할 일이 여럿인 큰 작업은 계획 모드가 아니어도 목록을 만들어 진행한다.',
   ].join('\n');
 }
 
 /** 시스템 프롬프트는 세션 처음에 고정되므로, 바뀌는 정보(서버 주소, 계정)는 매 메시지에 붙인다. */
-function runtimeContext(sessionId: number, chatId: number): string | null {
+function runtimeContext(sessionId: number, chatId: number, dbs: (DbConnection & { project_name: string })[]): string | null {
   const ports = serverPorts(sessionId);
   const accounts = accountsOf(sessionId);
   const lines: string[] = [];
@@ -117,8 +141,12 @@ function runtimeContext(sessionId: number, chatId: number): string | null {
   if (tasks) lines.push(tasks);
   const docs = listDocs(sessionId);
   if (docs.length) {
-    lines.push('이 세션의 산출물 (계획서·화면설계서·테스트 결과서, 필요하면 Read로 읽는다):');
+    lines.push('이 세션의 산출물 (계획서·화면설계서·테스트 결과서·완료 보고서, 필요하면 Read로 읽는다):');
     lines.push(...docs.map((d) => `- ${d.name} "${d.title}" (${KIND_LABEL[d.kind]}, ${d.version}판): ${d.path}`));
+  }
+  if (dbs.length) {
+    lines.push('질의할 수 있는 DB 연결 (mcp__studio__db_query의 connection_id, 켜짐은 서버 실행 때 쓰는 연결):');
+    lines.push(...dbs.map((c) => `- #${c.id} ${c.name}: ${describeConnection(c)} · ${c.project_name}${c.enabled ? ' · 켜짐' : ''}${engineSupported(c) ? '' : ' · 질의 지원 안 함'}`));
   }
   if (accounts.length) {
     lines.push('화면 확인용 테스트 계정 (다른 세션과 같이 쓴다. 역할이 다르면 메모를 보고 골라 쓴다):');
@@ -127,7 +155,25 @@ function runtimeContext(sessionId: number, chatId: number): string | null {
   return `<tool_context>\n${lines.join('\n')}\n</tool_context>`;
 }
 
-const KIND_LABEL = { plan: '계획서', screen: '화면설계서', test: '테스트 결과서', other: '문서' } as const;
+const KIND_LABEL = { plan: '계획서', screen: '화면설계서', test: '테스트 결과서', report: '완료 보고서', other: '문서' } as const;
+
+/** 개발을 마친 뒤 완료 보고서를 쓰는 순서. 계획·작업 목록·실제 변경·검증 결과를 맞대어 사실만 적는다. */
+const REPORT_INSTRUCTIONS = [
+  '1. <tool_context>의 산출물(계획서·화면설계서·테스트 결과서)과 작업 목록을 Read로 읽는다. 없는 문서는 없다고 적는다.',
+  '2. 저장소마다 분기한 브랜치와 비교해 실제로 바뀐 것을 확인한다: git diff --stat <분기 브랜치>...HEAD, git status --short. 내용은 필요한 파일만 읽는다.',
+  '3. 보고서에 담을 것:',
+  '   - 요약: 무엇을 왜 했고 결과가 어떤지 두세 문장.',
+  '   - 계획 대비 결과: 계획서 단계와 작업 목록 항목마다 완료·안 함·계획과 달라짐을 표로 적고, 달라졌으면 이유와 근거 파일을 붙인다. 맨 위에 반영한 항목 수/전체를 적는다.',
+  '   - 바뀐 내용: 저장소별로 바뀐 파일과 이유. 데이터·API·설정·환경값 변경은 따로 묶는다.',
+  '   - 화면: 화면이 바뀌었으면 화면설계서와 다른 점.',
+  '   - 검증: 실제로 실행한 빌드·테스트·화면 확인과 그 결과, 테스트 결과서 요약. 실행하지 않았거나 확인하지 못한 것은 그렇다고 적는다.',
+  '   - 남은 일과 알려진 문제, 리뷰어가 꼭 볼 곳, 배포·실행할 때 주의할 점(마이그레이션, 새 환경값 등).',
+  '4. 확인한 사실만 쓴다. 실행하지 않은 테스트를 통과했다고 쓰지 않고, 추측은 추측이라고 적는다.',
+  '5. 보고서를 쓰는 동안 코드는 고치지 않는다. 고칠 것을 찾으면 남은 일에 적는다.',
+  '6. mcp__studio__save_doc(kind "report", name "report")으로 저장한다. 제목은 "<티켓> 완료 보고서". 다시 요청받으면 같은 name으로 새 판을 저장한다.',
+  '   문서는 한국어로, CSS를 <style>에 넣은 완결된 HTML로 만든다. 다른 산출물은 이름으로 언급한다.',
+  '7. 저장한 뒤 대화에는 결과 요약 세 줄과 남은 일만 짧게 남긴다.',
+].join('\n');
 
 /** 계획 모드에서 따를 순서. 산출물을 HTML 문서로 남기고, 사용자가 확인한 뒤에만 실행한다. */
 const PLAN_INSTRUCTIONS = [
@@ -164,12 +210,19 @@ export function submitPrompt(sessionId: number, text: string, images: IncomingIm
 }
 
 /** 추가 대화를 열고 첫 프롬프트를 바로 실행한다. */
-export function startChat(sessionId: number, text: string, images: IncomingImage[], opts: { plan?: boolean; title?: string } = {}) {
+export function startChat(sessionId: number, text: string, images: IncomingImage[], opts: { plan?: boolean; title?: string; db?: number } = {}) {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
   if (session.closed) throw new Error('닫힌 세션입니다.');
   if (!text.trim() && images.length === 0) throw new Error('프롬프트를 입력하세요.');
-  const chat = createChat(sessionId, text, opts.title);
+  let title = opts.title;
+  if (opts.db !== undefined) {
+    const c = sessionDbs(session).find((x) => x.id === opts.db);
+    if (!c) throw new Error('이 세션의 프로젝트에 없는 DB 연결입니다.');
+    if (!engineSupported(c)) throw new Error(`${c.engine}은(는) 아직 질의를 지원하지 않습니다.`);
+    title ??= `DB · ${c.name}`;
+  }
+  const chat = createChat(sessionId, text, title, opts.db);
   submitPrompt(sessionId, text, images, { plan: opts.plan, chatId: chat.id });
   return { id: chat.id, title: chat.title };
 }
@@ -188,8 +241,9 @@ export function resumeQueue(sessionId: number, chatId: number) {
 }
 
 /** 프롬프트 중에 Claude가 환경값·테스트 계정을 요청하는 도구. 사용자가 승인할 때까지 기다린다. */
-function studioTools(sessionId: number, chatId: number) {
+function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; dbs: DbConnection[]; dbOnly: number | null }) {
   const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
+  const fail = (t: string) => ({ ...text(t), isError: true });
   return createSdkMcpServer({
     name: 'studio',
     version: '1.0.0',
@@ -238,12 +292,12 @@ function studioTools(sessionId: number, chatId: number) {
       ),
       tool(
         'save_doc',
-        '계획서, 화면설계서 같은 산출물을 HTML 문서로 저장한다. 사용자는 화면에서 바로 보고, 다음 프롬프트에서 다시 참조한다. '
+        '계획서, 화면설계서, 완료 보고서 같은 산출물을 HTML 문서로 저장한다. 사용자는 화면에서 바로 보고, 다음 프롬프트에서 다시 참조한다. '
           + '같은 name으로 저장하면 새 판이 되고 예전 판은 남는다. 저장소에는 아무것도 쓰지 않는다.',
         {
-          name: z.string().describe('영문 소문자·숫자·하이픈. 계획서는 "plan", 화면설계서는 "screen-<화면>" (예: screen-member-list)'),
+          name: z.string().describe('영문 소문자·숫자·하이픈. 계획서는 "plan", 화면설계서는 "screen-<화면>" (예: screen-member-list), 완료 보고서는 "report"'),
           title: z.string().describe('사람이 읽을 제목. 예: "회원 목록 화면설계서"'),
-          kind: z.enum(['plan', 'screen', 'other']).describe('plan: 계획서, screen: 화면설계서, other: 그 밖의 문서'),
+          kind: z.enum(['plan', 'screen', 'report', 'other']).describe('plan: 계획서, screen: 화면설계서, report: 개발 완료 보고서, other: 그 밖의 문서'),
           html: z.string().describe('<html>로 시작하는 완결된 HTML. CSS는 <style>에 넣고 외부 파일·스크립트·이미지 링크는 쓰지 않는다.'),
         },
         async (args) => {
@@ -256,6 +310,33 @@ function studioTools(sessionId: number, chatId: number) {
           }
         },
         // 저장소를 건드리지 않으므로 계획 모드에서도 쓸 수 있다.
+        { annotations: { readOnlyHint: true } },
+      ),
+      tool(
+        'db_query',
+        `개발 DB에 SQL 한 문장을 실행한다. SELECT·SHOW·EXPLAIN 같은 읽기는 롤백하는 트랜잭션에서 바로 실행하고 최대 ${MAX_ROWS}행을 탭으로 나눈 표로 돌려준다. `
+          + '데이터나 스키마를 바꾸는 질의는 사용자가 SQL을 확인·승인해야 실행되고, 그때까지 기다린다. 한 번에 한 문장만 보낸다.',
+        {
+          connection_id: z.number().int().describe('<tool_context>에 나온 DB 연결 번호(#뒤 숫자)'),
+          sql: z.string().min(1).describe('SQL 한 문장. 끝의 세미콜론은 없어도 된다'),
+          reason: z.string().describe('이 질의로 확인하거나 바꾸려는 것 한 문장'),
+        },
+        async (args) => {
+          if (opts.dbOnly !== null && args.connection_id !== opts.dbOnly) return fail(`이 대화는 DB 연결 #${opts.dbOnly} 전용입니다.`);
+          const c = opts.dbs.find((x) => x.id === args.connection_id);
+          if (!c) return fail(`DB 연결 #${args.connection_id}이 없습니다. <tool_context>의 연결 번호를 쓰세요.`);
+          if (!engineSupported(c)) return fail(`${c.engine}은(는) 아직 질의를 지원하지 않습니다.`);
+          if (!isReadOnly(args.sql)) {
+            if (opts.plan) return fail('계획 모드에서는 데이터를 바꾸지 않습니다. 필요한 변경은 계획서에 적으세요.');
+            return text(await requestDbWrite(sessionId, chatId, c, args.sql, args.reason));
+          }
+          try {
+            return text(formatResult(await runQuery(c, args.sql, { readOnly: true })));
+          } catch (err) {
+            return fail(`질의 오류: ${(err as Error).message}`);
+          }
+        },
+        // 읽기는 롤백하고 쓰기는 따로 승인을 받으므로 계획 모드에서도 쓸 수 있다.
         { annotations: { readOnlyHint: true } },
       ),
     ],
@@ -285,7 +366,11 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
     ...stored.map(attachmentBlock),
     ...(text.trim() ? [{ type: 'text' as const, text }] : []),
   ];
-  const ctx = runtimeContext(sessionId, chatId);
+  const dbs = sessionDbs(session);
+  // DB 대화면 그 연결만 보여 준다. 연결을 지웠으면 일반 대화처럼 돈다.
+  const dbOnly = chat?.db_connection_id ? dbs.find((c) => c.id === chat.db_connection_id) ?? null : null;
+  if (chat?.db_connection_id && !dbOnly) appendMessage(sessionId, 'event', { kind: 'error', message: '이 대화의 DB 연결을 지웠거나 찾지 못했습니다. 설정의 로컬 실행에서 연결을 확인하세요.' }, chatId);
+  const ctx = runtimeContext(sessionId, chatId, dbOnly ? [dbOnly] : dbs);
   if (ctx) content.push({ type: 'text', text: ctx });
 
   async function* input(): AsyncGenerator<SDKUserMessage> {
@@ -344,29 +429,34 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
         // 저장한 문서를 다음 프롬프트에서 읽을 수 있게 문서 폴더도 연다.
         additionalDirectories: [...others, docsDir(sessionId)],
         resume: (chat ? chat.claude_session_id : session.claude_session_id) ?? undefined,
+        model: chatModel(),
         permissionMode: opts.plan ? 'plan' : mode,
         // 추가 대화는 세션 작업 목록을 건드리지 않으므로 목록을 올리는 단계를 뺀다.
         ...(opts.plan ? { planModeInstructions: chatId === 0 ? PLAN_INSTRUCTIONS : PLAN_INSTRUCTIONS.split('\n').filter((l) => !l.includes('set_tasks')).join('\n') } : {}),
         canUseTool,
         settingSources: ['user', 'project', 'local'],
-        systemPrompt: { type: 'preset', preset: 'claude_code', append: buildSystemAppend(session.repos, chatId !== 0) },
+        systemPrompt: { type: 'preset', preset: 'claude_code', append: buildSystemAppend(session.repos, chatId !== 0, dbOnly) },
         abortController: abort,
         pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
         // Studio가 넘긴 MCP만 쓴다. 사용자 설정의 MCP·커넥터는 도구 목록이 바뀔 때마다 대화에 목록이 다시 들어간다.
         strictMcpConfig: true,
         mcpServers: {
-          studio: studioTools(sessionId, chatId),
+          studio: studioTools(sessionId, chatId, { plan: Boolean(opts.plan), dbs, dbOnly: dbOnly?.id ?? null }),
           // 화면 확인용 브라우저. 스크린샷은 워크트리가 아닌 세션 화면 폴더에 남겨 커밋에 섞이지 않게 한다(세션 정리 때 함께 지운다).
-          browser: {
-            type: 'stdio',
-            command: process.execPath,
-            args: [playwrightMcpCli(), '--headless', '--browser', 'chrome', '--isolated', '--ignore-https-errors', '--viewport-size', '1440,900', '--output-dir', path.join(SCREEN_DIR, String(sessionId), 'chat')],
-          },
+          // DB 대화는 화면을 보지 않으므로 띄우지 않는다.
+          ...(dbOnly ? {} : {
+            browser: {
+              type: 'stdio' as const,
+              command: process.execPath,
+              args: [playwrightMcpCli(), '--headless', '--browser', 'chrome', '--isolated', '--ignore-https-errors', '--viewport-size', '1440,900', '--output-dir', path.join(SCREEN_DIR, String(sessionId), 'chat')],
+            },
+          }),
         },
         settings: { autoCompactWindow: AUTO_COMPACT_TOKENS, enabledPlugins: Object.fromEntries(DISABLED_PLUGINS.map((p) => [p, false])) },
-        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks', 'mcp__browser'],
-        // 추가 대화는 세션 작업 목록을 바꾸지 않는다.
-        ...(chatId !== 0 ? { disallowedTools: ['mcp__studio__set_tasks'] } : {}),
+        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks', 'mcp__studio__db_query', 'mcp__browser'],
+        // 추가 대화는 세션 작업 목록을 바꾸지 않는다. DB 대화는 코드와 파일도 고치지 않는다.
+        ...(dbOnly ? { disallowedTools: ['mcp__studio__set_tasks', 'Edit', 'Write', 'NotebookEdit', 'Bash'] }
+          : chatId !== 0 ? { disallowedTools: ['mcp__studio__set_tasks'] } : {}),
       },
     });
 

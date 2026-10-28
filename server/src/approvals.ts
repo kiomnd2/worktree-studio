@@ -4,6 +4,8 @@ import { profileVars, resolveEnv, saveSessionEnv, selectedProfile, type EnvVar }
 import { accountsOf } from './accounts.js';
 import { looksSecret } from './secret.js';
 import { sendNotification } from './notify.js';
+import type { DbConnection } from './dbconn.js';
+import { describeConnection, formatResult, runQuery } from './dbquery.js';
 
 /**
  * 프롬프트를 실행하던 Claude가 환경값이나 테스트 계정이 더 필요하다고 요청한 것.
@@ -26,6 +28,8 @@ export type QuestionRequest = { kind: 'question'; questions: Question[] };
  * plan은 만드는 방법이고 사용자가 고쳐서 승인할 수 있다.
  */
 export type TestDataRequest = { kind: 'testdata'; case_id: number; case_title: string; need: string; plan: string; role: string };
+/** 데이터를 바꾸는 DB 질의. 사용자가 SQL을 보고(고쳐서) 승인해야 실행한다. */
+export type DbWriteRequest = { kind: 'dbwrite'; connection_id: number; connection_name: string; target: string; sql: string };
 
 export type Approval = {
   id: number;
@@ -33,17 +37,17 @@ export type Approval = {
   /** 요청한 대화. 0은 메인 대화(화면 테스트의 요청도 0) */
   chat_id: number;
   reason: string;
-  request: EnvRequest | PlanRequest | QuestionRequest | TestDataRequest;
+  request: EnvRequest | PlanRequest | QuestionRequest | TestDataRequest | DbWriteRequest;
   created_at: number;
 };
 
 export type Decision =
   | { approve: false; feedback?: string }
-  | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile' };
+  | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; sql?: string };
 
 const pending = new Map<number, { approval: Approval; resolve: (text: string) => void }>();
 /** 승인했을 때 실제로 적용하고 Claude에게 돌려줄 문장을 만드는 함수 */
-const decisionHandlers = new Map<number, (d: Decision) => string>();
+const decisionHandlers = new Map<number, (d: Decision) => string | Promise<string>>();
 let nextId = 1;
 
 function changed(sessionId: number) {
@@ -54,7 +58,7 @@ export function listApprovals(sessionId: number): Approval[] {
   return [...pending.values()].map((p) => p.approval).filter((a) => a.session_id === sessionId);
 }
 
-function ask(sessionId: number, chatId: number, reason: string, request: Approval['request'], apply: (d: Decision) => string): Promise<string> {
+function ask(sessionId: number, chatId: number, reason: string, request: Approval['request'], apply: (d: Decision) => string | Promise<string>): Promise<string> {
   const approval: Approval = { id: nextId++, session_id: sessionId, chat_id: chatId, reason, request, created_at: Date.now() };
   return new Promise((resolve) => {
     decisionHandlers.set(approval.id, apply);
@@ -70,19 +74,21 @@ function ask(sessionId: number, chatId: number, reason: string, request: Approva
       ? `Claude가 묻습니다: ${request.questions[0]?.question ?? ''}`
       : request.kind === 'testdata'
       ? `테스트 "${request.case_title}"를 진행할 데이터가 없습니다. 만들지 정해 주세요.`
+      : request.kind === 'dbwrite'
+      ? `Claude가 ${request.connection_name} DB의 데이터를 바꾸려고 합니다. SQL을 확인해 주세요.`
       : `Claude가 ${request.project_name} 환경값 ${request.vars.map((v) => v.key).join(', ')}을(를) 요청했습니다.`;
     sendNotification(`${s?.ticket ?? ''} 확인이 필요합니다`, body, sessionId);
   });
 }
 
-/** 사용자의 승인·거절. 적용 결과를 Claude에게 도구 결과로 돌려준다. */
-export function decide(approvalId: number, d: Decision) {
+/** 사용자의 승인·거절. 적용 결과를 Claude에게 도구 결과로 돌려준다. DB 질의처럼 적용이 오래 걸리면 끝날 때까지 기다린다. */
+export async function decide(approvalId: number, d: Decision) {
   const p = pending.get(approvalId);
   const apply = decisionHandlers.get(approvalId);
   if (!p || !apply) throw new Error('이미 처리했거나 사라진 요청입니다.');
-  const text = apply(d);
+  // 적용하는 동안 두 번 누르지 못하게 먼저 뺀다.
   decisionHandlers.delete(approvalId);
-  p.resolve(text);
+  p.resolve(await apply(d));
 }
 
 /** 프롬프트가 끝나거나 중단되면 그 대화의 남은 요청은 거절로 끝낸다. 화면 테스트의 요청은 테스트가 따로 끝낸다. */
@@ -180,4 +186,21 @@ export function requestAnswers(sessionId: number, chatId: number, questions: Que
     result = d.approve && d.answers ? d.answers : null;
     return '';
   }).then(() => result);
+}
+
+/** 데이터를 바꾸는 질의를 실행해도 되는지 묻는다. 승인하면 (사용자가 고친) SQL을 실행하고 결과를 돌려준다. */
+export function requestDbWrite(sessionId: number, chatId: number, conn: DbConnection, sql: string, reason: string): Promise<string> {
+  const request: DbWriteRequest = { kind: 'dbwrite', connection_id: conn.id, connection_name: conn.name, target: describeConnection(conn), sql };
+  return ask(sessionId, chatId, reason, request, async (d) => {
+    if (!d.approve) return d.feedback?.trim()
+      ? `사용자가 이 질의를 실행하지 않았습니다. 의견: ${d.feedback.trim()}`
+      : '사용자가 이 질의를 실행하지 않았습니다. 다른 방법을 찾거나 사용자에게 이유를 물어보세요.';
+    const run = d.sql?.trim() || sql;
+    const edited = run !== sql.trim() ? '사용자가 SQL을 고쳐서 실행했습니다:\n' + run + '\n\n' : '';
+    try {
+      return `${edited}${formatResult(await runQuery(conn, run, { readOnly: false }))}`;
+    } catch (err) {
+      return `${edited}사용자가 승인했지만 실행 중 오류가 났습니다: ${(err as Error).message}`;
+    }
+  });
 }

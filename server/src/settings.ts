@@ -22,7 +22,9 @@ export type Settings = {
     pollMinutes: number;
     staleDays: number;
   };
-  /** 보조 호출(models.ts HELPER_PURPOSES)마다 쓸 모델. 없거나 빈 값이면 사용자 기본 모델. */
+  /** 대화(세션·추가 대화·DB 대화)에 쓸 모델. 빈 값이면 Claude Code 기본 모델. */
+  defaultModel: string;
+  /** 보조 호출(models.ts HELPER_PURPOSES)마다 쓸 모델. 없거나 빈 값이면 defaultModel. */
   helperModels: Record<string, string>;
 };
 
@@ -30,6 +32,7 @@ const DEFAULTS: Settings = {
   permissionMode: 'auto',
   notify: { onComplete: true, onError: true, onServerFail: true, os: true, sound: false, skipWhenViewing: true, minSeconds: 30, onPr: true, onCleanup: true },
   cleanup: { stopServersOnPr: true, autoCleanMerged: false, deleteRemoteBranch: false, pollMinutes: 10, staleDays: 7 },
+  defaultModel: '',
   helperModels: {},
 };
 

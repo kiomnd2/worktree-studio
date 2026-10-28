@@ -7,12 +7,12 @@ import { broadcast } from './hub.js';
 import { getSession, listSessions } from './sessions.js';
 
 /**
- * 개발하면서 나온 산출물(계획서, 화면설계서, 테스트 결과서). 세션마다 보관함 폴더 하나에 HTML 파일로 모은다.
+ * 개발하면서 나온 산출물(계획서, 화면설계서, 테스트 결과서, 완료 보고서). 세션마다 보관함 폴더 하나에 HTML 파일로 모은다.
  * 저장소가 아니라 데이터 폴더에 둬서 커밋에 섞이지 않고, 세션을 닫거나 리소스를 정리해도 지우지 않는다.
  * 폴더마다 index.html과 meta.json을 같이 써 둬서 도구 없이 폴더만 열어도 읽을 수 있다.
  * 같은 이름으로 다시 저장하면 새 판이 되고 예전 판은 남는다.
  */
-export type DocKind = 'plan' | 'screen' | 'test' | 'other';
+export type DocKind = 'plan' | 'screen' | 'test' | 'report' | 'other';
 export type DocMeta = { name: string; title: string; kind: DocKind; version: number; updated_at: string; path: string };
 type Index = Record<string, { title: string; kind: DocKind; version: number; updated_at: string }>;
 
@@ -20,8 +20,8 @@ export const ARCHIVE_DIR = path.join(DATA_DIR, 'artifacts');
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /** Claude가 쓰는 문서 크기 제한. 스크린샷을 넣는 테스트 결과서는 도구가 직접 만들어 따로 정한다. */
 const MAX_BYTES = 2 * 1024 * 1024;
-const KIND_ORDER: Record<DocKind, number> = { plan: 0, screen: 1, test: 2, other: 3 };
-const KIND_LABEL: Record<DocKind, string> = { plan: '계획서', screen: '화면설계서', test: '테스트 결과서', other: '문서' };
+const KIND_ORDER: Record<DocKind, number> = { plan: 0, screen: 1, test: 2, report: 3, other: 4 };
+const KIND_LABEL: Record<DocKind, string> = { plan: '계획서', screen: '화면설계서', test: '테스트 결과서', report: '완료 보고서', other: '문서' };
 
 // 예전에는 docs/<세션>에 뒀다. 보관함으로 옮긴다.
 {
@@ -129,7 +129,7 @@ export function writeFolderIndex(sessionId: number) {
 
 export type ArchiveEntry = {
   session_id: number; ticket: string; summary: string; workspace_name: string; closed: boolean; updated_at: string;
-  branches: string[]; prs: Pr[]; docs: DocMeta[]; dir: string;
+  branches: string[]; projects: string[]; prs: Pr[]; docs: DocMeta[]; dir: string;
 };
 
 /** 산출물이 있는 모든 세션(닫은 세션 포함). 최근에 문서를 저장한 순. */
@@ -143,7 +143,7 @@ export function listArchive(): ArchiveEntry[] {
     out.push({
       session_id: s.id, ticket: s.ticket, summary: s.summary, workspace_name: s.workspace_name, closed: Boolean(s.closed),
       updated_at: docs.reduce((a, d) => (d.updated_at > a ? d.updated_at : a), ''),
-      branches: [...new Set(s.worktrees.map((w) => w.branch))], prs: prsOf(s.id), docs, dir: path.join(ARCHIVE_DIR, String(s.id)),
+      branches: [...new Set(s.worktrees.map((w) => w.branch))], projects: [...new Set(s.worktrees.map((w) => w.project_name))], prs: prsOf(s.id), docs, dir: path.join(ARCHIVE_DIR, String(s.id)),
     });
   }
   return out.sort((a, b) => b.updated_at.localeCompare(a.updated_at));

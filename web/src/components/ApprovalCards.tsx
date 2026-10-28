@@ -20,6 +20,7 @@ export default function ApprovalCards({ session, only, chatId }: { session: Sess
       {shown.map((a) => (a.request.kind === 'env' ? <EnvCard key={a.id} approval={a} />
         : a.request.kind === 'testdata' ? <TestDataCard key={a.id} approval={a} />
         : a.request.kind === 'plan' ? <PlanCard key={a.id} approval={a} />
+        : a.request.kind === 'dbwrite' ? <DbWriteCard key={a.id} approval={a} />
         : <QuestionCard key={a.id} approval={a} />))}
     </section>
   );
@@ -197,6 +198,34 @@ function PlanCard({ approval }: { approval: Approval }) {
         <button className="small-btn" disabled={busy} onClick={() => decide({ approve: false })}>실행 안 함</button>
         <button className="small-btn" disabled={busy || !feedback.trim()} onClick={() => decide({ approve: false, feedback })}>고쳐 달라고 하기</button>
         <button className="small-btn primary" disabled={busy || Boolean(feedback.trim())} title={feedback.trim() ? '적은 고칠 점을 보내거나 지운 뒤 승인하세요' : undefined} onClick={() => decide({ approve: true })}>승인하고 실행</button>
+      </div>
+    </div>
+  );
+}
+
+/** Claude가 DB 데이터를 바꾸려는 SQL. 사용자가 보고(고쳐서) 승인하면 실행하고 결과를 Claude에게 돌려준다. */
+function DbWriteCard({ approval }: { approval: Approval }) {
+  const req = approval.request as Extract<Approval['request'], { kind: 'dbwrite' }>;
+  const [sql, setSql] = useState(req.sql);
+  const [feedback, setFeedback] = useState('');
+  const { busy, error, decide } = useDecide(approval.id);
+  return (
+    <div className="approval-card" role="alertdialog" aria-label="DB 변경 승인">
+      <div className="approval-head">
+        <strong>Claude가 {req.connection_name} DB의 데이터를 바꾸려고 합니다</strong>
+        <span className="muted small">{req.target}</span>
+      </div>
+      {approval.reason && <p className="small approval-reason">{approval.reason}</p>}
+      <label className="field">
+        <span>실행할 SQL <span className="muted small">(고칠 수 있음)</span></span>
+        <textarea className="mono db-sql" rows={Math.min(12, Math.max(3, sql.split('\n').length + 1))} value={sql} disabled={busy} spellCheck={false} onChange={(e) => setSql(e.target.value)} />
+      </label>
+      <input className="plan-feedback" placeholder="실행하지 않을 때 Claude에게 남길 말 (선택)" aria-label="실행하지 않는 이유" value={feedback} disabled={busy} onChange={(e) => setFeedback(e.target.value)} />
+      <p className="warn-text small">승인하면 이 DB에 바로 반영되고 되돌리지 않습니다.</p>
+      {error && <p className="error-text" role="alert">{error}</p>}
+      <div className="approval-actions">
+        <button className="small-btn" disabled={busy} onClick={() => decide({ approve: false, feedback: feedback.trim() || undefined })}>실행 안 함</button>
+        <button className="small-btn primary" disabled={busy || !sql.trim()} onClick={() => decide({ approve: true, sql })}>{busy ? '실행 중…' : '승인하고 실행'}</button>
       </div>
     </div>
   );

@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../api';
 import { hasNewChatPending, openDoc, useServerEvents } from '../events';
-import type { Session, StoredMessage } from '../types';
+import type { Session, SessionDb, StoredMessage } from '../types';
 import PromptInput, { docLabel } from './PromptInput';
 import ApprovalCards from './ApprovalCards';
 import TaskBar from './TaskBar';
@@ -82,15 +82,18 @@ function useNow(active: boolean) {
   return now;
 }
 
-/** 대화 하나의 실행 상태. id 0은 메인 대화, 'new'는 아직 보내지 않은 새 대화 */
-export type Thread = { id: number | 'new'; status: 'idle' | 'running'; queue: Session['queue']; queue_paused: boolean };
+/** 대화 하나의 실행 상태. id 0은 메인 대화, 'new'는 아직 보내지 않은 새 대화. db는 아직 보내지 않은 새 DB 대화의 연결 */
+export type Thread = { id: number | 'new'; status: 'idle' | 'running'; queue: Session['queue']; queue_paused: boolean; db?: SessionDb };
 
-export default function ChatView({ session }: { session: Session }) {
+export default function ChatView({ session, onOpenDocs }: { session: Session; onOpenDocs?: (name: string) => void }) {
   // 고른 대화는 세션마다 기억한다.
   const selKey = `wts:chat:${session.id}`;
   const [sel, setSelRaw] = useState<number | 'new'>(() => { try { return Number(localStorage.getItem(selKey)) || 0; } catch { return 0; } });
-  const setSel = (v: number | 'new') => {
+  // 새 대화를 DB 대화로 열 때 고른 연결
+  const [newDb, setNewDb] = useState<SessionDb | null>(null);
+  const setSel = (v: number | 'new', db: SessionDb | null = null) => {
     setSelRaw(v);
+    setNewDb(v === 'new' ? db : null);
     if (v !== 'new') try { localStorage.setItem(selKey, String(v)); } catch { /* 사생활 보호 모드 등 */ }
   };
   const [messages, setMessages] = useState<StoredMessage[]>([]);
@@ -106,14 +109,14 @@ export default function ChatView({ session }: { session: Session }) {
   const waiting = typeof sel === 'number' && sel !== 0 && !chat && sel === started;
   // 닫힌 대화를 고르고 있으면 메인으로 돌아간다.
   useEffect(() => { if (typeof sel === 'number' && sel !== 0 && !chat && !waiting) setSel(0); }, [sel, chat, waiting]); // eslint-disable-line react-hooks/exhaustive-deps
-  const thread: Thread = sel === 'new' ? { id: 'new', status: 'idle', queue: [], queue_paused: false }
+  const thread: Thread = sel === 'new' ? { id: 'new', status: 'idle', queue: [], queue_paused: false, ...(newDb ? { db: newDb } : {}) }
     : chat ? { id: chat.id, status: chat.status, queue: chat.queue, queue_paused: chat.queue_paused }
     : waiting ? { id: sel, status: 'running', queue: [], queue_paused: false }
     : { id: 0, status: session.status, queue: session.queue, queue_paused: session.queue_paused };
 
   // 도구 화면에서 넘긴 프롬프트는 새 대화 탭에 연다. 입력창이 나타나면서 기다리던 것을 가져간다.
   useEffect(() => {
-    const open = () => setSelRaw('new');
+    const open = () => { setSelRaw('new'); setNewDb(null); };
     window.addEventListener('wts:new-chat', open);
     if (hasNewChatPending()) open();
     // 도구가 시작한 대화(충돌 해결 등)를 연다. 목록에 나타나기 전이라도 그 대화로 간다.
@@ -179,9 +182,9 @@ export default function ChatView({ session }: { session: Session }) {
 
   return (
     <main className="main chat">
-      <ChatTabs session={session} sel={sel} onSelect={setSel} />
+      <ChatTabs session={session} sel={sel} newDb={newDb} onSelect={setSel} />
       {thread.id === 0 && (
-        <TaskBar sessionId={session.id} running={running} queued={thread.queue.length > 0}
+        <TaskBar sessionId={session.id} ticket={session.ticket} running={running} queued={thread.queue.length > 0} onOpenDocs={onOpenDocs}
           onNext={(text) => api.prompt(session.id, text, [], false, 0).catch((e) => setLoadError(e.message))} />
       )}
       <div
@@ -190,7 +193,12 @@ export default function ChatView({ session }: { session: Session }) {
         onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }}
       >
         {loadError && <p className="error-text" role="alert">{loadError}</p>}
-        {messages.length === 0 && !loadError && (thread.id === 'new' ? (
+        {messages.length === 0 && !loadError && (thread.db ? (
+          <div className="stream-empty">
+            <p><strong>{thread.db.name}</strong> <span className="muted">({thread.db.target})</span>에 질의하는 DB 대화입니다. 알고 싶은 것을 말로 적으면 Claude가 SQL을 짜서 실행하고 결과를 정리합니다.</p>
+            <p className="muted small">조회는 바로 실행합니다(롤백하는 트랜잭션, 최대 200행). 데이터를 바꾸는 SQL은 화면에 승인 카드로 띄우고, 승인해야 실행합니다. 이 대화에서는 코드를 고치지 않습니다.</p>
+          </div>
+        ) : thread.id === 'new' ? (
           <div className="stream-empty">
             <p>새 대화는 메인 대화와 같은 워크트리에서 따로 실행합니다. 메인 대화가 작업 중이어도 바로 시작합니다.</p>
             <p className="muted small">두 대화가 같은 파일을 동시에 고치면 서로 덮어쓸 수 있으니, 메인 작업과 겹치지 않는 작은 수정에 쓰세요.</p>
@@ -224,8 +232,15 @@ export default function ChatView({ session }: { session: Session }) {
 }
 
 /** 메인 대화와 추가 대화 사이를 오간다. 다른 대화가 작업 중이거나 새 결과가 있으면 표시한다. */
-function ChatTabs({ session, sel, onSelect }: { session: Session; sel: number | 'new'; onSelect: (v: number | 'new') => void }) {
+function ChatTabs({ session, sel, newDb, onSelect }: { session: Session; sel: number | 'new'; newDb: SessionDb | null; onSelect: (v: number | 'new', db?: SessionDb | null) => void }) {
   const [error, setError] = useState<string | null>(null);
+  // DB 대화를 열 연결 고르기. 열 때마다 새로 불러온다(설정에서 바꿨을 수 있다).
+  const [dbs, setDbs] = useState<SessionDb[] | null>(null);
+  const pickDb = () => {
+    if (dbs) { setDbs(null); return; }
+    setError(null);
+    api.sessionDbs(session.id).then(setDbs).catch((e) => setError(e.message));
+  };
   const mark = (status: string, unread: number) => (status === 'running'
     ? <span className="spinner" aria-label="작업 중" />
     : unread ? <span className="chat-dot" aria-label="새 결과" /> : null);
@@ -237,7 +252,7 @@ function ChatTabs({ session, sel, onSelect }: { session: Session; sel: number | 
       {session.chats.map((c) => (
         <span key={c.id} className={`chat-tab${sel === c.id ? ' on' : ''}`}>
           <button role="tab" aria-selected={sel === c.id} className="chat-tab-label" title={c.title} onClick={() => onSelect(c.id)}>
-            {mark(c.status, sel === c.id ? 0 : c.unread)}<span className="chat-tab-title">{c.title}</span>
+            {mark(c.status, sel === c.id ? 0 : c.unread)}{c.db_connection_id !== null && <span className="chat-db-badge">DB</span>}<span className="chat-tab-title">{c.title}</span>
           </button>
           <button className="icon chat-tab-close" aria-label={`${c.title} 대화 닫기`} disabled={c.status === 'running'}
             title={c.status === 'running' ? '작업 중인 대화는 중단한 뒤 닫을 수 있습니다' : '대화 닫기 (워크트리 변경은 그대로 남습니다)'}
@@ -250,9 +265,26 @@ function ChatTabs({ session, sel, onSelect }: { session: Session; sel: number | 
           </button>
         </span>
       ))}
-      {sel === 'new' && <span className="chat-tab on" role="tab" aria-selected="true"><span className="chat-tab-label">새 대화</span></span>}
-      <button className="chat-tab chat-tab-add" onClick={() => onSelect('new')} disabled={sel === 'new'} title="같은 워크트리에서 따로 Claude에게 일을 맡깁니다">+ 새 대화</button>
+      {sel === 'new' && (
+        <span className="chat-tab on" role="tab" aria-selected="true">
+          <span className="chat-tab-label">{newDb ? <><span className="chat-db-badge">DB</span>새 DB 대화 · {newDb.name}</> : '새 대화'}</span>
+        </span>
+      )}
+      <button className="chat-tab chat-tab-add" onClick={() => onSelect('new')} disabled={sel === 'new' && !newDb} title="같은 워크트리에서 따로 Claude에게 일을 맡깁니다">+ 새 대화</button>
+      <button className="chat-tab chat-tab-add" aria-expanded={dbs !== null} onClick={pickDb} title="DB 연결 하나에 말로 질의하는 대화를 엽니다">+ DB 대화</button>
       {error && <span className="error-text small" role="alert">{error}</span>}
+      {dbs && (
+        <div className="chat-db-pick" role="group" aria-label="질의할 DB 연결">
+          {dbs.length === 0 ? (
+            <span className="muted small">이 세션 프로젝트에 DB 연결이 없습니다. 설정의 프로젝트 카드에서 「로컬 실행 (DB·도커)」로 추가하세요.</span>
+          ) : dbs.map((d) => (
+            <button key={d.id} className="small-btn" disabled={!d.queryable} title={d.queryable ? d.target : `${d.engine}은(는) 아직 질의를 지원하지 않습니다`}
+              onClick={() => { setDbs(null); onSelect('new', d); }}>
+              {d.name} <span className="muted small">{d.engine} · {d.project_name}{d.enabled ? ' · 켜짐' : ''}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

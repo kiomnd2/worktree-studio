@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
+import LocalSetupPanel from './LocalSetupPanel';
 import type { Account, AnalyzeField, JiraConfig, JiraStatus, PermissionMode, Project, ProjectAnalysis, ProjectKind, Settings, Workspace } from '../types';
 
 const KINDS: { value: ProjectKind; label: string }[] = [
@@ -252,6 +253,7 @@ const KIND_LABEL: Record<ProjectKind, string> = { be: 'BE', fe: 'FE', full: '통
 /** 프로젝트 한 줄 요약. "설정"으로 자세한 설정을 펼치고, Claude 분석 제안은 이 줄 아래에 뜬다. */
 function ProjectItem({ p, run, state, first, extra }: { p: Project; run: Run; state: AnalysisState; first?: boolean; extra?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  const [local, setLocal] = useState(false);
   const analysis = state.analyses[p.id];
   return (
     <div className="pj">
@@ -271,6 +273,7 @@ function ProjectItem({ p, run, state, first, extra }: { p: Project; run: Run; st
           <button className="small-btn" disabled={analysis?.status === 'running'} title="Claude가 저장소를 읽고 로그인 없이 바로 뜨는 실행 방법을 제안합니다" onClick={() => state.analyze(p)}>
             {analysis?.status === 'running' ? '분석 중' : '다시 분석'}
           </button>
+          <button className="small-btn" aria-expanded={local} title="DB 연결, 서버 앞에 띄울 도커, 클론에서 복사할 로컬 설정 파일" onClick={() => setLocal(!local)}>{local ? '로컬 실행 접기' : '로컬 실행 (DB·도커)'}</button>
           <button className="small-btn" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? '접기' : '설정'}</button>
           <button className="small-btn danger" title="프로젝트 등록을 지웁니다. 폴더는 지우지 않습니다"
             onClick={() => { if (confirm(`${p.name} 등록을 지울까요? 폴더는 지우지 않고, 모든 워크스페이스에서 빠집니다.`)) run(() => api.deleteProject(p.id), `${p.name} 등록을 지웠습니다.`)(); }}>삭제</button>
@@ -281,6 +284,7 @@ function ProjectItem({ p, run, state, first, extra }: { p: Project; run: Run; st
           onApplied={(text) => { state.close(p.id); run(async () => {}, text)(); }} />
       )}
       {open && <ProjectEditor p={p} run={run} />}
+      {local && <LocalSetupPanel p={p} notify={(text) => run(async () => {}, text)()} />}
     </div>
   );
 }
@@ -477,13 +481,15 @@ function JiraSection({ run }: { run: Run }) {
   );
 }
 
-// 빈 값 = Claude Code 기본 모델(보조 작업에 따로 정하지 않음).
-const HELPER_MODEL_OPTIONS = [
-  { value: '', label: '기본 모델' },
+// 빈 값 = Claude Code 기본 모델(대화) / 대화 모델(보조 작업).
+const MODEL_OPTIONS = [
+  { value: 'claude-fable-5-1', label: 'Fable 5.1' },
   { value: 'claude-opus-5-5', label: 'Opus 5.5' },
   { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
   { value: 'claude-haiku-5-5', label: 'Haiku 5.5' },
 ];
+const CHAT_MODEL_OPTIONS = [{ value: '', label: 'Claude Code 기본 모델' }, ...MODEL_OPTIONS];
+const HELPER_MODEL_OPTIONS = [{ value: '', label: '대화 모델과 같게' }, ...MODEL_OPTIONS];
 // 서버 models.ts HELPER_PURPOSES와 같은 목록. hint는 토큰·속도를 줄이고 싶을 때의 권장 모델이다.
 export const HELPER_TASKS = [
   { key: 'pr_draft', label: 'PR 문안', hint: 'Haiku' },
@@ -494,7 +500,7 @@ export const HELPER_TASKS = [
   { key: 'env_scan', label: '환경값 AI 분석', hint: 'Sonnet' },
   { key: 'env_suggest', label: '서버 설정 제안', hint: 'Sonnet' },
   { key: 'project_analyze', label: '프로젝트 분석', hint: 'Sonnet' },
-  { key: 'conflict', label: '머지 충돌 해결안', hint: '기본 모델' },
+  { key: 'conflict', label: '머지 충돌 해결안', hint: '대화 모델' },
 ];
 
 function PreferencesSection({ settings, setSettings, run }: { settings: Settings; setSettings: (s: Settings) => void; run: Run }) {
@@ -512,9 +518,16 @@ function PreferencesSection({ settings, setSettings, run }: { settings: Settings
             {MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
           </select>
         </label>
+        <label className="field">
+          <span>대화 모델</span>
+          <select id="chat-model" value={settings.defaultModel ?? ''} onChange={(e) => setSettings({ ...settings, defaultModel: e.target.value })}>
+            {CHAT_MODEL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <span className="muted small">세션 작업, 추가 대화, DB 대화에 씁니다. 다음 프롬프트부터 적용됩니다.</span>
+        </label>
         <fieldset className="checks column helper-models">
           <legend>보조 작업 모델</legend>
-          <p className="muted small">대화 밖에서 Studio가 Claude를 따로 부르는 작업입니다. 기본 모델은 Claude Code 설정을 따릅니다. 가벼운 모델일수록 빠르고 토큰이 적지만 결과가 덜 정확할 수 있습니다.</p>
+          <p className="muted small">대화 밖에서 Studio가 Claude를 따로 부르는 작업입니다. 고르지 않으면 대화 모델을 씁니다. 가벼운 모델일수록 빠르고 토큰이 적지만 결과가 덜 정확할 수 있습니다.</p>
           {HELPER_TASKS.map((t) => (
             <label key={t.key} className="inline">
               <span className="helper-label">{t.label}</span>

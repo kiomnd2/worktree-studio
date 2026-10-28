@@ -40,7 +40,7 @@ export default function EnvPage({ session, message, onBack, onStarted }: Props) 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(message ?? null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [startTargets, setStartTargets] = useState<ServerView[] | null>(null);
+  const [startTargets, setStartTargets] = useState<{ targets: ServerView[]; all: ServerView[] } | null>(null);
 
   function apply(next: ProjectEnvState[]) {
     setStates(next);
@@ -53,7 +53,7 @@ export default function EnvPage({ session, message, onBack, onStarted }: Props) 
   const missingCount = useMemo(() => {
     if (!states) return 0;
     return states.reduce((n, s) => {
-      const autoKeys = s.auto.map((a) => a.key);
+      const autoKeys = [...s.auto, ...s.db].map((a) => a.key);
       return n + (rows[s.projectId] ?? []).filter((r) => r.required && !r.value && !autoKeys.includes(r.key)).length;
     }, 0);
   }, [states, rows]);
@@ -143,7 +143,7 @@ export default function EnvPage({ session, message, onBack, onStarted }: Props) 
             <button onClick={onBack}>세션 화면으로</button>
           </div>
         </div>
-        <p className="muted">워크트리를 분석해 목록을 만들었습니다. 분석 결과는 틀릴 수 있으니 키, 값, 필수 여부를 고치거나 지우고, 빠진 변수는 직접 추가하세요. 포트와 BE 연결 주소는 도구가 정합니다.</p>
+        <p className="muted">워크트리를 분석해 목록을 만들었습니다. 분석 결과는 틀릴 수 있으니 키, 값, 필수 여부를 고치거나 지우고, 빠진 변수는 직접 추가하세요. 포트와 BE 연결 주소는 도구가 정하고, DB 접속값은 설정 › 프로젝트 › 로컬 실행의 DB 연결에서 넣습니다. 상대 앱 주소가 들어가는 값(콜백·CORS 등)은 <code>{'{be_url}'}</code>·<code>{'{fe_url}'}</code>·<code>{'{be_port}'}</code>·<code>{'{fe_port}'}</code> 자리로 쓰면 실행할 때 그 세션 포트로 채워집니다.</p>
         <div className="legend">
           {(['ai', 'clone', 'profile', 'manual', 'session'] as const).map((k) => <span key={k} className={`src ${SOURCE[k].cls}`}>{SOURCE[k].label}</span>)}
         </div>
@@ -186,8 +186,9 @@ export default function EnvPage({ session, message, onBack, onStarted }: Props) 
             <button disabled={Boolean(busy)} onClick={() => run(async () => { if (await saveAll()) setNotice('저장했습니다.'); }, 'save')}>저장</button>
             <button className="primary" disabled={Boolean(busy)} onClick={() => run(async () => {
               if (!(await saveAll())) return;
-              const targets = (await api.servers(session.id)).filter((s) => s.can_start && (s.status === 'idle' || s.status === 'failed' || s.status === 'stopped'));
-              if (targets.length) { setStartTargets(targets); return; }
+              const all = await api.servers(session.id);
+              const targets = all.filter((s) => s.can_start && (s.status === 'idle' || s.status === 'failed' || s.status === 'stopped'));
+              if (targets.length) { setStartTargets({ targets, all }); return; }
               await api.startServers(session.id);
               onStarted();
             }, 'start')}>{busy === 'start' ? '서버 띄우는 중' : '저장하고 서버 실행'}</button>
@@ -197,11 +198,12 @@ export default function EnvPage({ session, message, onBack, onStarted }: Props) 
       {startTargets && (
         <StartServersDialog
           sessionId={session.id}
-          targets={startTargets}
+          targets={startTargets.targets}
+          all={startTargets.all}
           onCancel={() => setStartTargets(null)}
-          onConfirm={async (commands, ports) => {
+          onConfirm={async (commands, ports, docker) => {
             try {
-              await api.startServers(session.id, undefined, commands, ports);
+              await api.startServers(session.id, undefined, commands, ports, docker);
             } catch (e) {
               const missing = missingFrom(e);
               if (missing) throw new Error(`아직 비어 있는 필수 값: ${missing.map((m) => `${m.project} ${m.keys.join(', ')}`).join(' / ')}`);
@@ -233,6 +235,7 @@ function ProjectEnvCard({ state, rows, dirty, busy, edit, onAnalyze, onPaste, on
   const [paste, setPaste] = useState('');
   const [reveal, setReveal] = useState<Record<string, boolean>>({});
   const autoKeys = state.auto.map((a) => a.key);
+  const dbKeys = new Map(state.db.map((d) => [d.key, d.connection]));
   const selected = state.profiles.find((p) => p.id === state.selectedProfileId);
   const update = (r: string, patch: Partial<Row>) => edit((list) => list.map((x) => (x.rid === r ? { ...x, ...patch } : x)));
 
@@ -267,8 +270,18 @@ function ProjectEnvCard({ state, rows, dirty, busy, edit, onAnalyze, onPaste, on
                 <td />
               </tr>
             ))}
+            {state.db.map((d) => (
+              <tr key={`db-${d.key}`} className="auto-row">
+                <td className="mono">{d.key}</td>
+                <td className="mono muted">{d.value}</td>
+                <td className="muted small">DB 연결 {d.connection}</td>
+                <td />
+                <td><span className="src auto">DB 설정</span></td>
+                <td />
+              </tr>
+            ))}
             {rows.map((r) => {
-              const needs = r.required && !r.value && !autoKeys.includes(r.key);
+              const needs = r.required && !r.value && !autoKeys.includes(r.key) && !dbKeys.has(r.key);
               const src = r.overridden ? SOURCE.session : SOURCE[r.source];
               return (
                 <tr key={r.rid} className={needs ? 'needs' : undefined}>
@@ -289,6 +302,7 @@ function ProjectEnvCard({ state, rows, dirty, busy, edit, onAnalyze, onPaste, on
                   <td className="small">
                     <span className="mono">{r.found_in ?? '-'}</span>
                     {r.reason && <div className="muted">{r.reason}</div>}
+                    {dbKeys.has(r.key) && !r.overridden && <div className="muted">DB 연결 {dbKeys.get(r.key)} 값이 우선합니다</div>}
                   </td>
                   <td><input type="checkbox" aria-label={`${r.key} 필수`} checked={r.required} onChange={(e) => update(r.rid, { required: e.target.checked })} /></td>
                   <td><span className={`src ${src.cls}`}>{src.label}</span></td>

@@ -28,11 +28,15 @@ import { HELPER_PURPOSES } from './models.js';
 import { usageReport } from './usage.js';
 import { sendNotification } from './notify.js';
 import { cleanupOrphans, clearFailure, getLogs, listServers, planPorts, startServers, stopAll, stopServers } from './runner.js';
-import { suggestServerEnv } from './envsuggest.js';
-import { sessionEnvState } from './envapi.js';
-import { addRequiredKeys, deleteProfile, ensureDefaultProfile, saveSessionEnv, seedProfileIfEmpty, selectProfile, setSessionValues, type EnvVar } from './envstore.js';
+import { markPortEnvChecked, suggestServerEnv } from './envsuggest.js';
+import { hasPortVar, sessionAddrs, toTemplate } from './portvars.js';
+import { sessionEnvState, startPrep } from './envapi.js';
+import { addRequiredKeys, deleteProfile, ensureDefaultProfile, profileVars, saveSessionEnv, seedProfileIfEmpty, selectProfile, setProfileValues, setSessionValues, type EnvVar } from './envstore.js';
+import { ENGINES, defaultEnvMap, deleteConnection, enableConnection, getConnection, guessFromEnv, listConnections, probe, saveConnection, sessionDbs, type Engine } from './dbconn.js';
+import { describeConnection, engineSupported } from './dbquery.js';
+import { STUDIO_ENGINES, createStudioDb, localSetup, openDockerDesktop, setCopyFiles, setStacks } from './localenv.js';
 import { ANALYZE_FIELDS, analyzeProject } from './projectanalyze.js';
-import { analyzeEnvWithAI, parseDotenv, scanEnv } from './envscan.js';
+import { analyzeEnvWithAI, parseDotenv, scanEnv, springProfiles } from './envscan.js';
 import {
   accountPassword, accountsForWorkspace, addAccount, deleteAccount, listAccounts, updateAccount,
 } from './accounts.js';
@@ -100,11 +104,84 @@ app.post('/api/projects/:id/analyze/apply', async (req) => {
   if (b.env_keys.length) {
     // 빈 프로필에 키를 먼저 넣으면 나중에 코드에서 찾은 키로 채우지 않으므로, 찾은 키부터 채운 뒤 더한다.
     const profile = ensureDefaultProfile(id);
-    seedProfileIfEmpty(profile.id, scanEnv(p.local_path));
+    seedProfileIfEmpty(profile.id, scanEnv(p.local_path, undefined, springProfiles(getProject(id)!.start_cmd)));
     added = addRequiredKeys(profile.id, b.env_keys);
   }
   return { project: await describeProject(getProject(id)!), env_keys_added: added };
 });
+// 로컬 실행 환경: 클론에서 복사할 파일, 서버 앞에 띄울 도커, DB 연결
+/** DB 환경변수 틀을 고를 때 참고할 키: 기본 프로필 값과 코드에서 찾은 키 */
+function knownKeys(projectId: number): { key: string; value: string }[] {
+  const p = getProject(projectId);
+  if (!p) throw new Error('프로젝트가 없습니다.');
+  const prof = profileVars(ensureDefaultProfile(projectId).id);
+  const scanned = fs.existsSync(p.local_path) ? scanEnv(p.local_path, undefined, springProfiles(p.start_cmd)) : [];
+  return [...prof, ...scanned.filter((v) => !prof.some((x) => x.key === v.key))].map((v) => ({ key: v.key, value: v.value }));
+}
+const engineSchema = z.enum(ENGINES as [Engine, ...Engine[]]);
+const connSchema = z.object({
+  name: z.string().min(1), engine: engineSchema, host: z.string().default('localhost'), port: z.number().int().min(1).max(65535).nullable().default(null),
+  database: z.string().default(''), username: z.string().default(''), password: z.string().default(''),
+  env_map: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_.-]*$/, '환경변수 이름은 영문·숫자·_ 로 넣어 주세요.'), z.string()).default({}),
+  enabled: z.boolean().default(true), note: z.string().default(''),
+});
+app.get('/api/projects/:id/local', async (req) => {
+  const p = getProject(idParam.parse(req.params).id);
+  if (!p) throw new Error('프로젝트가 없습니다.');
+  return { ...(await localSetup(p)), connections: listConnections(p.id), studio_engines: STUDIO_ENGINES };
+});
+app.put('/api/projects/:id/local', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const b = z.object({
+    copy_files: z.array(z.string().min(1).refine((f) => !f.startsWith('/') && !f.split('/').includes('..'), '저장소 안의 상대 경로만 넣을 수 있습니다.')).nullable().optional(),
+    stacks: z.array(z.object({ file: z.string().min(1), services: z.array(z.string().min(1)) })).optional(),
+  }).parse(req.body);
+  if (b.copy_files !== undefined) setCopyFiles(id, b.copy_files);
+  if (b.stacks) setStacks(id, b.stacks);
+  return { ok: true };
+});
+// 새 연결 칸을 채울 기본값: 엔진에 맞는 환경변수 틀과, 프로필에 이미 있는 DB 주소에서 짐작한 접속 정보
+app.post('/api/projects/:id/db/defaults', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const { engine } = z.object({ engine: engineSchema }).parse(req.body);
+  const known = knownKeys(id);
+  const guess = guessFromEnv(Object.fromEntries(known.filter((k) => k.value).map((k) => [k.key, k.value]))).find((g) => g.engine === engine) ?? null;
+  return { env_map: defaultEnvMap(getProject(id)!, engine, known), guess };
+});
+app.post('/api/projects/:id/db', async (req) => {
+  const { id } = idParam.parse(req.params);
+  return saveConnection(id, connSchema.parse(req.body));
+});
+app.post('/api/projects/:id/db/studio', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const { engine } = z.object({ engine: engineSchema }).parse(req.body);
+  return createStudioDb(getProject(id)!, engine, knownKeys(id));
+});
+app.put('/api/db/:id', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const cur = getConnection(id);
+  if (!cur) throw new Error('DB 연결이 없습니다.');
+  return saveConnection(cur.project_id, connSchema.parse(req.body), id);
+});
+app.delete('/api/db/:id', async (req) => {
+  deleteConnection(idParam.parse(req.params).id);
+  return { ok: true };
+});
+app.post('/api/db/:id/enable', async (req) => {
+  enableConnection(idParam.parse(req.params).id);
+  return { ok: true };
+});
+app.post('/api/db/:id/test', async (req) => {
+  const c = getConnection(idParam.parse(req.params).id);
+  if (!c) throw new Error('DB 연결이 없습니다.');
+  const port = c.port ?? ({ postgres: 5432, mysql: 3306, mariadb: 3306, oracle: 1521, mssql: 1433, mongodb: 27017, redis: 6379 } as const)[c.engine];
+  return { reachable: await probe(c.host || 'localhost', port), target: `${c.host || 'localhost'}:${port}` };
+});
+app.post('/api/docker/open', async () => {
+  openDockerDesktop();
+  return { ok: true };
+});
+
 app.delete('/api/projects/:id', async (req) => {
   deleteProject(idParam.parse(req.params).id);
   return { ok: true };
@@ -225,7 +302,14 @@ app.post('/api/sessions/:id/prompt', async (req) => {
 app.post('/api/sessions/:id/chats', async (req) => {
   const { id } = idParam.parse(req.params);
   const body = promptBody.parse(req.body);
-  return startChat(id, body.text, body.images, { plan: body.plan });
+  const { db } = z.object({ db: z.number().int().optional() }).parse(req.body);
+  return startChat(id, body.text, body.images, { plan: body.plan, db });
+});
+// DB 대화를 열 수 있는 연결(세션 앱들의 DB 설정). 비밀번호는 보내지 않는다.
+app.get('/api/sessions/:id/db', async (req) => {
+  const session = getSession(idParam.parse(req.params).id);
+  if (!session) throw new Error('세션이 없습니다.');
+  return sessionDbs(session).map((c) => ({ id: c.id, name: c.name, engine: c.engine, project_name: c.project_name, target: describeConnection(c), enabled: c.enabled, queryable: engineSupported(c) }));
 });
 app.post('/api/sessions/:id/chats/:cid/close', async (req) => {
   const { id, cid } = z.object({ id: z.coerce.number().int(), cid: z.coerce.number().int().min(1) }).parse(req.params);
@@ -285,7 +369,7 @@ app.post('/api/sessions/:id/env/analyze', async (req) => {
   const wt = s?.worktrees.find((w) => w.project_id === body.projectId);
   const project = projectById(body.projectId);
   if (!s || !wt || !project) throw new Error('세션이나 프로젝트를 찾을 수 없습니다.');
-  const scanned = scanEnv(wt.app_path, project.local_path);
+  const scanned = scanEnv(wt.app_path, project.local_path, springProfiles(project.start_cmd));
   if (!body.ai) return scanned;
   const ai = await analyzeEnvWithAI(wt.path, [...new Set([...body.known, ...scanned.map((v) => v.key)])]);
   // AI 판단을 앞에 두고, AI가 놓친 정적 분석 결과를 덧붙인다.
@@ -316,32 +400,51 @@ const startBody = z.object({
   commands: z.record(z.string(), z.string()).optional(),
   /** 실행 전에 정해 둔 포트(설정 제안의 기준). 비어 있으면 그대로 쓴다. */
   ports: z.record(z.string(), z.number().int()).optional(),
+  /** false면 프로젝트에 설정한 도커(DB 등)를 띄우지 않는다 */
+  docker: z.boolean().optional(),
 });
 const commandMap = (c?: Record<string, string>) => Object.fromEntries(Object.entries(c ?? {}).map(([k, v]) => [Number(k), v]));
 const portMap = (c?: Record<string, number>) => Object.fromEntries(Object.entries(c ?? {}).map(([k, v]) => [Number(k), v]));
-// 서버를 띄우기 전: 쓸 포트를 정하고, 그 포트로 FE·BE가 맞물리게 바꿔야 할 환경값을 제안받는다.
+// 서버를 띄우기 전: 세션의 모든 앱에 쓸 포트를 정하고(이번에 안 띄우는 앱 포함), 그 포트로 FE·BE가 맞물리게 바꿔야 할 환경값을 제안받는다.
 app.post('/api/sessions/:id/servers/plan', async (req) => {
   const { id } = idParam.parse(req.params);
-  const b = z.object({ worktreeIds: z.array(z.number().int()).optional(), restart: z.boolean().default(false) }).parse(req.body ?? {});
-  return { ports: await planPorts(id, b.worktreeIds, b.restart) };
+  return { ports: await planPorts(id) };
+});
+// 실행 전 준비(도커, 로컬 파일 복사, DB 연결)를 서버 실행 창에 먼저 보여 준다.
+app.get('/api/sessions/:id/servers/prep', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const { worktrees } = z.object({ worktrees: z.string().optional() }).parse(req.query);
+  return startPrep(id, worktrees ? worktrees.split(',').map(Number).filter(Boolean) : undefined);
 });
 app.post('/api/sessions/:id/servers/suggest-env', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { ports } = z.object({ ports: z.record(z.string(), z.number().int()) }).parse(req.body);
-  return suggestServerEnv(id, portMap(ports));
+  const { ports, force } = z.object({ ports: z.record(z.string(), z.number().int()), force: z.boolean().optional() }).parse(req.body);
+  return suggestServerEnv(id, portMap(ports), force);
 });
+// 이 세션 주소가 들어간 값은 포트 자리({be_url} 등)로 바꿔 프로필에 넣는다. 자리로 바꿀 수 없는 값만 이번 세션에 넣는다.
 app.post('/api/sessions/:id/env/apply', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { items } = z.object({ items: z.array(z.object({ project_id: z.number().int(), key: z.string().min(1), value: z.string() })).min(1) }).parse(req.body);
-  const byProject = new Map<number, Record<string, string>>();
-  for (const it of items) byProject.set(it.project_id, { ...byProject.get(it.project_id), [it.key.trim()]: it.value });
-  for (const [projectId, values] of byProject) setSessionValues(id, projectId, values);
-  return { ok: true };
+  const { items } = z.object({ items: z.array(z.object({ project_id: z.number().int(), key: z.string().min(1), value: z.string(), found_in: z.string().optional() })).min(1) }).parse(req.body);
+  const session = getSession(id);
+  if (!session) throw new Error('세션이 없습니다.');
+  const addrs = sessionAddrs(session);
+  const profile = new Map<number, { key: string; value: string; found_in?: string }[]>();
+  const only = new Map<number, Record<string, string>>();
+  for (const it of items) {
+    const key = it.key.trim();
+    const tpl = toTemplate(it.value, addrs);
+    if (hasPortVar(tpl)) profile.set(it.project_id, [...(profile.get(it.project_id) ?? []), { key, value: tpl, found_in: it.found_in }]);
+    else only.set(it.project_id, { ...only.get(it.project_id), [key]: it.value });
+  }
+  for (const [projectId, values] of profile) setProfileValues(id, projectId, values);
+  for (const [projectId, values] of only) setSessionValues(id, projectId, values);
+  markPortEnvChecked(session.worktrees.map((w) => w.project_id));
+  return { profile: [...profile.values()].flat().map((v) => `${v.key}=${v.value}`), session: [...only.values()].flatMap((v) => Object.keys(v)) };
 });
 app.post('/api/sessions/:id/servers/start', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { worktreeIds, commands, ports } = startBody.parse(req.body ?? {});
-  await startServers(id, worktreeIds, commandMap(commands), portMap(ports));
+  const { worktreeIds, commands, ports, docker } = startBody.parse(req.body ?? {});
+  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker });
   return listServers(getSession(id)!);
 });
 app.post('/api/sessions/:id/servers/stop', async (req) => {
@@ -352,9 +455,9 @@ app.post('/api/sessions/:id/servers/stop', async (req) => {
 });
 app.post('/api/sessions/:id/servers/restart', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { worktreeIds, commands, ports } = startBody.parse(req.body ?? {});
+  const { worktreeIds, commands, ports, docker } = startBody.parse(req.body ?? {});
   await stopServers(id, worktreeIds);
-  await startServers(id, worktreeIds, commandMap(commands), portMap(ports));
+  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker });
   return listServers(getSession(id)!);
 });
 // 계획 산출물(계획서·화면설계서). HTML은 스크립트를 막은 별도 출처로 보여 준다.
@@ -394,9 +497,10 @@ app.post('/api/approvals/:id', async (req) => {
       vars: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
       target: z.enum(['session', 'profile']).optional(),
       account_id: z.number().int().optional(),
+      sql: z.string().max(100_000).optional(),
     }),
   ]).parse(req.body);
-  decide(idParam.parse(req.params).id, d);
+  await decide(idParam.parse(req.params).id, d);
   return { ok: true };
 });
 
@@ -588,6 +692,7 @@ app.put('/api/settings', async (req) => {
       stopServersOnPr: z.boolean(), autoCleanMerged: z.boolean(), deleteRemoteBranch: z.boolean(),
       pollMinutes: z.number().int().min(1).max(1440), staleDays: z.number().int().min(0).max(365),
     }).default(getSettings().cleanup),
+    defaultModel: z.string().max(100).default(getSettings().defaultModel),
     // 고른 작업만 온다(z.record는 enum 키를 모두 요구한다).
     helperModels: z.partialRecord(z.enum(HELPER_PURPOSES), z.string().max(100)).default(getSettings().helperModels),
   }).parse(req.body);

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, docUrl } from '../api';
+import { reportPrompt } from './TaskBar';
 import { insertIntoPrompt, useServerEvents } from '../events';
 import type { DocKind, DocMeta } from '../types';
 
-export const DOC_KIND: Record<DocKind, string> = { plan: '계획서', screen: '화면설계서', test: '테스트 결과서', other: '기타 문서' };
+export const DOC_KIND: Record<DocKind, string> = { plan: '계획서', screen: '화면설계서', test: '테스트 결과서', report: '완료 보고서', other: '기타 문서' };
 
 function when(iso: string) {
   const d = new Date(iso);
@@ -11,7 +12,7 @@ function when(iso: string) {
 }
 
 /**
- * 세션의 산출물(계획서·화면설계서·테스트 결과서). 판별로 본다.
+ * 세션의 산출물(계획서·화면설계서·테스트 결과서·완료 보고서). 판별로 본다.
  * live(열린 세션에서 연 것)면 프롬프트에서 언급해 Claude가 다시 읽게 할 수 있다. 보관함에서 열면 닫은 세션도 본다.
  */
 export default function DocsPage({ sessionId, ticket, live = false, initial, backLabel, onBack }: {
@@ -30,11 +31,16 @@ export default function DocsPage({ sessionId, ticket, live = false, initial, bac
   const current = docs?.find((d) => d.name === pick) ?? docs?.[0] ?? null;
   // 새 판이 저장되면 최신 판을 다시 그린다.
   const shown = version && current && version < current.version ? version : current?.version;
-  const groups = (['plan', 'screen', 'test', 'other'] as DocKind[]).map((k) => ({ kind: k, list: (docs ?? []).filter((d) => d.kind === k) })).filter((g) => g.list.length);
+  const groups = (['plan', 'screen', 'test', 'report', 'other'] as DocKind[]).map((k) => ({ kind: k, list: (docs ?? []).filter((d) => d.kind === k) })).filter((g) => g.list.length);
 
   function mention(d: DocMeta) {
     insertIntoPrompt(`${DOC_KIND[d.kind]} "${d.title}"(${d.path})를 참고해서 `);
     onBack();
+  }
+
+  // 작업 목록 없이 진행한 세션도 여기서 보고서를 부탁할 수 있다. 보내고 대화로 돌아가 진행을 보게 한다.
+  async function requestReport() {
+    try { await api.prompt(sessionId, reportPrompt(ticket), []); onBack(); } catch (e) { setError((e as Error).message); }
   }
 
   async function remove(d: DocMeta) {
@@ -51,6 +57,7 @@ export default function DocsPage({ sessionId, ticket, live = false, initial, bac
             <h1>산출물</h1>
           </div>
           <div className="row">
+            {live && <button onClick={requestReport}>{docs?.some((d) => d.kind === 'report') ? '보고서 다시 작성' : '완료 보고서 작성'}</button>}
             <button onClick={() => api.revealArchive(sessionId).catch((e) => setError(e.message))}>폴더 열기</button>
             <button onClick={onBack}>{backLabel}</button>
           </div>
@@ -60,7 +67,7 @@ export default function DocsPage({ sessionId, ticket, live = false, initial, bac
         {docs && docs.length === 0 ? (
           <div className="card">
             <p>아직 산출물이 없습니다.</p>
-            <p className="muted small">프롬프트 입력창에서 "계획 먼저"를 켜고 보내면 계획서와 화면설계서가, 화면 테스트를 돌리면 테스트 결과서가 여기에 쌓입니다.</p>
+            <p className="muted small">프롬프트 입력창에서 "계획 먼저"를 켜고 보내면 계획서와 화면설계서가, 화면 테스트를 돌리면 테스트 결과서가, 개발을 마치고 "완료 보고서 작성"을 누르면 완료 보고서가 여기에 쌓입니다.</p>
           </div>
         ) : (
           <div className="changes-body">
