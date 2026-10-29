@@ -99,7 +99,8 @@ async function rowOf(s: SessionView): Promise<CleanupRow> {
 
 /** 정리 화면 목록. 닫았지만 워크트리 폴더나 스크린샷이 남은 세션도 넣는다. */
 export async function listCleanup(): Promise<{ rows: CleanupRow[]; startup: StartupReport | null }> {
-  const sessions = listSessions(true).filter((s) => !s.closed || s.worktrees.some((w) => fs.existsSync(w.path)) || screenDirSize(s.id) > 0);
+  // 원본 폴더를 쓴 세션은 닫으면 지울 폴더가 없다(원본은 남겨 둔다).
+  const sessions = listSessions(true).filter((s) => !s.closed || s.worktrees.some((w) => !w.in_place && fs.existsSync(w.path)) || screenDirSize(s.id) > 0);
   return { rows: await Promise.all(sessions.map(rowOf)), startup };
 }
 
@@ -124,6 +125,11 @@ export async function cleanSession(sessionId: number, opts: { deleteRemote: bool
     const project = getProject(w.project_id);
     if (!project) continue;
     const repo = project.repo_root || project.local_path;
+    // 원본 클론 폴더에서 한 세션: 폴더도, 체크아웃된 브랜치(main일 수도 있다)도, 원격 브랜치도 건드리지 않는다.
+    if (w.in_place) {
+      steps.push({ name: `${w.project_name} 원본 폴더`, ok: true, detail: `원본 폴더에서 작업한 세션이라 폴더와 브랜치 ${w.branch}를 그대로 둡니다.` });
+      continue;
+    }
     await attempt(`${w.project_name} 워크트리 삭제`, async () => {
       if (!fs.existsSync(w.path)) { await git(repo, ['worktree', 'prune']).catch(() => {}); return '이미 없음'; }
       // 워크트리는 이미 지워졌는데 빌드 도구가 나중에 만든 캐시(.gradle 등)만 남아 폴더가 있는 경우.

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { db, type ChatRow, type SessionRow, type WorktreeRow } from './db.js';
 import { getProject } from './projects.js';
-import { addWorktree, fetchOrigin, removeWorktree } from './git.js';
+import { addWorktree, currentBranch, fetchOrigin, removeWorktree } from './git.js';
 import { broadcast } from './hub.js';
 
 export type QueueView = {
@@ -205,20 +205,51 @@ export type CreateSessionInput = {
   ticket: string;
   summary: string;
   branches: { projectId: number; base: string; branch: string }[];
+  /** 워크트리를 만들지 않고 원본 클론 폴더에서 지금 체크아웃된 브랜치로 작업한다. branch는 무시한다. */
+  inPlace?: boolean;
 };
+
+/** 원본 폴더를 이미 쓰고 있는 열린 세션. 두 세션이 한 폴더를 같이 고치면 서로의 변경이 섞인다. */
+function inPlaceOwner(repo: string): string | null {
+  const r = db.prepare(`SELECT s.ticket FROM worktrees wt JOIN sessions s ON s.id = wt.session_id
+    WHERE wt.in_place = 1 AND wt.path = ? AND s.closed = 0 LIMIT 1`).get(repo) as { ticket: string } | undefined;
+  return r?.ticket ?? null;
+}
+
+/** 원본 클론 폴더를 그대로 쓰는 세션을 만든다. 브랜치는 지금 체크아웃된 것이고 폴더는 만들지도 지우지도 않는다. */
+async function planInPlace(branches: CreateSessionInput['branches']) {
+  const planned: { projectId: number; path: string; branch: string; base: string }[] = [];
+  const byRepo = new Map<string, { path: string; branch: string; base: string }>();
+  for (const b of branches) {
+    const project = getProject(b.projectId);
+    if (!project) throw new Error(`프로젝트 ${b.projectId}가 없습니다.`);
+    const repo = project.repo_root || project.local_path;
+    const shared = byRepo.get(repo);
+    if (shared) { planned.push({ projectId: b.projectId, ...shared }); continue; }
+    if (!fs.existsSync(repo)) throw new Error(`${project.name}의 클론 폴더가 없습니다: ${repo}`);
+    const owner = inPlaceOwner(repo);
+    if (owner) throw new Error(`${project.name}의 원본 폴더는 세션 ${owner}가 쓰고 있습니다. 그 세션을 닫거나 워크트리로 만드세요.`);
+    const branch = await currentBranch(repo);
+    if (!branch) throw new Error(`${project.name}의 원본 폴더가 특정 브랜치에 있지 않습니다(detached HEAD). 브랜치를 체크아웃한 뒤 다시 시도하세요.`);
+    byRepo.set(repo, { path: repo, branch, base: b.base });
+    planned.push({ projectId: b.projectId, path: repo, branch, base: b.base });
+  }
+  return planned;
+}
 
 /** 워크스페이스의 각 프로젝트에 워크트리를 만들고 세션을 연다. 하나라도 실패하면 만든 것을 되돌린다. */
 export async function createSession(input: CreateSessionInput): Promise<SessionView> {
   const ticket = input.ticket.trim();
   if (!ticket) throw new Error('티켓 번호를 넣어 주세요.');
   if (input.branches.length === 0) throw new Error('워크트리를 만들 프로젝트가 없습니다.');
+  const inPlace = Boolean(input.inPlace);
 
   const created: { repo: string; path: string }[] = [];
-  const planned: { projectId: number; path: string; branch: string; base: string }[] = [];
+  const planned: { projectId: number; path: string; branch: string; base: string }[] = inPlace ? await planInPlace(input.branches) : [];
   // 같은 저장소의 앱(모노레포의 FE·BE)은 워크트리 하나를 같이 쓴다. 브랜치는 그 저장소에서 처음 나온 앱의 것을 쓴다.
   const byRepo = new Map<string, { path: string; branch: string; base: string }>();
   try {
-    for (const b of input.branches) {
+    for (const b of inPlace ? [] : input.branches) {
       const project = getProject(b.projectId);
       if (!project) throw new Error(`프로젝트 ${b.projectId}가 없습니다.`);
       const repo = project.repo_root || project.local_path;
@@ -241,10 +272,10 @@ export async function createSession(input: CreateSessionInput): Promise<SessionV
   const id = db.transaction(() => {
     const sid = Number(db.prepare(`INSERT INTO sessions (workspace_id, ticket, summary) VALUES (?, ?, ?)`)
       .run(input.workspaceId, ticket, input.summary.trim()).lastInsertRowid);
-    const ins = db.prepare(`INSERT INTO worktrees (session_id, project_id, path, branch, base_branch) VALUES (?, ?, ?, ?, ?)`);
+    const ins = db.prepare(`INSERT INTO worktrees (session_id, project_id, path, branch, base_branch, in_place) VALUES (?, ?, ?, ?, ?, ?)`);
     let first: number | null = null;
     for (const p of planned) {
-      const wid = Number(ins.run(sid, p.projectId, p.path, p.branch, p.base).lastInsertRowid);
+      const wid = Number(ins.run(sid, p.projectId, p.path, p.branch, p.base, inPlace ? 1 : 0).lastInsertRowid);
       first ??= wid;
     }
     db.prepare(`UPDATE sessions SET primary_worktree_id = ? WHERE id = ?`).run(first, sid);
@@ -255,13 +286,14 @@ export async function createSession(input: CreateSessionInput): Promise<SessionV
   return getSession(id)!;
 }
 
-/** 세션을 닫는다. removeWorktrees가 true면 워크트리 폴더도 지운다 (Phase 3에서 정리 화면으로 확장). */
+/** 세션을 닫는다. removeWorktrees가 true면 워크트리 폴더도 지운다 (Phase 3에서 정리 화면으로 확장). 원본 폴더는 지우지 않는다. */
 export async function closeSession(id: number, removeWorktrees: boolean) {
   const s = getSession(id);
   if (!s) throw new Error('세션이 없습니다.');
   if (s.busy) throw new Error('작업 중인 세션은 닫을 수 없습니다. 먼저 중단하세요.');
   if (removeWorktrees) {
     for (const wt of s.repos) {
+      if (wt.in_place) continue;
       const project = getProject(wt.project_id);
       if (project) await removeWorktree(project.repo_root || project.local_path, wt.path).catch(() => {});
     }

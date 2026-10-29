@@ -89,7 +89,7 @@ function dbChatLines(c: DbConnection) {
 
 function buildSystemAppend(repos: RepoView[], side: boolean, db: DbConnection | null) {
   // 저장소 하나에 앱이 여럿이면(모노레포) 앱 폴더도 알려 준다.
-  const lines = repos.map((w) => `- ${w.project_name}: ${w.path} (브랜치 ${w.branch}, ${w.base_branch}에서 분기)${w.apps.length > 1
+  const lines = repos.map((w) => `- ${w.project_name}: ${w.path} (브랜치 ${w.branch}, ${w.in_place ? '원본 클론 폴더라 다른 작업과 같이 쓰는 폴더다. 브랜치를 바꾸거나 되돌리는 git 명령은 사용자에게 묻고 한다' : `${w.base_branch}에서 분기`})${w.apps.length > 1
     ? `. 이 저장소의 앱: ${w.apps.map((a) => `${a.project_kind.toUpperCase()} ${a.subdir ? `${a.subdir}/` : '루트'}`).join(', ')}`
     : ''}`);
   if (db) {
@@ -372,9 +372,11 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
   if (chat?.db_connection_id && !dbOnly) appendMessage(sessionId, 'event', { kind: 'error', message: '이 대화의 DB 연결을 지웠거나 찾지 못했습니다. 설정의 로컬 실행에서 연결을 확인하세요.' }, chatId);
   const ctx = runtimeContext(sessionId, chatId, dbOnly ? [dbOnly] : dbs);
   if (ctx) content.push({ type: 'text', text: ctx });
+  // /compact 같은 슬래시 명령은 글 하나로만 보내야 명령으로 실행된다. 실행 정보를 덧붙이면 일반 메시지로 넘어간다.
+  const slash = stored.length === 0 && /^\/[a-z][\w:-]*(\s|$)/i.test(text.trim());
 
   async function* input(): AsyncGenerator<SDKUserMessage> {
-    yield { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null };
+    yield { type: 'user', message: { role: 'user', content: slash ? text.trim() : content }, parent_tool_use_id: null };
   }
 
   const abort = new AbortController();
@@ -464,6 +466,11 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
       if (msg.type === 'system' && msg.subtype === 'init') {
         const prev = chat ? chat.claude_session_id : session.claude_session_id;
         if (msg.session_id && msg.session_id !== prev) setChat(sessionId, chatId, { claude_session_id: msg.session_id });
+        continue;
+      }
+      if (msg.type === 'system' && msg.subtype === 'compact_boundary') {
+        const m = msg.compact_metadata;
+        appendMessage(sessionId, 'event', { kind: 'compacted', trigger: m.trigger, pre_tokens: m.pre_tokens, post_tokens: m.post_tokens ?? null }, chatId);
         continue;
       }
       if (msg.type === 'assistant') {

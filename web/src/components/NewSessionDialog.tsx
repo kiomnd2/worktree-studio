@@ -3,8 +3,8 @@ import { api } from '../api';
 import { usableIn, type JiraStatus, type Session, type Workspace } from '../types';
 import JiraTicketPicker, { WORK_NAME, type TicketChoice } from './JiraTicketPicker';
 
-/** sharedWith: 같은 저장소의 앞 앱 이름. 그 앱과 워크트리·브랜치를 같이 쓴다(모노레포). */
-type Row = { projectId: number; name: string; branches: string[]; base: string; branch: string; touched: boolean; repo: string; sharedWith: string | null };
+/** sharedWith: 같은 저장소의 앞 앱 이름. 그 앱과 워크트리·브랜치를 같이 쓴다(모노레포). current: 원본 폴더에 체크아웃된 브랜치 */
+type Row = { projectId: number; name: string; branches: string[]; base: string; branch: string; touched: boolean; repo: string; sharedWith: string | null; current: string | null };
 
 const defaultBranch = (ticket: string) => (ticket.trim() ? `feature/${ticket.trim()}` : '');
 
@@ -21,6 +21,8 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
   // 첫 프롬프트는 기본으로 계획 먼저: 코드를 고치기 전에 계획서·화면설계서를 만들고 승인을 기다린다.
   const [firstPlan, setFirstPlan] = useState(true);
   const [rows, setRows] = useState<Row[]>([]);
+  // 워크트리를 만들지 않고 원본 클론 폴더에서 지금 브랜치 그대로 작업한다.
+  const [inPlace, setInPlace] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [freeAccounts, setFreeAccounts] = useState<number | null>(null);
@@ -68,11 +70,13 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
   useEffect(() => {
     if (!workspace) { setRows([]); return; }
     let cancelled = false;
+    const projects = api.projects().catch(() => []);
     Promise.all(workspace.projects.map(async (p, i) => {
       const first = workspace.projects.find((x) => x.repo_root === p.repo_root);
       const sharedWith = first && workspace.projects.indexOf(first) < i ? first.name : null;
       const branches = sharedWith ? [] : await api.branches(p.id).catch(() => [] as string[]);
-      return { projectId: p.id, name: p.name, branches, base: branches[0] ?? 'develop', branch: '', touched: false, repo: p.repo_root, sharedWith };
+      const current = (await projects).find((x) => x.id === p.id)?.current_branch ?? null;
+      return { projectId: p.id, name: p.name, branches, base: branches[0] ?? 'develop', branch: '', touched: false, repo: p.repo_root, sharedWith, current };
     })).then((r) => { if (!cancelled) setRows(r); });
     return () => { cancelled = true; };
   }, [workspace]);
@@ -116,20 +120,23 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
     e.preventDefault();
     if (step === 1) { await next(); return; }
     if (!ticket) { setStep(1); return; }
+    const detached = inPlace ? rows.find((r) => !r.sharedWith && !r.current) : undefined;
+    if (detached) { setError(`${detached.name}의 원본 폴더가 특정 브랜치에 있지 않습니다. 브랜치를 체크아웃한 뒤 다시 시도하세요.`); return; }
     setBusy(true);
     setError(null);
-    setStage('워크트리 만드는 중');
+    setStage(inPlace ? '세션 만드는 중' : '워크트리 만드는 중');
     try {
       const s = await api.createSession({
         workspaceId: workspaceId!,
         ticket,
         summary,
+        inPlace,
         firstPrompt: firstPrompt.trim() || undefined,
         firstPromptPlan: firstPlan,
         // 같은 저장소의 앱은 앞 앱의 브랜치를 쓴다(서버도 저장소마다 워크트리를 하나만 만든다).
         branches: rows.map((r) => {
           const owner = rows.find((x) => x.repo === r.repo) ?? r;
-          return { projectId: r.projectId, base: owner.base, branch: owner.touched ? owner.branch : defaultBranch(ticket) };
+          return { projectId: r.projectId, base: owner.base, branch: inPlace ? owner.current ?? '-' : owner.touched ? owner.branch : defaultBranch(ticket) };
         }),
       });
       onCreated(s);
@@ -188,8 +195,12 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
             </label>
             <fieldset className="box">
               <legend>브랜치</legend>
+              <div className="checks where" role="radiogroup" aria-label="작업 위치">
+                <label><input type="radio" name="where" checked={!inPlace} onChange={() => setInPlace(false)} /> 새 워크트리</label>
+                <label><input type="radio" name="where" checked={inPlace} onChange={() => setInPlace(true)} /> 원본 폴더에서 바로 작업</label>
+              </div>
               <div className="branch-grid">
-                <span className="muted small">프로젝트</span><span className="muted small">기준 브랜치</span><span className="muted small">새 브랜치</span>
+                <span className="muted small">프로젝트</span><span className="muted small">{inPlace ? '비교 기준 브랜치' : '기준 브랜치'}</span><span className="muted small">{inPlace ? '작업 브랜치(현재)' : '새 브랜치'}</span>
                 {rows.map((r, i) => r.sharedWith ? (
                   <div key={r.projectId} className="branch-row">
                     <strong>{r.name}</strong>
@@ -201,17 +212,25 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
                     <select aria-label={`${r.name} 기준 브랜치`} value={r.base} onChange={(e) => update(i, { base: e.target.value })}>
                       {(r.branches.length ? r.branches : [r.base]).map((b) => <option key={b}>{b}</option>)}
                     </select>
-                    <input
-                      aria-label={`${r.name} 새 브랜치`}
-                      className="mono"
-                      value={r.touched ? r.branch : defaultBranch(ticket)}
-                      placeholder="feature/..."
-                      onChange={(e) => update(i, { branch: e.target.value, touched: true })}
-                    />
+                    {inPlace ? (
+                      <input aria-label={`${r.name} 작업 브랜치`} className="mono" readOnly value={r.current ?? '(브랜치 없음 · detached)'} />
+                    ) : (
+                      <input
+                        aria-label={`${r.name} 새 브랜치`}
+                        className="mono"
+                        value={r.touched ? r.branch : defaultBranch(ticket)}
+                        placeholder="feature/..."
+                        onChange={(e) => update(i, { branch: e.target.value, touched: true })}
+                      />
+                    )}
                   </div>
                 ))}
               </div>
-              <p className="muted small">워크트리는 각 클론 폴더 옆에 <code>{choice.mode === 'none' ? '폴더이름-작업이름' : '폴더이름-티켓번호'}</code>로 만들어집니다.</p>
+              {inPlace ? (
+                <p className="muted small">워크트리를 만들지 않고 등록한 클론 폴더에서 지금 체크아웃된 브랜치로 작업합니다. 세션을 닫거나 정리해도 폴더와 브랜치는 지우지 않습니다. 한 폴더는 열린 세션 하나만 쓸 수 있습니다.</p>
+              ) : (
+                <p className="muted small">워크트리는 각 클론 폴더 옆에 <code>{choice.mode === 'none' ? '폴더이름-작업이름' : '폴더이름-티켓번호'}</code>로 만들어집니다.</p>
+              )}
             </fieldset>
             <p className="muted small">
               {freeAccounts === null ? '' : freeAccounts > 0
