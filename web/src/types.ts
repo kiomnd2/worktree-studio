@@ -53,6 +53,8 @@ export type Worktree = {
   project_kind: ProjectKind;
   path: string;
   branch: string;
+  /** 1이면 워크트리가 아니라 원본 클론 폴더에서 작업한다 */
+  in_place?: number;
   base_branch: string;
 };
 

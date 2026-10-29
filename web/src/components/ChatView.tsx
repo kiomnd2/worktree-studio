@@ -19,6 +19,8 @@ const LONG_AT = 200_000;
 function contextTokens(messages: StoredMessage[]): number | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const p = messages[i].payload;
+    // 요약한 뒤로 아직 응답이 없으면 요약 뒤 크기를 쓴다(모르면 미터를 숨긴다).
+    if (messages[i].kind === 'event' && p?.kind === 'compacted') return p.post_tokens ?? null;
     if (messages[i].kind !== 'sdk' || p?.type !== 'assistant' || p.parent_tool_use_id) continue;
     const u = p.message?.usage;
     if (u) return (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
@@ -312,6 +314,9 @@ function MessageItem({ message, toolResults, now }: { message: StoredMessage; to
   }
   if (message.kind === 'event') {
     if (p.kind === 'stopped') return <div className="msg-event">작업을 중단했습니다.</div>;
+    if (p.kind === 'compacted') {
+      return <div className="msg-event">{p.trigger === 'auto' ? '대화가 길어져 자동으로 요약했습니다' : '대화를 요약했습니다'} ({Math.round(p.pre_tokens / 1000)}K{p.post_tokens ? ` → ${Math.round(p.post_tokens / 1000)}K` : ''})</div>;
+    }
     return <div className="msg-event error" role="alert">오류: {p.message}</div>;
   }
   if (p.type === 'assistant') {

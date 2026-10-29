@@ -148,6 +148,8 @@ addColumn('projects', 'setup_cmd', 'setup_cmd TEXT');
 addColumn('worktrees', 'setup_done', 'setup_done INTEGER NOT NULL DEFAULT 0');
 // 세션마다 앱별로 잡아 두는 포트. FE·BE를 따로 띄워도 서로의 주소가 바뀌지 않게 한다.
 addColumn('worktrees', 'port', 'port INTEGER');
+// 워크트리를 만들지 않고 원본 클론 폴더에서 바로 작업하는지. 이런 세션은 닫거나 정리해도 폴더·브랜치를 지우지 않는다.
+addColumn('worktrees', 'in_place', 'in_place INTEGER NOT NULL DEFAULT 0');
 // 서버 실행 전 포트 설정 제안을 살펴봤는지. 살펴본 프로젝트는 값이 포트 자리로 저장돼 있어 다음부터는 묻지 않는다.
 addColumn('projects', 'port_env_checked', 'port_env_checked INTEGER NOT NULL DEFAULT 0');
 // 한 세션에 계정 여러 개: 배정 순서를 기억하고, 화면마다 어느 계정으로 찍을지 고른다.
@@ -291,6 +293,8 @@ export type WorktreeRow = {
   id: number; session_id: number; project_id: number; path: string; branch: string; base_branch: string; setup_done: number;
   /** 이 세션에서 이 앱에 잡아 둔 포트(아직 안 정했으면 null) */
   port: number | null;
+  /** 1이면 워크트리가 아니라 원본 클론 폴더(path)를 그대로 쓴다 */
+  in_place: number;
 };
 export type ChatRow = {
   id: number; session_id: number; title: string; status: string; claude_session_id: string | null; unread: number; closed: number; created_at: string;

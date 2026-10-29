@@ -70,7 +70,7 @@ export const api = {
   session: (id: number) => request<Session>('GET', `/api/sessions/${id}`),
   createSession: (body: {
     workspaceId: number; ticket: string; summary: string;
-    branches: { projectId: number; base: string; branch: string }[]; firstPrompt?: string; firstPromptPlan?: boolean;
+    branches: { projectId: number; base: string; branch: string }[]; inPlace?: boolean; firstPrompt?: string; firstPromptPlan?: boolean;
   }) => request<Session>('POST', '/api/sessions', body),
   messages: (id: number, chat = 0) => request<StoredMessage[]>('GET', `/api/sessions/${id}/messages?chat=${chat}`),
   prompt: (id: number, text: string, images: { mediaType: string; data: string; name?: string }[], plan = false, chat = 0) =>
