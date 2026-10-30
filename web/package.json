@@ -1,6 +1,6 @@
 {
   "name": "@worktree-studio/web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -10,7 +10,8 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "sql-formatter": "^15.9.0"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",

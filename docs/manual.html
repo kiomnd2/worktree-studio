@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Worktree Studio 사용 설명서</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F5F6F8; --sheet:#FFFFFF; --ink:#1B2230; --muted:#5A6576; --rule:#D8DDE4;
+  --accent:#3446C4; --accent-soft:#E7EAFB; --branch:#0D7A68; --branch-soft:#E0F2EE; --warn:#A5531A; --warn-soft:#FBEDE2;
+  --sans:"IBM Plex Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  box-sizing:border-box;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#12161D; --sheet:#1A1F28; --ink:#E6E9EE; --muted:#9AA4B3; --rule:#2E3542;
+    --accent:#8F9BFF; --accent-soft:#252B4A; --branch:#4FC7AF; --branch-soft:#173530; --warn:#F0A46B; --warn-soft:#3A2618;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#12161D; --sheet:#1A1F28; --ink:#E6E9EE; --muted:#9AA4B3; --rule:#2E3542;
+  --accent:#8F9BFF; --accent-soft:#252B4A; --branch:#4FC7AF; --branch-soft:#173530; --warn:#F0A46B; --warn-soft:#3A2618;
+}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1120px;margin:0 auto;padding:56px 24px 96px;display:grid;grid-template-columns:210px minmax(0,1fr);gap:56px}
+nav{position:sticky;top:32px;align-self:start;font-size:14px;max-height:calc(100vh - 64px);overflow-y:auto}
+nav a{display:block;color:var(--muted);text-decoration:none;padding:4px 0 4px 12px;border-left:2px solid var(--rule)}
+nav a:hover,nav a:focus-visible{color:var(--ink);border-left-color:var(--accent);outline:none}
+main{min-width:0}
+header{padding-bottom:36px;border-bottom:1px solid var(--rule);margin-bottom:48px}
+.doc-meta{font-size:14px;color:var(--muted);margin:0 0 18px}
+h1{font-size:clamp(30px,4.2vw,42px);line-height:1.25;font-weight:600;letter-spacing:-0.02em;margin:0 0 16px}
+.lede{font-size:18px;color:var(--muted);max-width:38em;margin:0}
+section{margin-bottom:60px;scroll-margin-top:24px}
+h2{font-size:24px;font-weight:600;letter-spacing:-0.01em;margin:0 0 18px;line-height:1.4}
+h3{font-size:17px;font-weight:600;margin:28px 0 8px}
+p{margin:0 0 14px;max-width:44em}
+code{font-family:var(--mono);font-size:0.88em;background:var(--accent-soft);color:var(--ink);padding:1px 6px;border-radius:4px}
+pre{font-family:var(--mono);font-size:13.5px;line-height:1.65;background:var(--sheet);border:1px solid var(--rule);border-radius:6px;padding:16px 18px;overflow-x:auto;margin:12px 0 18px}
+pre code{background:none;padding:0}
+ul,ol{padding-left:22px;margin:0 0 14px;max-width:44em}
+li{margin-bottom:6px}
+.ui{font-weight:600;white-space:nowrap}
+.ui::before{content:"[";color:var(--muted);font-weight:400}
+.ui::after{content:"]";color:var(--muted);font-weight:400}
+.scroll{overflow-x:auto;margin:8px 0 20px}
+table{border-collapse:collapse;width:100%;min-width:600px;font-size:14.5px;line-height:1.6;background:var(--sheet)}
+th,td{text-align:left;vertical-align:top;padding:11px 14px;border-bottom:1px solid var(--rule)}
+th{font-weight:500;color:var(--muted);font-size:13.5px;border-bottom:1px solid var(--ink)}
+td:first-child{white-space:nowrap;font-weight:500}
+th{white-space:nowrap}
+.areas td:nth-child(2){white-space:nowrap}
+.note{border-left:3px solid var(--accent);background:var(--accent-soft);padding:12px 16px;border-radius:0 6px 6px 0;margin:14px 0 18px;max-width:44em;font-size:15px}
+.warn{border-left-color:var(--warn);background:var(--warn-soft)}
+.steps{counter-reset:s;list-style:none;padding:0}
+.steps>li{counter-increment:s;position:relative;padding-left:40px;margin-bottom:14px}
+.steps>li::before{content:counter(s);position:absolute;left:0;top:2px;width:26px;height:26px;border-radius:50%;background:var(--ink);color:var(--paper);font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center}
+/* 화면 구성도 */
+.mock{border:1px solid var(--rule);border-radius:10px;background:var(--sheet);overflow:hidden;margin:16px 0 8px;font-size:13px;line-height:1.5;min-width:640px}
+.mock-top{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--rule);background:var(--paper)}
+.mock-body{display:grid;grid-template-columns:150px 1fr 230px;min-height:300px}
+.mock-col{padding:10px;border-right:1px solid var(--rule);display:flex;flex-direction:column;gap:8px}
+.mock-col:last-child{border-right:0;background:var(--paper)}
+.mb{border:1px dashed var(--rule);border-radius:6px;padding:6px 8px;position:relative;background:var(--sheet)}
+.mb.grow{flex:1}
+.pin{position:absolute;top:-9px;left:-9px;width:20px;height:20px;border-radius:50%;background:#D93025;color:#fff;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center}
+.mock-top .mb{flex:none}
+.mock-top .mb.grow{flex:1}
+@media (max-width:860px){.wrap{grid-template-columns:1fr;gap:24px;padding:32px 16px 64px}nav{position:static;max-height:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav aria-label="목차">
+  <a href="#start">시작하기</a>
+  <a href="#setup">처음 설정</a>
+  <a href="#layout">화면 구성</a>
+  <a href="#session">새 세션 만들기</a>
+  <a href="#claude">Claude와 작업하기</a>
+  <a href="#plan">계획 먼저</a>
+  <a href="#server">서버·미리보기·로그</a>
+  <a href="#changes">변경 확인</a>
+  <a href="#tests">화면 테스트</a>
+  <a href="#artifacts">산출물과 보관함</a>
+  <a href="#pr">푸시하고 PR 만들기</a>
+  <a href="#close">세션 닫기와 정리</a>
+  <a href="#settings">설정</a>
+  <a href="#trouble">문제 해결</a>
+  <a href="#data">데이터 위치</a>
+</nav>
+<main>
+<header>
+  <p class="doc-meta">사용 설명서 · 2026-10-14 기준</p>
+  <h1>Worktree Studio 사용 설명서</h1>
+  <p class="lede">Jira 티켓 하나에 git 워크트리 하나를 만들고, 그 안에서 Claude Code와 대화하며 개발합니다. 서버 실행, 미리보기, 화면 테스트, PR까지 한 화면에서 이어집니다.</p>
+</header>
+
+<section id="start">
+  <h2>시작하기</h2>
+  <h3>준비물</h3>
+  <ul>
+    <li>Node.js 20 이상, git</li>
+    <li>Claude Code 로그인: 터미널에서 <code>claude</code>를 실행해 <code>/login</code>을 한 번 해 둡니다.</li>
+    <li>GitHub CLI 로그인: <code>gh auth login</code>. PR 만들기와 PR 상태 확인에 씁니다.</li>
+    <li>화면 테스트를 쓰려면 Chrome이 설치되어 있어야 합니다.</li>
+  </ul>
+  <h3>실행</h3>
+<pre><code>npm install
+npm run dev     # 서버 4317, 화면 5317 → http://localhost:5317
+
+npm run build && npm start   # 서버 하나로 실행 → http://localhost:4317</code></pre>
+</section>
+
+<section id="setup">
+  <h2>처음 설정</h2>
+  <p>왼쪽 아래 <span class="ui">설정</span>에서 한 번만 해 두면 됩니다. 설정은 <span class="ui">워크스페이스·프로젝트</span>, <span class="ui">Jira</span>, <span class="ui">테스트 계정</span>, <span class="ui">Claude와 알림</span> 탭으로 나뉩니다.</p>
+  <ol class="steps">
+    <li><strong>워크스페이스 만들기.</strong> <span class="ui">새 워크스페이스</span>에 이름(예: RE100)을 넣어 만듭니다. 워크스페이스마다 <strong>Jira 프로젝트 키</strong>(예: <code>KERE</code>)를 넣어 두면 세션을 만들 때 티켓을 고르거나 바로 만들 수 있습니다.</li>
+    <li><strong>프로젝트 추가.</strong> 워크스페이스 카드 아래 칸에 로컬에 클론한 폴더 경로를 넣고 <span class="ui">폴더 분석 후 추가</span>를 누릅니다. BE·FE 종류, 실행 명령, 설치 명령, 헬스체크 경로가 채워집니다. 포트를 인자로 받는 FE는 실행 명령에 <code>{port}</code>를 넣고, Spring은 포트 변수 <code>SERVER_PORT</code>로 받습니다. 개발 서버가 HTTPS로 뜨면 <strong>접속 주소</strong>에 <code>https://localhost:{port}</code>를, 인증서의 도메인으로 열어야 하면 <code>https://local.example.com:{port}</code>처럼 넣습니다. 미리보기·헬스체크·화면 캡처·화면 테스트가 이 주소를 쓰고, 로컬 개발 인증서(자체 서명 포함)는 그대로 받아들입니다.</li>
+    <li><strong>프로젝트 정리.</strong> 프로젝트는 한 줄 요약으로 보이고 <span class="ui">설정</span>으로 자세한 설정을 엽니다. 위아래 버튼으로 순서를 바꾸며 맨 위 프로젝트가 Claude의 작업 위치가 됩니다. <span class="ui">다시 분석</span>은 Claude가 저장소를 읽고 로그인 없이 바로 뜨는 실행 방법을 제안합니다. 이미 등록한 프로젝트는 <span class="ui">등록된 프로젝트 넣기</span>로 다른 워크스페이스에도 넣을 수 있습니다.</li>
+    <li><strong>Jira 로그인.</strong> Jira 영역에서 <span class="ui">Jira로 로그인</span>을 누르고 Atlassian 화면에서 허용합니다. API 키나 앱 등록은 필요 없습니다. 사이트가 여러 개면 쓸 사이트를 고릅니다.</li>
+    <li><strong>테스트 계정 풀.</strong> 화면 확인과 화면 테스트에 쓸 계정을 넣습니다. 메모에 역할(예: 관리자, 수요기업)을 적어 두면 Claude가 역할에 맞는 계정을 고르는 데 씁니다. 워크스페이스를 지정하면 그 워크스페이스 세션에서만 씁니다.</li>
+  </ol>
+  <p class="note warn">테스트 계정의 아이디와 비밀번호는 화면 확인을 위해 Claude에게 전달됩니다. 운영 계정은 넣지 마세요.</p>
+</section>
+
+<section id="layout">
+  <h2>화면 구성</h2>
+  <div class="scroll">
+  <div class="mock" role="img" aria-label="메인 화면 구성도">
+    <div class="mock-top">
+      <div class="mb"><span class="pin">1</span>KERE-368 제목 · 브랜치</div>
+      <div class="mb grow">서버 상태 · 계정 · PR #932 머지됨</div>
+      <div class="mb">푸시하고 PR 만들기</div>
+    </div>
+    <div class="mock-body">
+      <div class="mock-col">
+        <div class="mb">+ 새 세션</div>
+        <div class="mb grow"><span class="pin">2</span>워크스페이스별 세션 목록</div>
+        <div class="mb">산출물 보관함<br>사용량 보고서<br>리소스 정리<br>설정</div>
+      </div>
+      <div class="mock-col">
+        <div class="mb grow"><span class="pin">3</span>대화 (Claude 응답, 도구 카드, 문서 카드)</div>
+        <div class="mb"><span class="pin">4</span>승인 카드 (계획·환경값·계정)</div>
+        <div class="mb"><span class="pin">5</span>프롬프트 입력 · 이미지·문서 첨부 · 계획 먼저 · 보내기</div>
+      </div>
+      <div class="mock-col">
+        <div class="mb"><span class="pin">6</span>변경 파일 ▾ 산출물 ▾ 화면 테스트 ▾ 세션 ▾</div>
+        <div class="mb">서버 (환경값 · 실행 · 재시작)</div>
+        <div class="mb grow">미리보기</div>
+        <div class="mb">로그</div>
+      </div>
+    </div>
+  </div>
+  </div>
+  <div class="scroll"><table class="areas">
+    <thead><tr><th>번호</th><th>영역</th><th>하는 일</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>상단 바</td><td>지금 세션의 티켓, 브랜치, 서버 상태, 쓸 수 있는 계정 수, PR 상태. PR을 GitHub에서 머지하고 돌아오면 바로 "머지됨"으로 바뀝니다.</td></tr>
+      <tr><td>2</td><td>왼쪽 사이드바</td><td>세션 목록과 상태(대기, 작업 중, 새 결과). 아래에 산출물 보관함, 리소스 정리, 설정.</td></tr>
+      <tr><td>3</td><td>대화</td><td>Claude의 답과 실행한 도구. 도구 카드를 펼치면 명령과 결과를 봅니다. 저장한 문서는 <span class="ui">열기</span> 카드로 나옵니다.</td></tr>
+      <tr><td>4</td><td>승인 카드</td><td>Claude가 사용자 확인을 기다리는 요청. 확인할 때까지 Claude는 멈춰 있습니다.</td></tr>
+      <tr><td>5</td><td>프롬프트 입력</td><td>Enter로 보내고 Shift+Enter로 줄을 바꿉니다. 작업 중에 보내면 그 대화의 대기열에 들어갑니다.</td></tr>
+      <tr><td>6</td><td>오른쪽 패널</td><td>맨 위 메뉴는 필요할 때만 펼칩니다. 본문에는 서버, 미리보기, 로그만 둡니다. 패널 왼쪽 가장자리를 끌어 너비를 바꿉니다.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="session">
+  <h2>새 세션 만들기</h2>
+  <p><span class="ui">+ 새 세션</span>은 두 단계입니다.</p>
+  <h3>① 티켓</h3>
+  <ul>
+    <li>워크스페이스를 고르면 나에게 배정된 진행 중 티켓이 나옵니다. 키(<code>KERE-368</code>), 번호만(<code>368</code>), 제목 일부로 찾을 수 있습니다.</li>
+    <li><strong>새로 만들기</strong>: "하려는 일"을 적고 <span class="ui">제목·내용 제안 받기</span>를 누르면 Claude가 코드와 최근 티켓 형식을 보고 제목·유형·설명을 씁니다. 고친 뒤 <span class="ui">티켓 만들고 다음</span>을 누르면 Jira에 만들어지고 나에게 배정됩니다. <span class="ui">제안 없이 직접 쓰기</span>도 됩니다.</li>
+    <li>프로젝트가 필수로 요구하는 칸(예: 스프린트)은 유형을 고르면 나타납니다. 스프린트는 진행 중인 스프린트가 기본으로 골라져 있습니다.</li>
+    <li>Jira에 로그인하지 않았거나 워크스페이스에 Jira 키가 없으면 티켓 번호를 직접 넣습니다.</li>
+  </ul>
+  <h3>② 세션 설정</h3>
+  <ul>
+    <li>프로젝트마다 기준 브랜치와 새 브랜치(기본 <code>feature/티켓키</code>)를 확인합니다.</li>
+    <li>첫 프롬프트를 적어 두면 세션을 만들자마자 Claude가 시작합니다. ①에서 적은 "하려는 일"이 미리 들어갑니다.</li>
+    <li><span class="ui">세션 만들기</span>를 누르면 클론 옆에 <code>프로젝트-티켓번호</code> 폴더로 워크트리가 생깁니다. 원본 클론 폴더는 건드리지 않습니다.</li>
+  </ul>
+</section>
+
+<section id="claude">
+  <h2>Claude와 작업하기</h2>
+  <ul>
+    <li><strong>이미지·문서 첨부</strong>: 클립 버튼, 끌어다 놓기, 붙여넣기. 이미지(PNG·JPG·GIF·WEBP, 5MB), PDF(20MB), 텍스트 문서(md·html·txt·json·csv·yaml·코드 파일 등, 1MB)를 붙일 수 있고 Claude가 내용을 읽습니다. 첨부한 이미지의 ✏️를 누르면 펜·네모·화살표·글자로 표시해서 보낼 수 있습니다.</li>
+    <li><strong>대기열</strong>: Claude가 작업 중일 때 보내면 차례로 실행합니다. 중단하거나 오류로 끝나면 대기열이 멈추고, <span class="ui">이어서 실행</span>을 눌러야 다음 것이 돕니다.</li>
+    <li><strong>추가 대화</strong>: 대화 위쪽의 <span class="ui">+ 새 대화</span>로 같은 워크트리에서 Claude를 하나 더 돌립니다. 메인 대화가 작업 중이어도 바로 시작하고, 대화마다 따로 이어집니다. 로그를 보다 생긴 작은 수정처럼 메인 작업과 겹치지 않는 일에 쓰세요(같은 파일을 동시에 고치면 서로 덮어쓸 수 있습니다). 작업 목록은 메인 대화만 바꿉니다. 대화를 닫아도 고친 코드는 워크트리에 남습니다. 로그, 변경 파일, 문서, 화면 테스트, 미리보기 캡처, PR 검사 실패에서 넘기는 내용은 메인 대화가 아니라 새 대화 탭에 들어갑니다. 새 대화 탭이 이미 열려 있으면 거기에 더하고, 보내기는 직접 누릅니다.</li>
+    <li><strong>DB 대화</strong>: 대화 위쪽의 <span class="ui">+ DB 대화</span>에서 세션 프로젝트의 DB 연결(설정 › 로컬 실행에서 만든 것)을 고르면, 그 DB에만 질의하는 대화가 열립니다. "오늘 가입한 회원 수"처럼 말로 물으면 Claude가 스키마를 조회하고 SQL을 짜서 실행한 뒤 결과를 정리합니다. 조회는 롤백하는 읽기 전용 트랜잭션에서 바로 실행하고 200행까지 가져옵니다. INSERT·UPDATE·DELETE·DDL은 승인 카드로 SQL을 보여 주고, 승인해야 실행합니다(고쳐서 승인할 수도 있습니다). DB 대화는 코드를 고치지 않습니다. postgres, mysql, mariadb, oracle(12.1 이상), mssql을 지원합니다. 일반 대화에서도 Claude가 같은 방식으로 DB를 조회할 수 있습니다.</li>
+    <li><strong>중단</strong>: 작업 중에 <span class="ui">중단</span>을 누르면 멈춥니다. 다음 프롬프트는 앞 대화를 이어서 받습니다.</li>
+    <li><strong>환경값 요청</strong>: Claude가 서버 실행에 필요한 값을 찾으면 승인 카드로 요청합니다. 값을 확인·수정해 "이번 세션에만" 또는 "프로필에 저장"으로 승인합니다. Claude는 <code>.env</code> 파일을 직접 만들지 않습니다.</li>
+    <li><strong>테스트 계정</strong>: 세션은 워크스페이스 계정과 공용 계정을 모두 쓰고, 다른 세션과 같이 씁니다. Claude는 메모(역할)를 보고 맞는 계정을 고릅니다. 맞는 역할 계정이 없으면 설정의 테스트 계정 풀에 추가해 달라고 합니다.</li>
+    <li><strong>다음 작업 진행</strong>: 작업 목록에 남은 항목이 있는데 Claude가 멈춰 있으면 목록 오른쪽에 <span class="ui">다음 작업 진행</span>이 나옵니다. 누르면 다음 항목 하나만 진행하고 멈춥니다. 중단돼 하는 중으로 남은 항목이 있으면 <span class="ui">이어서 진행</span>으로 바뀝니다. 대기열에 프롬프트가 있으면 나오지 않습니다.</li>
+    <li>Claude는 매 메시지마다 실행 중인 서버 주소, 쓸 수 있는 테스트 계정, 작업 목록, 이 세션의 산출물 목록을 받습니다.</li>
+  </ul>
+  <p class="note">권한은 설정의 권한 모드를 따릅니다. Claude가 커밋·푸시·서버 실행은 하지 않도록 안내받지만 강제는 아니므로, auto 모드에서는 도구 카드로 실행한 명령을 확인하세요.</p>
+</section>
+
+<section id="plan">
+  <h2>계획 먼저</h2>
+  <p>입력창 아래 <span class="ui">계획 먼저</span>를 켜고 보내면(버튼이 <span class="ui">계획 세우기</span>로 바뀝니다) Claude가 코드를 고치기 전에 계획을 세웁니다. 켜 둔 상태는 세션마다 기억합니다.</p>
+  <ol class="steps">
+    <li>Claude가 코드를 읽고 <strong>계획서</strong>를 만듭니다. 목표, 바꿀 파일과 이유, 단계, API·데이터 변경, 영향 범위, 테스트 방법, 확인할 것이 들어갑니다.</li>
+    <li>화면이 생기거나 바뀌면 화면마다 <strong>화면설계서</strong>를 만듭니다. 실제 배치를 본뜬 와이어프레임에 번호를 달고, 번호별 설명 표(항목, 동작, 검증 규칙, 데이터 출처)와 빈 목록·오류·권한별 상태를 함께 그립니다.</li>
+    <li>승인 카드에서 문서를 열어 보고 고릅니다.
+      <ul>
+        <li><span class="ui">승인하고 실행</span>: 바로 구현을 시작합니다.</li>
+        <li><span class="ui">고쳐 달라고 하기</span>: 적은 의견대로 문서를 고쳐 새 판으로 저장하고 다시 묻습니다.</li>
+        <li><span class="ui">실행 안 함</span>: 아무것도 고치지 않고 끝냅니다.</li>
+      </ul>
+    </li>
+  </ol>
+  <p>계획 모드가 아니어도 "화면설계서 만들어줘"처럼 요청하면 문서로 저장합니다.</p>
+</section>
+
+<section id="server">
+  <h2>서버·미리보기·로그</h2>
+  <h3>환경값</h3>
+  <ul>
+    <li>서버 영역의 <span class="ui">환경값</span>에서 프로젝트별 값을 봅니다. 처음 열면 워크트리를 분석해 필요한 키를 채우고, 원본 클론 폴더의 <code>.env</code> 값을 가져옵니다.</li>
+    <li>프로필(local, mock 등)을 여러 개 두고 세션마다 고릅니다. 저장은 <span class="ui">지금 프로필에 덮어쓰기</span>, <span class="ui">새 프로필로 저장</span>, <span class="ui">이번 세션에만 적용</span> 중에서 고릅니다.</li>
+    <li>필수 값이 비어 있으면 서버를 띄우지 않고 빠진 키를 알려 줍니다.</li>
+  </ul>
+  <h3>서버 실행</h3>
+  <ul>
+    <li><span class="ui">모두 실행</span> 또는 프로젝트별 <span class="ui">실행</span>. 실행 전에 나갈 명령을 보여 주고, 빈 포트를 자동 배정합니다(BE 8081~, FE 3401~). FE의 BE 주소 변수는 같은 세션 BE 포트로 연결됩니다.</li>
+    <li>새 워크트리는 처음 실행할 때 설치 명령(<code>npm ci</code>, <code>uv sync</code> 등)을 먼저 돌립니다.</li>
+    <li>헬스체크가 통과하면 "실행 중"이 됩니다. 멈추거나 응답이 없으면 오류 요약이 뜨고 <span class="ui">로그를 Claude에게 넘기기</span>로 원인 찾기를 맡길 수 있습니다. 고칠지는 사용자가 정합니다.</li>
+    <li>Spring처럼 핫 리로드가 안 되는 서버는 코드를 바꾼 뒤 <span class="ui">재시작</span>합니다.</li>
+  </ul>
+  <h3>미리보기</h3>
+  <ul>
+    <li>FE가 실행 중이면 패널에 화면이 나옵니다. 경로 이동, 새로고침, 새 창, 크게 보기, 화면 맞춤이 있습니다.</li>
+    <li><span class="ui">새 대화로 보내기</span>: 지금 화면을 찍어 새 대화 탭에 첨부하고 경로를 입력창에 넣습니다.</li>
+    <li><strong>탭</strong>: <span class="ui">+</span>로 미리보기 탭을 더 열고 ×로 닫습니다. 탭마다 페이지가 따로 유지되고, 주소 칸에는 경로(<code>/login</code>)나 전체 주소(<code>https://localhost:8081/...</code>)를 넣을 수 있습니다. 화면 찍기·새 창은 지금 탭 기준입니다.</li>
+    <li><strong>앱에서</strong>: 미리보기 페이지가 연 팝업은 앱 안 작은 창으로 열려 원래 페이지와 이어집니다(인증서 팝업이 결과를 원래 페이지로 돌려주고 닫히는 흐름이 그대로 동작). 원래 페이지와 연결하지 않는 팝업(noopener)은 새 미리보기 탭으로 엽니다. 이 PC의 로컬 서버(목업 인증 서버 등)가 프레임을 막아도(X-Frame-Options) 미리보기 안에서 보입니다.</li>
+    <li><strong>브라우저에서</strong>: 다른 서버로 넘어가거나 팝업이 뜨면 "연결을 거부했습니다"로 막힐 수 있습니다. 그 탭은 새 창으로 여세요. 로그인 쿠키가 안 붙을 때도 새 창으로 엽니다.</li>
+  </ul>
+  <h3>로그</h3>
+  <p>프로젝트별 탭, WARN 이상 필터, 검색. 오류 줄의 <span class="ui">새 대화로 보내기</span>는 앞뒤 줄과 함께 새 대화 탭의 입력창에 넣습니다. 비밀값은 가려집니다.</p>
+</section>
+
+<section id="changes">
+  <h2>변경 확인</h2>
+  <p>오른쪽 패널 맨 위 <span class="ui">변경 파일 ▾</span>에서 봅니다.</p>
+  <ul>
+    <li><strong>변경 파일</strong>: 프로젝트별 바뀐 파일 수와 줄 수. <span class="ui">비교 보기</span>에서 파일별 diff를 나란히 또는 한 줄로 보고, "기준 브랜치와" / "커밋 안 한 것만"을 고릅니다.</li>
+    <li><strong>영향받는 화면</strong>: <span class="ui">영향 화면 찾기</span>를 누르면 Claude가 바뀐 코드에서 실제로 달라지는 화면 경로를 고릅니다. 경로를 누르면 미리보기에서 열리고, 직접 보고 확인 표시를 합니다. 경로를 직접 추가할 수도 있습니다.</li>
+  </ul>
+</section>
+
+<section id="tests">
+  <h2>화면 테스트</h2>
+  <p>오른쪽 패널 <span class="ui">화면 테스트 ▾</span>에서 요약과 이 세션의 테스트 계정을 함께 보고, <span class="ui">테스트 만들기</span> / <span class="ui">테스트 보기</span>로 테스트 화면에 들어갑니다.</p>
+  <ol class="steps">
+    <li><span class="ui">테스트 케이스 만들기</span>: Claude가 바뀐 내용과 대화를 보고 케이스(역할, 시작 화면, 단계, 기대 결과)를 만듭니다. 고치기·삭제·직접 추가가 됩니다.</li>
+    <li><strong>테스트에 쓸 계정</strong>: 케이스에 필요한 역할마다 계정을 고릅니다. 고르기 전에는 그 역할의 케이스를 실행하지 않습니다.</li>
+    <li><span class="ui">전체 실행</span> 또는 <span class="ui">이것만 실행</span>: Claude가 Chrome을 열어 단계를 따라가며 화면을 찍고 통과·실패·확인 불가를 판정합니다. 케이스 하나에 30초~2분쯤 걸립니다.</li>
+  </ol>
+  <p>케이스가 하나 끝날 때마다 오른쪽 아래에 결과 알림이 뜹니다. 통과는 잠깐 보였다 사라지고, 실패·확인 불가·오류는 닫을 때까지 남습니다. 누르면 테스트 화면으로 갑니다. 실패·오류는 OS 알림도 보냅니다(설정의 오류 알림을 따르고, 보고 있는 세션이면 화면 알림만). <span class="ui">화면 테스트 ▾</span> 메뉴에는 실행 중이면 진행(예: 실행 2/5), 끝나면 실패 수나 통과 수가 표시됩니다.</p>
+  <h3>실행이 막히는 경우</h3>
+  <p>아래 중 하나라도 해당하면 실행 버튼이 꺼지고, 화면 위쪽 "아직 실행할 수 없습니다"에 이유가 나옵니다. 버튼에 마우스를 올려도 이유가 보입니다.</p>
+  <ul>
+    <li>세션의 서버 중 하나라도 실행 중이 아님 (BE 포함. 시작 중, 응답 없음, 멈춤도 해당)</li>
+    <li>FE 프로젝트가 없거나 실행 명령이 없음</li>
+    <li>Claude가 작업 중 (코드가 바뀌는 중)</li>
+    <li>케이스를 만드는 중이거나 케이스가 없음</li>
+    <li>역할별 계정을 확인하지 않음</li>
+  </ul>
+  <p>실행이 끝날 때마다 스크린샷이 들어간 <strong>테스트 결과서</strong>가 산출물로 저장됩니다.</p>
+</section>
+
+<section id="artifacts">
+  <h2>산출물과 보관함</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>산출물</th><th>만들어지는 때</th></tr></thead>
+    <tbody>
+      <tr><td>계획서</td><td>"계획 먼저"로 보냈을 때, 또는 요청했을 때</td></tr>
+      <tr><td>화면설계서</td><td>계획에 화면 변경이 있을 때, 또는 요청했을 때 (화면마다 하나)</td></tr>
+      <tr><td>테스트 결과서</td><td>화면 테스트를 실행할 때마다 (스크린샷 포함)</td></tr>
+      <tr><td>완료 보고서</td><td>작업 목록이 모두 끝난 뒤 <span class="ui">완료 보고서 작성</span>을 눌렀을 때 (산출물 화면에서도 누를 수 있음). 계획 대비 결과, 바뀐 파일, 검증 결과, 남은 일을 담습니다</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li>같은 문서를 다시 저장하면 <strong>새 판</strong>이 되고 예전 판은 남습니다. 문서 화면에서 판을 골라 봅니다.</li>
+    <li><span class="ui">프롬프트에 언급</span>: 입력창에 문서 경로가 들어가 Claude가 그 문서를 읽고 따릅니다.</li>
+    <li>세션 안에서는 오른쪽 패널 <span class="ui">산출물 ▾</span>, 모든 세션은 왼쪽 아래 <span class="ui">산출물 보관함</span>에서 봅니다.</li>
+    <li>보관함은 <strong>닫힌 세션까지</strong> 워크스페이스별로 모아 보여 줍니다. 티켓, 제목, 브랜치, 문서 이름으로 찾고, PR 링크도 같이 나옵니다.</li>
+    <li><span class="ui">폴더 열기</span>로 Finder에서 열 수 있습니다. 폴더마다 <code>index.html</code>(목록)과 <code>meta.json</code>(티켓, 브랜치, PR)이 있어 도구 없이도 읽을 수 있습니다.</li>
+  </ul>
+  <p class="note">산출물은 저장소가 아니라 데이터 폴더에 있어서 커밋·PR에 섞이지 않습니다. 세션을 닫거나 리소스 정리를 해도 지우지 않습니다.</p>
+</section>
+
+<section id="pr">
+  <h2>푸시하고 PR 만들기</h2>
+  <ol class="steps">
+    <li>상단 바 <span class="ui">푸시하고 PR 만들기</span>를 누르면 레포별로 바뀐 파일과 커밋을 모읍니다. Claude가 PR 템플릿과 최근 머지된 PR(내 것 먼저) 형식대로 제목·본문을 쓰고, 레포의 커밋 템플릿대로 커밋 메시지를 씁니다. 보내기 전에 고칠 수 있습니다.</li>
+    <li>레포마다 상태가 나옵니다.
+      <ul>
+        <li><strong>새 PR</strong>: 새로 만듭니다.</li>
+        <li><strong>열린 PR 있음</strong>: 푸시만 합니다. <span class="ui">PR 제목·본문도 새로 쓴 것으로 바꾸기</span>를 켜면 본문도 바꿉니다.</li>
+        <li><strong>보낼 것 없음</strong>: 이미 PR로 보낸 작업이라 다시 올리지 않습니다.</li>
+      </ul>
+    </li>
+    <li><span class="ui">검사하고 PR 만들기</span>: 커밋 → PR 전 검사 → 푸시 → PR 생성. 모든 레포의 검사가 통과한 뒤에 푸시해서 한쪽만 올라가지 않습니다. 검사가 실패하면 멈추고, 출력을 <span class="ui">로그를 새 대화로 보내기</span>로 Claude에게 넘기거나 <span class="ui">검사 실패 무시하고 진행</span>을 고를 수 있습니다.</li>
+  </ol>
+  <p>BE·FE PR은 본문 끝에 서로를 연결합니다. 비밀값과 계정 비밀번호는 본문에서 가립니다.</p>
+</section>
+
+<section id="close">
+  <h2>세션 닫기와 정리</h2>
+  <ul>
+    <li>오른쪽 패널 <span class="ui">세션 ▾</span>: 워크트리 경로와 브랜치를 보고 <span class="ui">세션 닫기</span>(서버 끄고, 폴더는 남김) 또는 <span class="ui">닫고 워크트리 삭제</span>(커밋 안 한 변경도 지움)를 고릅니다.</li>
+    <li>왼쪽 아래 <span class="ui">리소스 정리</span>: 세션별 PR 상태, 서버, 워크트리 용량과 미커밋 여부를 보고 정리합니다. 서버 종료 → 워크트리 삭제 → 로컬 브랜치 삭제 → (원격 브랜치 삭제) → 스크린샷 삭제 순서입니다. 미커밋 변경이 있으면 자동으로 지우지 않습니다.</li>
+    <li>PR이 머지·닫히면 알려 줍니다. 설정에서 켜면 확인 없이 정리합니다.</li>
+  </ul>
+  <p class="note">리소스 정리는 화면 테스트의 원본 스크린샷을 지우지만, 테스트 결과서와 계획서·화면설계서는 산출물 보관함에 그대로 남습니다.</p>
+</section>
+
+<section id="settings">
+  <h2>설정</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>항목</th><th>내용</th></tr></thead>
+    <tbody>
+      <tr><td>권한 모드</td><td>Claude가 도구를 쓸 때의 권한. auto를 쓸 수 없는 계정이면 acceptEdits로 바꿉니다.</td></tr>
+      <tr><td>알림</td><td>작업 완료, 오류, 서버 멈춤, PR, 정리 알림과 OS 알림·소리. 보고 있는 세션은 알리지 않게 할 수 있습니다.</td></tr>
+      <tr><td>자동 정리 규칙</td><td>PR을 만들면 서버 끄기, 머지되면 자동 정리, 원격 브랜치 삭제, PR 확인 간격(기본 10분), 미활동 알림 기준일</td></tr>
+      <tr><td>Jira</td><td>로그인·로그아웃, 사이트 선택. 워크스페이스마다 Jira 프로젝트 키</td></tr>
+      <tr><td>프로젝트</td><td>실행·설치·PR 전 검사 명령, 헬스체크 경로, 접속 주소(http/https), 포트 변수, BE 주소 변수, FE 로그인 경로, 커밋 템플릿</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="trouble">
+  <h2>문제 해결</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>증상</th><th>확인할 것</th></tr></thead>
+    <tbody>
+      <tr><td>대화에 "Not logged in"</td><td>터미널에서 <code>claude</code> 실행 후 <code>/login</code></td></tr>
+      <tr><td>PR이 계속 "열림"</td><td>세션을 다시 고르거나 창으로 돌아오면 다시 확인합니다. 그래도 그대로면 <code>gh auth status</code>로 GitHub 로그인을 확인하세요.</td></tr>
+      <tr><td>테스트 실행 버튼이 꺼져 있음</td><td>테스트 화면 위쪽 "아직 실행할 수 없습니다"의 이유를 보세요. 대부분 BE나 FE 서버가 꺼져 있는 경우입니다.</td></tr>
+      <tr><td>티켓 만들 때 "필수입니다" 오류</td><td>유형을 다시 고르면 필수 칸이 나타납니다. 스프린트가 비어 있으면 진행 중인 스프린트가 없는 것이니 Jira에서 확인하세요.</td></tr>
+      <tr><td>Jira 연결이 풀림</td><td>설정의 Jira에서 다시 로그인합니다.</td></tr>
+      <tr><td>FE에서 API 호출 실패</td><td>환경값의 BE 주소 변수가 이 세션 BE 포트를 가리키는지 확인하고 FE를 재시작합니다.</td></tr>
+      <tr><td>미리보기에서 로그인 유지 안 됨</td><td>새 창으로 엽니다. 다른 포트의 iframe이라 쿠키가 막힐 수 있습니다.</td></tr>
+      <tr><td>OS 알림이 안 보임</td><td>macOS 시스템 설정 › 알림에서 <code>terminal-notifier</code>를 허용합니다.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="data">
+  <h2>데이터 위치</h2>
+  <p>모두 <code>~/.worktree-studio</code> 아래에 있습니다(<code>WTS_DATA_DIR</code>로 바꿀 수 있음).</p>
+  <div class="scroll"><table>
+    <thead><tr><th>경로</th><th>내용</th></tr></thead>
+    <tbody>
+      <tr><td><code>studio.db</code></td><td>프로젝트, 세션, 대화, 환경값(암호화), 계정(암호화), PR 기록</td></tr>
+      <tr><td><code>secret.key</code></td><td>암호화 키. 지우면 저장된 비밀값을 읽을 수 없습니다.</td></tr>
+      <tr><td><code>artifacts/&lt;세션&gt;/</code></td><td>산출물(계획서, 화면설계서, 테스트 결과서와 예전 판, index.html, meta.json)</td></tr>
+      <tr><td><code>tests/</code>, <code>screens/</code></td><td>화면 테스트 원본 스크린샷. 리소스 정리 때 지웁니다.</td></tr>
+      <tr><td><code>uploads/</code></td><td>프롬프트에 첨부한 이미지·문서</td></tr>
+    </tbody>
+  </table></div>
+</section>
+</main>
+</div>
+</body>
+</html>
