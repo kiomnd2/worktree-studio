@@ -4,6 +4,7 @@ import { attachToPrompt, insertIntoPrompt, openInPreview, useServerEvents } from
 import { DOC_KIND } from './DocsPage';
 import { type DocMeta, type LogLine, ScreenCheck, ScreenState, ServerView, Session, TestState, WorktreeChanges } from '../types';
 import StartServersDialog from './StartServersDialog';
+import QueryPanel from './QueryPanel';
 
 const STATUS_LABEL: Record<string, string> = {
   idle: '꺼짐', starting: '시작 중', running: '실행 중', unhealthy: '응답 없음', failed: '멈춤', stopped: '꺼짐',
@@ -23,13 +24,13 @@ export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTe
   useEffect(reload, [reload]);
   useServerEvents((e) => { if (e.type === 'server.updated' && e.sessionId === session.id) reload(); });
 
-  async function act(kind: 'start' | 'stop' | 'restart', worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean) {
+  async function act(kind: 'start' | 'stop' | 'restart', worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean) {
     setBusy(true);
     setError(null);
     try {
-      setServers(await (kind === 'start' ? api.startServers(session.id, worktreeIds, commands, ports, docker)
+      setServers(await (kind === 'start' ? api.startServers(session.id, worktreeIds, commands, ports, docker, sqlLog)
         : kind === 'stop' ? api.stopServers(session.id, worktreeIds)
-        : api.restartServers(session.id, worktreeIds, commands, ports, docker)));
+        : api.restartServers(session.id, worktreeIds, commands, ports, docker, sqlLog)));
     } catch (e) {
       const missing = missingFrom(e);
       if (missing) onOpenEnv(`필수 값이 비어 있습니다: ${missing.map((m) => `${m.project} ${m.keys.join(', ')}`).join(' / ')}`);
@@ -121,9 +122,9 @@ export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTe
           all={servers}
           restart={confirm.kind === 'restart'}
           onCancel={() => setConfirm(null)}
-          onConfirm={async (commands, ports, docker) => {
+          onConfirm={async (commands, ports, docker, sqlLog) => {
             setConfirm(null);
-            await act(confirm.kind, confirm.worktreeIds, commands, ports, docker);
+            await act(confirm.kind, confirm.worktreeIds, commands, ports, docker, sqlLog);
           }}
         />
       )}
@@ -624,6 +625,9 @@ function Logs({ servers }: { servers: ServerView[] }) {
   const [lines, setLines] = useState<Record<number, LogLine[]>>({});
   const [filter, setFilter] = useState<'all' | 'warn'>('all');
   const [search, setSearch] = useState('');
+  // BE 서버는 로그와 쿼리(서버 로그에서 센 쿼리 집계)를 오간다.
+  const [view, setView] = useState<'log' | 'queries'>('log');
+  const [hideSql, setHideSql] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   // 스크롤이 맨 아래에 붙어 있으면 새 줄을 따라 내려간다. 위로 올려 보는 중이면 그대로 둔다.
   const stick = useRef(true);
@@ -654,8 +658,8 @@ function Logs({ servers }: { servers: ServerView[] }) {
   const shown = useMemo(() => {
     const list = active ? lines[active] ?? [] : [];
     const q = search.trim().toLowerCase();
-    return list.filter((l) => (filter === 'all' || l.level !== 'info') && (!q || l.text.toLowerCase().includes(q)));
-  }, [lines, active, filter, search]);
+    return list.filter((l) => (filter === 'all' || l.level !== 'info') && (!hideSql || !l.sql) && (!q || l.text.toLowerCase().includes(q)));
+  }, [lines, active, filter, search, hideSql]);
 
   // 탭을 바꾸면 그 로그의 맨 아래부터 본다. 아래 효과보다 먼저 돌아야 해서 같은 layout effect로 둔다.
   useLayoutEffect(() => { stick.current = true; }, [active]);
@@ -664,10 +668,14 @@ function Logs({ servers }: { servers: ServerView[] }) {
   useLayoutEffect(() => {
     const el = box.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [shown, expanded]);
+  }, [shown, expanded, view]);
 
   if (servers.length === 0) return null;
-  const project = servers.find((s) => s.worktree_id === active)?.project_name ?? '';
+  const activeServer = servers.find((s) => s.worktree_id === active);
+  const project = activeServer?.project_name ?? '';
+  const isBe = Boolean(activeServer && activeServer.project_kind !== 'fe');
+  const queries = isBe && view === 'queries';
+  const hasSql = (lines[active ?? -1] ?? []).some((l) => l.sql);
 
   return (
     <div className={`panel-block logs${expanded ? ' expanded' : ''}`}>
@@ -680,11 +688,24 @@ function Logs({ servers }: { servers: ServerView[] }) {
           ))}
         </div>
         <div className="row">
-          <button className={`chip-btn${filter === 'all' ? ' on' : ''}`} aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>전체</button>
-          <button className={`chip-btn${filter === 'warn' ? ' on' : ''}`} aria-pressed={filter === 'warn'} onClick={() => setFilter('warn')}>WARN 이상</button>
+          {isBe && (
+            <span className="seg" role="group" aria-label="로그와 쿼리 전환">
+              <button className={`chip-btn${!queries ? ' on' : ''}`} aria-pressed={!queries} onClick={() => setView('log')}>로그</button>
+              <button className={`chip-btn${queries ? ' on' : ''}`} aria-pressed={queries} onClick={() => setView('queries')}>쿼리</button>
+            </span>
+          )}
+          {!queries && (
+            <>
+              <button className={`chip-btn${filter === 'all' ? ' on' : ''}`} aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>전체</button>
+              <button className={`chip-btn${filter === 'warn' ? ' on' : ''}`} aria-pressed={filter === 'warn'} onClick={() => setFilter('warn')}>WARN 이상</button>
+              {(hasSql || hideSql) && <button className={`chip-btn${hideSql ? ' on' : ''}`} aria-pressed={hideSql} title="쿼리 감시가 읽은 SQL 로그 줄을 숨깁니다" onClick={() => setHideSql(!hideSql)}>SQL 숨기기</button>}
+            </>
+          )}
           <ExpandButton expanded={expanded} onToggle={() => setExpanded(!expanded)} />
         </div>
       </div>
+      {queries && active ? <QueryPanel worktreeId={active} projectName={project} /> : (
+      <>
       <label className="sr-only" htmlFor="log-search">로그 검색</label>
       <input id="log-search" className="mono log-search" placeholder="로그 검색" value={search} onChange={(e) => setSearch(e.target.value)} />
       <div
@@ -707,6 +728,8 @@ function Logs({ servers }: { servers: ServerView[] }) {
           </div>
         ))}
       </div>
+      </>
+      )}
     </div>
   );
 }

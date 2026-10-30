@@ -234,6 +234,74 @@ td.actions button + button { margin-left: 6px; }
 .log-line.sys .log-text { color: #9FB4FF; }
 .log-send { min-height: 22px; padding: 0 7px; font-size: 11px; border: 1px solid currentColor; background: transparent; color: #F4A3A3; border-radius: 4px; flex-shrink: 0; font-weight: 400; }
 .log-line.warn .log-send { color: #F0B27A; }
+/* 쿼리 감시: BE 로그 영역의 쿼리 탭 */
+.seg { display: inline-flex; gap: 2px; padding-right: 6px; margin-right: 2px; border-right: 1px solid var(--rule); }
+.query-panel { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.logs.expanded .query-panel { flex: 1; overflow: auto; }
+.query-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.query-tools select, .query-actions select { min-height: 30px; font-size: 12.5px; max-width: 100%; }
+.query-table-wrap { max-height: 300px; overflow: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); }
+.logs.expanded .query-table-wrap { max-height: 50vh; }
+.query-table { min-width: 760px; font-size: 12.5px; table-layout: fixed; }
+.query-table .c-mapper { width: 230px; } .query-table .c-calls { width: 56px; } .query-table .c-rows { width: 90px; } .query-table .c-time { width: 90px; } .query-table .c-warn { width: 150px; }
+.query-table th { position: sticky; top: 0; background: var(--sheet); padding: 6px 8px; font-size: 12px; white-space: nowrap; }
+.query-table td { padding: 6px 8px; vertical-align: top; }
+.query-table tr { cursor: pointer; }
+.query-table tbody tr:hover { background: var(--soft); }
+.query-table tr.selected { background: var(--accent-soft); }
+.query-table .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.query-table td.shape button.link { color: var(--ink); text-align: left; font: inherit; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.query-table td.mapper { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.query-warns { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.query-warns .pill, .query-why .pill, .query-table-info .pill { font-size: 11.5px; padding: 1px 8px; }
+.query-empty { padding: 10px 12px; border: 1px dashed var(--rule-strong); border-radius: 6px; }
+.query-empty p { margin: 0 0 6px; }
+.query-empty code { overflow-wrap: anywhere; }
+.query-detail { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); }
+.query-detail-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+/* 쿼리 상세 창: 로그 크게 보기(z-index 20) 위에 뜬다 */
+.query-overlay { z-index: 30; }
+.dialog.query-dialog { width: min(1100px, 100%); gap: 12px; }
+.query-dialog .query-detail { border: 0; padding: 0; background: none; gap: 10px; }
+.query-title { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
+.query-dialog .query-sql { max-height: 260px; }
+.query-dialog .query-sql.plan { max-height: 420px; }
+.query-plan-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.plan-findings { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.plan-finding { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 6px; background: var(--soft); border: 1px solid var(--rule); }
+.plan-finding.bad { background: var(--err-soft); border-color: transparent; }
+.plan-finding.warn { background: var(--warn-soft); border-color: transparent; }
+.plan-finding .pill { flex-shrink: 0; font-size: 11.5px; padding: 1px 8px; }
+.plan-finding > span:last-child { overflow-wrap: anywhere; }
+.plan-steps-wrap { overflow-x: auto; }
+.plan-steps { min-width: 720px; table-layout: fixed; font-size: 12.5px; }
+.plan-steps .c-id { width: 44px; } .plan-steps .c-op { width: 280px; } .plan-steps .c-rows { width: 76px; } .plan-steps .c-cost { width: 64px; }
+.plan-steps th { padding: 6px 8px; white-space: nowrap; }
+.plan-steps td { padding: 6px 8px; vertical-align: top; }
+.plan-steps .num { text-align: right; }
+.plan-steps tr.bad td { background: var(--err-soft); }
+.plan-steps tr.warn td { background: var(--warn-soft); }
+.plan-op { display: inline-block; overflow-wrap: anywhere; }
+.plan-name { color: var(--accent-ink); overflow-wrap: anywhere; }
+.plan-pred { margin-top: 3px; font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+.plan-raw summary { cursor: pointer; color: var(--muted); }
+.plan-raw pre { margin-top: 6px; }
+.query-why { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.query-sql { margin: 0; padding: 8px 10px; background: var(--soft); border: 1px solid var(--rule); border-radius: 6px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow: auto; }
+.query-sql.plan { white-space: pre; overflow-x: auto; max-height: 360px; }
+.query-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.query-plan { display: flex; flex-direction: column; gap: 6px; }
+.query-plan p { margin: 0; }
+.query-table-info ul { margin: 2px 0 0; padding-left: 18px; }
+.query-table-info li { overflow-wrap: anywhere; }
+.query-table-info .pill { margin-left: 6px; }
+.query-section { display: flex; flex-direction: column; gap: 4px; }
+.query-loc { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; background: var(--soft); border: 1px solid var(--rule); border-radius: 6px; }
+.query-loc code { overflow-wrap: anywhere; }
+.query-loc ul { margin: 2px 0 0; padding-left: 18px; }
+.query-loc li { overflow-wrap: anywhere; }
+.query-params { overflow-wrap: anywhere; }
+.query-plan-error { white-space: pre-wrap; }
 .account-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .worktree-info { gap: 10px; }
 

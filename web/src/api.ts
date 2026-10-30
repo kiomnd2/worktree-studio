@@ -5,6 +5,7 @@ import type {
   DbCandidate, DbConnection, DbConnectionInput, DbEngine, DockerStack, LocalSetup, SessionDb, StartPrep,
   TaskList,
   Account, Approval, ChangeScope, ArchiveEntry, DocMeta, JiraConfig, JiraIssue, JiraRequiredField, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
+  ExplainResult, QueryDetail, QueryList, QuerySort,
   ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, UsageReport, Workspace,
 } from './types';
 
@@ -116,15 +117,20 @@ export const api = {
   deleteProfile: (profileId: number) => request('DELETE', `/api/env-profiles/${profileId}`),
 
   servers: (id: number) => request<ServerView[]>('GET', `/api/sessions/${id}/servers`),
-  startServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/start`, { worktreeIds, commands, ports, docker }),
+  startServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/start`, { worktreeIds, commands, ports, docker, sqlLog }),
   startPrep: (id: number, worktreeIds: number[]) => request<StartPrep>('GET', `/api/sessions/${id}/servers/prep?worktrees=${worktreeIds.join(',')}`),
   planPorts: (id: number) => request<{ ports: Record<number, number> }>('POST', `/api/sessions/${id}/servers/plan`, {}),
   suggestServerEnv: (id: number, ports: Record<number, number>, force = false) => request<{ suggestions: EnvSuggestion[]; note: string; skipped?: boolean }>('POST', `/api/sessions/${id}/servers/suggest-env`, { ports, force }),
   applySessionEnv: (id: number, items: { project_id: number; key: string; value: string; found_in?: string }[]) => request<{ profile: string[]; session: string[] }>('POST', `/api/sessions/${id}/env/apply`, { items }),
   stopServers: (id: number, worktreeIds?: number[]) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/stop`, { worktreeIds }),
-  restartServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/restart`, { worktreeIds, commands, ports, docker }),
+  restartServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/restart`, { worktreeIds, commands, ports, docker, sqlLog }),
   dismissFailure: (id: number, worktreeId: number) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/${worktreeId}/dismiss`),
   logs: (worktreeId: number) => request<LogLine[]>('GET', `/api/worktrees/${worktreeId}/logs`),
+  queries: (worktreeId: number, sort: QuerySort, warningsOnly: boolean) => request<QueryList>('GET', `/api/worktrees/${worktreeId}/queries?sort=${sort}&warnings=${warningsOnly ? 1 : 0}`),
+  query: (worktreeId: number, key: string) => request<QueryDetail>('GET', `/api/worktrees/${worktreeId}/queries/${key}`),
+  resetQueries: (worktreeId: number) => request('POST', `/api/worktrees/${worktreeId}/queries/reset`, {}),
+  muteQuery: (worktreeId: number, key: string, muted: boolean) => request('POST', `/api/worktrees/${worktreeId}/queries/${key}/mute`, { muted }),
+  explainQuery: (worktreeId: number, key: string, connectionId?: number, analyze?: boolean) => request<ExplainResult>('POST', `/api/worktrees/${worktreeId}/queries/${key}/explain`, { connectionId, analyze }),
 
   accounts: () => request<{ accounts: Account[] }>('GET', '/api/accounts'),
   addAccount: (login: string, password: string, note: string, workspaceId: number | null) => request('POST', '/api/accounts', { login, password, note, workspace_id: workspaceId }),

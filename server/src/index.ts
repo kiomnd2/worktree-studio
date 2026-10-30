@@ -34,6 +34,7 @@ import { sessionEnvState, startPrep } from './envapi.js';
 import { addRequiredKeys, deleteProfile, ensureDefaultProfile, profileVars, saveSessionEnv, seedProfileIfEmpty, selectProfile, setProfileValues, setSessionValues, type EnvVar } from './envstore.js';
 import { ENGINES, defaultEnvMap, deleteConnection, enableConnection, getConnection, guessFromEnv, listConnections, probe, saveConnection, sessionDbs, type Engine } from './dbconn.js';
 import { describeConnection, engineSupported } from './dbquery.js';
+import { explainFor, worktreeDbs } from './querydb.js';
 import { STUDIO_ENGINES, createStudioDb, localSetup, openDockerDesktop, setCopyFiles, setStacks } from './localenv.js';
 import { ANALYZE_FIELDS, analyzeProject } from './projectanalyze.js';
 import { analyzeEnvWithAI, parseDotenv, scanEnv, springProfiles } from './envscan.js';
@@ -44,6 +45,7 @@ import { githubStatus } from './github.js';
 import { getProject as projectById } from './projects.js';
 import { assertNewWork, closePr, continueIgnoringChecks, getPrJob, listPrs, preparePr, startPr } from './pr.js';
 import { addScreen, capturePreview, detectScreens, removeScreen, screenState, setScreenChecked } from './screens.js';
+import { getQuery, getSqlLogInfo, listQueries, muteQuery, resetQueries } from './querylog.js';
 import { cleanSession, listCleanup, refreshPrStates, refreshSessionPrsSoon, scheduleCleanupPoll, startupSweep } from './cleanup.js';
 
 const app = Fastify({ logger: { level: 'info' }, bodyLimit: 40 * 1024 * 1024 });
@@ -403,6 +405,8 @@ const startBody = z.object({
   ports: z.record(z.string(), z.number().int()).optional(),
   /** false면 프로젝트에 설정한 도커(DB 등)를 띄우지 않는다 */
   docker: z.boolean().optional(),
+  /** false면 BE의 SQL 로그(쿼리 감시)를 켜지 않는다 */
+  sqlLog: z.boolean().optional(),
 });
 const commandMap = (c?: Record<string, string>) => Object.fromEntries(Object.entries(c ?? {}).map(([k, v]) => [Number(k), v]));
 const portMap = (c?: Record<string, number>) => Object.fromEntries(Object.entries(c ?? {}).map(([k, v]) => [Number(k), v]));
@@ -444,8 +448,8 @@ app.post('/api/sessions/:id/env/apply', async (req) => {
 });
 app.post('/api/sessions/:id/servers/start', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { worktreeIds, commands, ports, docker } = startBody.parse(req.body ?? {});
-  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker });
+  const { worktreeIds, commands, ports, docker, sqlLog } = startBody.parse(req.body ?? {});
+  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker, sqlLog });
   return listServers(getSession(id)!);
 });
 app.post('/api/sessions/:id/servers/stop', async (req) => {
@@ -456,9 +460,9 @@ app.post('/api/sessions/:id/servers/stop', async (req) => {
 });
 app.post('/api/sessions/:id/servers/restart', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { worktreeIds, commands, ports, docker } = startBody.parse(req.body ?? {});
+  const { worktreeIds, commands, ports, docker, sqlLog } = startBody.parse(req.body ?? {});
   await stopServers(id, worktreeIds);
-  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker });
+  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker, sqlLog });
   return listServers(getSession(id)!);
 });
 // 계획 산출물(계획서·화면설계서). HTML은 스크립트를 막은 별도 출처로 보여 준다.
@@ -564,6 +568,43 @@ app.post('/api/sessions/:id/servers/:worktreeId/dismiss', async (req) => {
   return listServers(getSession(id)!);
 });
 app.get('/api/worktrees/:id/logs', async (req) => getLogs(idParam.parse(req.params).id));
+
+// 쿼리 감시: 서버 로그에서 센 쿼리 모양별 집계
+const queryKey = z.object({ id: z.coerce.number().int().positive(), key: z.string().regex(/^[0-9a-f]{16}$/) });
+app.get('/api/worktrees/:id/queries', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const q = z.object({ sort: z.enum(['calls', 'rows', 'time', 'recent']).default('calls'), warnings: z.enum(['0', '1']).default('0') }).parse(req.query);
+  return {
+    rows: listQueries(id, { sort: q.sort, warningsOnly: q.warnings === '1' }),
+    sql_log: getSqlLogInfo(id),
+    connections: worktreeDbs(id).map((c) => ({ id: c.id, name: c.name, engine: c.engine, enabled: c.enabled, from_env: c.from_env, target: describeConnection(c) })),
+  };
+});
+app.get('/api/worktrees/:id/queries/:key', async (req) => {
+  const { id, key } = queryKey.parse(req.params);
+  const d = getQuery(id, key);
+  if (!d) throw new Error('쿼리가 없습니다. 초기화됐을 수 있습니다.');
+  return d;
+});
+app.post('/api/worktrees/:id/queries/reset', async (req) => {
+  resetQueries(idParam.parse(req.params).id);
+  return { ok: true };
+});
+app.post('/api/worktrees/:id/queries/:key/mute', async (req) => {
+  const { id, key } = queryKey.parse(req.params);
+  const { muted } = z.object({ muted: z.boolean() }).parse(req.body);
+  muteQuery(id, key, muted);
+  return { ok: true };
+});
+// 실행 계획: 로그에서 잡은 예시 SQL(파라미터를 넣은 것)로 계획을 받는다. 한 트랜잭션에서 돌리고 롤백한다.
+app.post('/api/worktrees/:id/queries/:key/explain', async (req) => {
+  const { id, key } = queryKey.parse(req.params);
+  const { connectionId, analyze } = z.object({ connectionId: z.number().int().optional(), analyze: z.boolean().optional() }).parse(req.body ?? {});
+  const d = getQuery(id, key);
+  if (!d) throw new Error('쿼리가 없습니다. 초기화됐을 수 있습니다.');
+  if (!d.example) throw new Error('예시 SQL이 없습니다(도구를 다시 켜면 값이 들어간 SQL은 남지 않습니다). 화면을 한 번 더 열어 쿼리가 다시 찍히게 해 주세요.');
+  return explainFor(id, d.example.filled, { connectionId, analyze });
+});
 
 // 테스트 계정 풀
 app.get('/api/accounts', async (req) => {

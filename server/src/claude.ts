@@ -5,7 +5,8 @@ import { createSdkMcpServer, query, tool, type CanUseTool, type PermissionMode, 
 import { z } from 'zod';
 import { cancelApprovals, requestAccount, requestAnswers, requestDbWrite, requestEnv, requestPlanApproval, type Question } from './approvals.js';
 import { type DbConnection, sessionDbs } from './dbconn.js';
-import { MAX_ROWS, describeConnection, engineSupported, formatResult, isReadOnly, runQuery } from './dbquery.js';
+import { MAX_ROWS, describeConnection, engineSupported, explainQuery, formatExplain, formatResult, isReadOnly, runQuery } from './dbquery.js';
+import { WARNING_LABEL, getQuery, listQueries } from './querylog.js';
 import { docsDir, listDocs, saveDoc } from './docs.js';
 import { setTasks, startFirstTask, tasksForContext } from './tasks.js';
 import { CLAUDE_EXECUTABLE, UPLOAD_DIR } from './config.js';
@@ -116,6 +117,7 @@ function buildSystemAppend(repos: RepoView[], side: boolean, db: DbConnection | 
     '환경값은 도구가 관리한다. 필요한 값이 없거나 틀렸으면 .env 파일을 만들거나 고치지 말고 mcp__studio__request_env_values로 요청한다.',
     '다른 역할의 테스트 계정이 필요하면 mcp__studio__request_test_account로 요청한다. 두 요청 모두 사용자가 화면에서 확인해야 적용된다.',
     '개발 DB의 데이터를 확인해야 하면 <tool_context>의 DB 연결에 mcp__studio__db_query로 질의한다. 읽기는 바로 실행되고, 데이터를 바꾸는 질의는 사용자가 SQL을 확인하고 승인해야 실행된다. DB 클라이언트를 Bash로 직접 쓰지 않는다.',
+    '느린 화면이나 쿼리를 볼 때는 mcp__studio__server_queries로 BE 서버 로그에서 센 쿼리 집계(호출 수, 행 수, N+1 같은 경고)를 보고, mcp__studio__db_explain으로 실행 계획과 인덱스를 본다. 고칠 때는 근거(집계, 계획, 매퍼 위치)를 함께 적고 매퍼 XML 등 코드 수정을 제안한다. 인덱스 DDL은 mcp__studio__db_query로 보내 사용자 승인을 받는다.',
     '작업 중에 사용자가 정해야 할 것(요구사항이 애매함, 방법이 여럿임, 데이터를 바꿔도 되는지 등)이 생기면 추측하지 말고 AskUserQuestion으로 바로 묻는다. 답을 받으면 이어서 작업한다.',
     '계획서, 화면설계서처럼 사람이 읽을 산출물은 mcp__studio__save_doc으로 HTML 문서로 저장한다. 저장소에 문서 파일을 만들지 않는다.',
     '저장한 문서 목록은 메시지의 <tool_context>에 나온다. 사용자가 문서를 언급하면 그 경로의 파일을 Read로 읽어 따른다.',
@@ -339,6 +341,66 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
         // 읽기는 롤백하고 쓰기는 따로 승인을 받으므로 계획 모드에서도 쓸 수 있다.
         { annotations: { readOnlyHint: true } },
       ),
+      tool(
+        'server_queries',
+        '이 세션 BE 서버 로그에서 센 쿼리 모양별 집계를 본다. 모양(값을 ?로 바꾼 SQL), 매퍼 id, 호출 수, 평균·최대 행 수, 시간(로그에 있을 때), 경고(N+1 의심, 대량 결과, 느림 등). '
+          + 'key를 주면 그 쿼리의 예시 SQL(로그에서 잡은 값을 넣은 것)과 파라미터를 함께 돌려준다.',
+        {
+          project: z.string().optional().describe('워크트리 프로젝트 이름. 생략하면 모든 BE'),
+          sort: z.enum(['calls', 'rows', 'time', 'recent']).optional().describe('정렬. 기본 calls(호출 수)'),
+          warnings_only: z.boolean().optional().describe('경고가 붙은 쿼리만'),
+          limit: z.number().int().min(1).max(100).optional().describe('최대 개수. 기본 30'),
+          key: z.string().optional().describe('한 쿼리의 상세를 볼 때 그 key'),
+        },
+        async (args) => {
+          const session = getSession(sessionId);
+          const wts = (session?.worktrees ?? []).filter((w) => w.project_kind !== 'fe' && (!args.project || w.project_name === args.project));
+          if (!wts.length) return fail(args.project ? `${args.project} 워크트리가 없습니다.` : '이 세션에 BE 워크트리가 없습니다.');
+          const warn = (ws: string[]) => (ws.length ? ws.map((w) => WARNING_LABEL[w as keyof typeof WARNING_LABEL]).join(', ') : '-');
+          if (args.key) {
+            for (const w of wts) {
+              const d = getQuery(w.id, args.key);
+              if (!d) continue;
+              return text([
+                `${w.project_name} · ${d.mapper ?? '매퍼 모름'} · 호출 ${d.calls} · 행 평균 ${d.rows_avg ?? '-'} 최대 ${d.rows_max ?? '-'} · 시간 평균 ${d.ms_avg ?? '-'}ms 최대 ${d.ms_max ?? '-'}ms · 경고 ${warn(d.warnings)}`,
+                ...(d.location ? [`매퍼: ${d.location.full_id} (${d.location.file}:${d.location.line})`, ...d.location.callers.slice(0, 5).map((c) => `부르는 곳: ${c.file}:${c.line}`)] : []),
+                `모양: ${d.shape}`,
+                d.example ? `예시 SQL: ${d.example.filled}` : '예시 SQL 없음(도구를 다시 켠 뒤 아직 안 찍힘)',
+                ...(d.example?.params.length ? [`파라미터: ${d.example.params.map((p) => (p.value === null ? 'null' : `${p.value}${p.type ? `(${p.type})` : ''}`)).join(', ')}`] : []),
+              ].join('\n'));
+            }
+            return fail(`key ${args.key} 쿼리가 없습니다.`);
+          }
+          const out: string[] = [];
+          for (const w of wts) {
+            const rows = listQueries(w.id, { sort: args.sort, warningsOnly: args.warnings_only }).slice(0, args.limit ?? 30);
+            out.push(`${w.project_name} (${rows.length}개${rows.length ? '' : ', 서버 로그에 SQL이 없거나 초기화됨'})`);
+            out.push(...rows.map((r) => `- key ${r.key} · ${r.mapper ?? '-'} · 호출 ${r.calls} · 행 ${r.rows_avg ?? '-'}/${r.rows_max ?? '-'} · ${r.ms_max !== null ? `${r.ms_avg}/${r.ms_max}ms` : '시간 없음'} · 경고 ${warn(r.warnings)}\n  ${r.shape.length > 300 ? `${r.shape.slice(0, 300)}…` : r.shape}`));
+          }
+          return text(out.join('\n'));
+        },
+        { annotations: { readOnlyHint: true } },
+      ),
+      tool(
+        'db_explain',
+        'DB 연결에 SELECT 한 문장의 실행 계획과 관련 테이블의 인덱스·행 수를 본다. 한 트랜잭션에서 돌리고 롤백해 DB에 아무것도 남기지 않는다(Oracle은 PLAN_TABLE을 쓰고 롤백).',
+        {
+          connection_id: z.number().int().describe('<tool_context>에 나온 DB 연결 번호'),
+          sql: z.string().min(1).describe('SELECT 한 문장. 파라미터 자리는 값을 넣어 보낸다'),
+        },
+        async (args) => {
+          if (opts.dbOnly !== null && args.connection_id !== opts.dbOnly) return fail(`이 대화는 DB 연결 #${opts.dbOnly} 전용입니다.`);
+          const c = opts.dbs.find((x) => x.id === args.connection_id);
+          if (!c) return fail(`DB 연결 #${args.connection_id}이 없습니다. <tool_context>의 연결 번호를 쓰세요.`);
+          try {
+            return text(formatExplain(await explainQuery(c, args.sql)));
+          } catch (err) {
+            return fail(`실행 계획 오류: ${(err as Error).message}`);
+          }
+        },
+        // 계획만 보고 롤백하므로 계획 모드에서도 쓸 수 있다.
+        { annotations: { readOnlyHint: true } },
+      ),
     ],
   });
 }
@@ -455,7 +517,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
           }),
         },
         settings: { autoCompactWindow: AUTO_COMPACT_TOKENS, enabledPlugins: Object.fromEntries(DISABLED_PLUGINS.map((p) => [p, false])) },
-        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks', 'mcp__studio__db_query', 'mcp__browser'],
+        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks', 'mcp__studio__db_query', 'mcp__studio__server_queries', 'mcp__studio__db_explain', 'mcp__browser'],
         // 추가 대화는 세션 작업 목록을 바꾸지 않는다. DB 대화는 코드와 파일도 고치지 않는다.
         ...(dbOnly ? { disallowedTools: ['mcp__studio__set_tasks', 'Edit', 'Write', 'NotebookEdit', 'Bash'] }
           : chatId !== 0 ? { disallowedTools: ['mcp__studio__set_tasks'] } : {}),

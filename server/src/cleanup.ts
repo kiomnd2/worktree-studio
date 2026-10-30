@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { db } from './db.js';
+import { dropQueryStats } from './querylog.js';
 import { git } from './git.js';
 import { runFile } from './exec.js';
 import { getProject, listProjectRows } from './projects.js';
@@ -162,6 +163,7 @@ export async function cleanSession(sessionId: number, opts: { deleteRemote: bool
     }
   }
   await attempt('스크린샷 삭제', async () => { deleteSessionScreens(sessionId); deleteSessionTests(sessionId); });
+  await attempt('쿼리 집계 삭제', async () => { dropQueryStats(s.worktrees.map((w) => w.id)); });
   await attempt('세션 기록 보관', async () => { if (!s.closed) setSession(sessionId, { closed: 1 }); });
   broadcast({ type: 'sessions.changed' });
   broadcast({ type: 'cleanup.changed' });
