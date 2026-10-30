@@ -180,6 +180,26 @@ export function guessFromEnv(env: Record<string, string>): ParsedDb[] {
   return out;
 }
 
+const PART_ENGINE: Record<string, Engine> = { ORACLE: 'oracle', POSTGRES: 'postgres', POSTGRESQL: 'postgres', PG: 'postgres', MYSQL: 'mysql', MARIADB: 'mariadb', MSSQL: 'mssql' };
+
+/**
+ * ORACLE_HOST, ORACLE_PORT, ORACLE_SID처럼 나눠 둔 값에서 연결을 짐작한다. 엔진은 접두어로 정한다.
+ * DB 이름 후보(SID, SERVICE, NAME 등)가 여럿이면 후보마다 하나씩 돌려준다. 어느 것을 쓰는지는 설정 파일에 달려 있다.
+ */
+export function guessFromParts(env: Record<string, string>): ParsedDb[] {
+  const out: ParsedDb[] = [];
+  for (const [prefix, engine] of Object.entries(PART_ENGINE)) {
+    const v = (...names: string[]) => names.map((n) => env[`${prefix}_${n}`]).find((x) => x?.trim())?.trim() ?? '';
+    const host = v('HOST', 'HOSTNAME', 'SERVER');
+    const username = v('USER', 'USERNAME');
+    if (!host || !username) continue;
+    const port = Number(v('PORT')) || null;
+    const names = [...new Set(['SID', 'SERVICE', 'SERVICE_NAME', 'DATABASE', 'DB', 'NAME'].map((n) => v(n)).filter(Boolean))];
+    for (const database of names.length ? names : ['']) out.push({ engine, host, port, database, username, password: v('PASSWORD', 'PASS', 'PWD') });
+  }
+  return out;
+}
+
 /** 포트가 열려 있는지만 본다(계정 확인은 하지 않는다). */
 export function probe(host: string, port: number, timeoutMs = 2000): Promise<boolean> {
   return new Promise((resolve) => {

@@ -13,10 +13,13 @@ export type ServerEvent =
   | { type: 'docs.updated'; sessionId: number }
   | { type: 'tests.updated'; sessionId: number }
   | { type: 'tasks.updated'; sessionId: number }
+  /** 서버 로그에서 센 쿼리 집계가 바뀜(1초 묶음) */
+  | { type: 'queries'; sessionId: number; worktreeId: number }
   /** 화면 테스트 케이스 하나가 끝남 */
   | { type: 'test.result'; sessionId: number; ticket: string; caseId: number; title: string; status: string; summary: string; index: number; total: number };
 
-export type LogLine = { seq: number; t: number; stream: 'out' | 'err' | 'sys'; level: 'error' | 'warn' | 'info'; text: string };
+/** sql: 쿼리 감시가 SQL 로그로 읽은 줄. 로그 탭에서 숨길 수 있고 실패 요약에서는 뺀다. */
+export type LogLine = { seq: number; t: number; stream: 'out' | 'err' | 'sys'; level: 'error' | 'warn' | 'info'; text: string; sql?: true };
 
 /** desktop: 데스크톱 앱(Electron 메인 프로세스)의 연결. 화면이 아니라 알림을 받는 곳이다. */
 type Client = { socket: WebSocket; viewing: number | null; visible: boolean; desktop: boolean };

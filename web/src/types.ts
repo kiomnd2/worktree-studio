@@ -114,6 +114,7 @@ export type ServerEvent =
   | { type: 'docs.updated'; sessionId: number }
   | { type: 'tasks.updated'; sessionId: number }
   | { type: 'tests.updated'; sessionId: number }
+  | { type: 'queries'; sessionId: number; worktreeId: number }
   | { type: 'test.result'; sessionId: number; ticket: string; caseId: number; title: string; status: TestCase['status']; summary: string; index: number; total: number };
 
 export type TestCase = {
@@ -223,7 +224,35 @@ export type UsageReport = {
 export type StartupReport = { at: string; orphans_killed: number; pruned: { project: string; lines: string[] }[]; missing_worktrees: number };
 export type CleanResult = { session_id: number; steps: { name: string; ok: boolean; detail: string }[]; error: string | null };
 
-export type LogLine = { seq: number; t: number; stream: 'out' | 'err' | 'sys'; level: 'error' | 'warn' | 'info'; text: string };
+/** sql: 쿼리 감시가 SQL 로그로 읽은 줄 */
+export type LogLine = { seq: number; t: number; stream: 'out' | 'err' | 'sys'; level: 'error' | 'warn' | 'info'; text: string; sql?: true };
+
+// 쿼리 감시(서버 로그에서 센 쿼리 모양별 집계)
+export type QueryWarning = 'n+1' | 'large' | 'slow' | 'cache' | 'select-star' | 'like-prefix' | 'fn-column' | 'no-where' | 'big-offset';
+export type QuerySort = 'calls' | 'rows' | 'time' | 'recent';
+export type QueryStat = {
+  key: string; shape: string; mapper: string | null; calls: number;
+  rows_avg: number | null; rows_max: number | null; ms_avg: number | null; ms_max: number | null;
+  warnings: QueryWarning[]; muted: boolean; first_at: number; last_at: number; has_example: boolean;
+};
+export type QueryDetail = QueryStat & {
+  example: { sql: string; params: { value: string | null; type: string | null }[]; filled: string; at: number } | null;
+  /** 로그에 찍힌 로거 이름 그대로(줄였을 수 있음) */
+  logger: string | null;
+  /** 매퍼 XML 위치와 그 매퍼 메서드를 부르는 곳(워크트리 기준 상대 경로) */
+  location: { full_id: string; short_id: string; file: string; line: number; callers: { file: string; line: number; text: string }[]; candidates: number } | null;
+};
+export type QueryList = {
+  rows: QueryStat[];
+  /** 서버를 띄울 때 넣은 SQL 로그 환경값. 띄운 적 없으면 null */
+  sql_log: { enabled: boolean; packages: string[]; keys: string[]; kept: string[]; hibernate: boolean } | null;
+  /** from_env: DB 설정에 연결이 없어 서버 환경값에서 짐작한 연결(id 음수) */
+  connections: { id: number; name: string; engine: string; enabled: boolean; from_env: boolean; target: string }[];
+};
+export type ExplainResult = {
+  engine: string; connection: string; connection_id: number; sql: string; plan: string; notes: string[]; ms: number;
+  tables: { name: string; rows: number | null; indexes: { name: string; unique: boolean; columns: string; used: boolean }[] }[];
+};
 
 export type ServerStatus = 'idle' | 'starting' | 'running' | 'unhealthy' | 'failed' | 'stopped';
 export type ServerView = {

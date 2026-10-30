@@ -9,8 +9,8 @@ type Props = {
   all: ServerView[];
   restart?: boolean;
   onCancel: () => void;
-  /** 이번 실행에 쓸 워크트리 ID별 명령, 미리 정한 포트, 도커를 띄울지를 넘긴다. 실패하면 throw해서 창이 오류를 보여 주게 한다. */
-  onConfirm: (commands: Record<number, string>, ports: Record<number, number>, docker: boolean) => Promise<void>;
+  /** 이번 실행에 쓸 워크트리 ID별 명령, 미리 정한 포트, 도커를 띄울지, BE SQL 로그를 켤지를 넘긴다. 실패하면 throw해서 창이 오류를 보여 주게 한다. */
+  onConfirm: (commands: Record<number, string>, ports: Record<number, number>, docker: boolean, sqlLog: boolean) => Promise<void>;
 };
 
 type Row = EnvSuggestion & { on: boolean; orig: string };
@@ -34,6 +34,9 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
   const [skipped, setSkipped] = useState(false);
   const [prep, setPrep] = useState<StartPrep | null>(null);
   const [docker, setDocker] = useState(true);
+  // 쿼리 감시: BE를 띄울 때 매퍼 SQL 로그를 기본으로 켠다.
+  const [sqlLog, setSqlLog] = useState(true);
+  const hasBe = ordered.some((s) => s.project_kind !== 'fe');
   const [dockerOpening, setDockerOpening] = useState(false);
 
   const loadPrep = () => api.startPrep(sessionId, ordered.map((s) => s.worktree_id)).then((p) => {
@@ -100,7 +103,7 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
         for (const s of changed) await api.updateProject(s.project_id, { start_cmd: cmds[s.worktree_id].trim() });
       }
       if (chosen.length) await api.applySessionEnv(sessionId, chosen.map((r) => ({ project_id: r.project_id, key: r.key, value: r.value.trim(), found_in: r.found_in })));
-      await onConfirm(Object.fromEntries(changed.map((s) => [s.worktree_id, cmds[s.worktree_id].trim()])), ports ?? {}, docker);
+      await onConfirm(Object.fromEntries(changed.map((s) => [s.worktree_id, cmds[s.worktree_id].trim()])), ports ?? {}, docker, sqlLog);
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);
@@ -193,6 +196,12 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
         </section>
         {changed.length > 0 && (
           <label className="start-check"><input type="checkbox" checked={saveDefault} onChange={(e) => setSaveDefault(e.target.checked)} /> 바꾼 명령을 프로젝트 기본값으로 저장 (안 하면 이번 실행에만 씁니다)</label>
+        )}
+        {hasBe && (
+          <label className="start-check">
+            <input type="checkbox" checked={sqlLog} onChange={(e) => setSqlLog(e.target.checked)} /> BE SQL 로그 켜기
+            <span className="muted small">매퍼 패키지 로그를 DEBUG로 켜서 쿼리 탭에 호출 수·행 수를 모읍니다. 환경값에 같은 키를 넣었으면 그 값을 씁니다.</span>
+          </label>
         )}
         {error && <p className="error-text" role="alert">{error}</p>}
         <div className="dialog-actions">

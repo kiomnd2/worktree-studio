@@ -13,6 +13,8 @@ import { getSettings } from './settings.js';
 import { sendNotification } from './notify.js';
 import { copyFilesOf, copyIntoWorktree, dockerBin, stacksOf, upCommand } from './localenv.js';
 import { renderPorts, sessionAddrs } from './portvars.js';
+import { isJvm } from './dbconn.js';
+import { feedQueryLog, findMapperPackages, levelKey, setSqlLogInfo } from './querylog.js';
 
 export type ServerStatus = 'starting' | 'running' | 'unhealthy' | 'failed' | 'stopped';
 
@@ -65,7 +67,8 @@ export function clearFailure(worktreeId: number, sessionId: number) {
 
 /** 첫 오류 줄 앞뒤와 마지막 줄들을 모은다. 스택 트레이스는 첫 오류 뒤에 이어지는 경우가 많다. */
 function failureExcerpt(logs: LogLine[]): { summary: string | null; excerpt: string } {
-  const body = logs.filter((l) => l.stream !== 'sys');
+  // 쿼리 로그를 켜면 SQL 줄이 많아 오류 줄을 덮으므로 뺀다.
+  const body = logs.filter((l) => l.stream !== 'sys' && !l.sql);
   const i = body.findIndex((l) => l.level === 'error');
   const picked = new Set<LogLine>();
   if (i >= 0) body.slice(Math.max(0, i - 5), i + 40).forEach((l) => picked.add(l));
@@ -183,6 +186,7 @@ const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 function pushLine(r: Running, stream: LogLine['stream'], raw: string) {
   const text = maskSecrets(raw.replace(ANSI, '').replace(/\r$/, ''), r.secrets);
   const line: LogLine = { seq: ++r.seq, t: Date.now(), stream, level: stream === 'sys' ? 'info' : levelOf(text), text };
+  if (stream !== 'sys' && feedQueryLog(r.worktreeId, r.sessionId, text, line.t)) line.sql = true;
   r.logs.push(line);
   if (r.logs.length > MAX_LOG_LINES) r.logs.splice(0, r.logs.length - MAX_LOG_LINES);
   r.pending.push(line);
@@ -305,7 +309,7 @@ export function sessionBeUrl(session: SessionView, ports: Record<number, number>
  * 세션 워크트리의 서버를 띄운다. worktreeIds가 없으면 전부. BE를 먼저 띄워 FE가 BE 주소를 받게 한다.
  * commands에 워크트리 ID별 명령이 있으면 이번 실행에만 프로젝트 실행 명령 대신 쓴다.
  */
-export async function startServers(sessionId: number, worktreeIds?: number[], commands: Record<number, string> = {}, ports: Record<number, number> = {}, opts: { docker?: boolean } = {}) {
+export async function startServers(sessionId: number, worktreeIds?: number[], commands: Record<number, string> = {}, ports: Record<number, number> = {}, opts: { docker?: boolean; sqlLog?: boolean } = {}) {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
   const targets = session.worktrees
@@ -353,6 +357,9 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
       const beUrl = sessionBeUrl(session, plan);
       if (beUrl) auto[p.api_env_key] = beUrl;
     }
+    // 쿼리 감시: Spring BE는 매퍼 패키지 로그를 DEBUG로 켜서 SQL이 로그에 찍히게 한다. 사용자가 같은 키를 넣었으면 그 값을 따른다.
+    const sqlLog = w.project_kind !== 'fe' && isJvm({ local_path: w.app_path, start_cmd: p.start_cmd }) ? sqlLogEnv(w.app_path, env, opts.sqlLog !== false) : null;
+    if (sqlLog) setSqlLogInfo(w.id, sqlLog.info);
     const startCmd = (commands[w.id]?.trim() || p.start_cmd!).replaceAll('{port}', String(port));
     // 클론에만 있는 로컬 설정 파일(.env, application-local.yml 등)을 워크트리에 없을 때만 복사한다.
     const copied = copyIntoWorktree(p.repo_root, w.path, await copyFilesOf(p));
@@ -367,7 +374,7 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
       cwd: w.app_path,
       shell: true,
       detached: process.platform !== 'win32',
-      env: { ...process.env, ...env, ...auto, FORCE_COLOR: '0' },
+      env: { ...process.env, ...sqlLog?.env, ...env, ...auto, FORCE_COLOR: '0' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const r: Running = {
@@ -387,6 +394,8 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
     if (copied.length) pushLine(r, 'sys', `클론에서 로컬 설정 파일을 복사했습니다: ${copied.join(', ')}`);
     if (docker) pushLine(r, 'sys', `도커를 띄웁니다: ${stacks.flatMap((s) => s.services).join(', ')} (처음이면 이미지를 받느라 몇 분 걸릴 수 있습니다)`);
     if (dbVars.length) pushLine(r, 'sys', `DB 설정에서 넣는 값: ${dbVars.map((d) => d.key).join(', ')}`);
+    if (sqlLog?.info.keys.length) pushLine(r, 'sys', `쿼리 감시용 SQL 로그를 켭니다: ${sqlLog.info.keys.map((k) => `${k}=DEBUG`).join(', ')}`);
+    else if (sqlLog?.info.enabled && !sqlLog.info.kept.length) pushLine(r, 'sys', '쿼리 감시: 매퍼 패키지를 찾지 못해 SQL 로그를 켜지 못했습니다. 환경값에 LOGGING_LEVEL_<매퍼 패키지>=DEBUG를 넣으면 쿼리 탭이 채워집니다.');
     if (setup) pushLine(r, 'sys', `이 워크트리에서 처음 실행해 의존성부터 설치합니다: ${setup}`);
     pushLine(r, 'sys', `$ ${cmd}`);
     pushLine(r, 'sys', `포트 ${port}${Object.keys(auto).length > 1 ? ` · 자동 값 ${Object.entries(auto).map(([k, v]) => `${k}=${v}`).join(', ')}` : ''}`);
@@ -434,6 +443,15 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
     child.on('error', (err) => { pushLine(r, 'sys', `실행 실패: ${err.message}`); if (child.pid === undefined || child.exitCode !== null) finish(child.exitCode, null); });
     child.on('exit', (code, signal) => finish(code, signal));
   }
+}
+
+/** SQL 로그를 켤 환경값. 꺼 두면 넣지 않고 찾은 패키지만 기록한다. */
+function sqlLogEnv(dir: string, env: Record<string, string>, enabled: boolean) {
+  const { packages, hibernate } = findMapperPackages(dir);
+  const all = [...packages.map(levelKey), ...(hibernate ? ['LOGGING_LEVEL_ORG_HIBERNATE_SQL'] : [])];
+  const kept = all.filter((k) => k in env || k in process.env);
+  const keys = enabled ? all.filter((k) => !kept.includes(k)) : [];
+  return { env: Object.fromEntries(keys.map((k) => [k, 'DEBUG'])), info: { enabled, packages, keys, kept, hibernate } };
 }
 
 export async function stopServers(sessionId: number, worktreeIds?: number[]) {
