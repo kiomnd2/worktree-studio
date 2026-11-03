@@ -6,6 +6,8 @@ import type {
   TaskList,
   Account, Approval, ChangeScope, ArchiveEntry, DocMeta, JiraConfig, JiraIssue, JiraRequiredField, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
   ExplainResult, QueryDetail, QueryList, QuerySort,
+  BaselineStatus, ColumnEdit, DdlPreview, DictKind, DictUsage, DictReport, DictRequest, DictSearch, ErdConfig, ErdPayload, ErdProject, ErdProjectSummary, ErdStatus, ErdView, ParsedDdl, RelationshipType, SchemaDiff, TermPayload, WordPayload,
+  DraftInput, DraftResult, ErdApplyResult, SyncReport, SyncSide, SyncStatus,
   ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, UsageReport, Workspace,
 } from './types';
 
@@ -126,6 +128,60 @@ export const api = {
   restartServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/restart`, { worktreeIds, commands, ports, docker, sqlLog }),
   dismissFailure: (id: number, worktreeId: number) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/${worktreeId}/dismiss`),
   logs: (worktreeId: number) => request<LogLine[]>('GET', `/api/worktrees/${worktreeId}/logs`),
+  erdConfig: () => request<ErdConfig>('GET', '/api/erd-vibe/config'),
+  saveErdConfig: (patch: { base_url?: string; api_key?: string }) => request<ErdConfig>('PUT', '/api/erd-vibe/config', patch),
+  erdStatus: () => request<ErdStatus>('GET', '/api/erd-vibe/status'),
+  erdProjects: () => request<ErdProjectSummary[]>('GET', '/api/erd-vibe/projects'),
+  refreshDictionary: () => request<{ words: number; terms: number; domains: number }>('POST', '/api/erd-vibe/refresh', {}),
+  dictSearch: (sessionId: number, q: string, limit = 50) => request<DictSearch>('GET', `/api/sessions/${sessionId}/dict/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+  erdView: (sessionId: number, opts: { project?: string; refresh?: boolean } = {}) =>
+    request<ErdView>('GET', `/api/sessions/${sessionId}/erd?refresh=${opts.refresh ? 1 : 0}${opts.project ? `&project=${encodeURIComponent(opts.project)}` : ''}`),
+  setWorkspaceErd: (id: number, erd_project_id: string | null) => request('PUT', `/api/workspaces/${id}/erd`, { erd_project_id }),
+  createErdProject: (name: string, description?: string) => request<ErdProjectSummary>('POST', '/api/erd-vibe/projects', { name, description }),
+  erdCreateTable: (pid: string, t: { physical_name: string; logical_name: string; position_x?: number; position_y?: number }) =>
+    request<{ created_id: string; project: ErdProject }>('POST', `/api/erd/${pid}/tables`, t),
+  erdSaveTable: (pid: string, tid: string, body: { table?: { physical_name?: string; logical_name?: string; description?: string; header_color?: string }; columns?: ColumnEdit[]; deleted_columns?: string[]; seen_updated_at?: string | null; force?: boolean }) =>
+    request<{ project: ErdProject }>('PUT', `/api/erd/${pid}/tables/${tid}`, body),
+  erdDeleteTable: (pid: string, tid: string) => request<{ project: ErdProject }>('DELETE', `/api/erd/${pid}/tables/${tid}`),
+  erdMoveTables: (pid: string, moves: { id: string; x: number; y: number }[]) => request('PUT', `/api/erd/${pid}/positions`, { moves }),
+  erdAutoLayout: (pid: string) => request<{ project: ErdProject }>('POST', `/api/erd/${pid}/auto-layout`, {}),
+  erdAddRelationship: (pid: string, r: { from_table_id: string; from_column_id: string; to_table_id: string; to_column_id: string; relationship_type?: RelationshipType }) =>
+    request<{ project: ErdProject }>('POST', `/api/erd/${pid}/relationships`, r),
+  erdUpdateRelationship: (pid: string, rid: string, relationship_type: RelationshipType) => request<{ project: ErdProject }>('PUT', `/api/erd/${pid}/relationships/${rid}`, { relationship_type }),
+  erdDeleteRelationship: (pid: string, rid: string) => request<{ project: ErdProject }>('DELETE', `/api/erd/${pid}/relationships/${rid}`),
+  erdDdlFiles: (sessionId: number) => request<{ worktree_id: number; project_name: string; path: string }[]>('GET', `/api/sessions/${sessionId}/erd/ddl/files`),
+  erdParseDdl: (sessionId: number, body: { ddl?: string; file?: { worktree_id: number; path: string }; dbms: string; project?: string }) =>
+    request<{ parsed: ParsedDdl; preview: DdlPreview[] }>('POST', `/api/sessions/${sessionId}/erd/ddl/parse`, body),
+  erdApplyDdl: (pid: string, parsed: ParsedDdl) =>
+    request<{ project: ErdProject; relationships_created: number; relationship_errors: string[] }>('POST', `/api/erd/${pid}/ddl/apply`, parsed),
+  erdExportDdl: (pid: string, body: { table_ids?: string[]; dbms?: string; drop_first?: boolean; comments?: boolean; foreign_keys?: boolean }) =>
+    request<{ ddl: string }>('POST', `/api/erd/${pid}/ddl/export`, body),
+  erdDiff: (sessionId: number) => request<{ erd: { id: string; name: string } | null; source_tables: number; diffs: SchemaDiff[] }>('GET', `/api/sessions/${sessionId}/erd/diff`),
+  dictCreate: (kind: DictKind, body: Record<string, unknown>) => request<{ id: string }>('POST', `/api/erd-vibe/dict/${kind}`, body),
+  dictUpdate: (kind: DictKind, id: string, body: Record<string, unknown>) => request<{ id: string }>('PUT', `/api/erd-vibe/dict/${kind}/${id}`, body),
+  dictDelete: (kind: DictKind, ids: string[]) => request('DELETE', `/api/erd-vibe/dict/${kind}`, { ids }),
+  dictCheck: (sessionId: number, scope: 'changed' | 'all') => request<DictReport>('POST', `/api/sessions/${sessionId}/dict/check`, { scope }),
+  dictExcludes: (sessionId: number) => request<string[]>('GET', `/api/sessions/${sessionId}/dict/excludes`),
+  setDictExcludes: (sessionId: number, patterns: string[]) => request<string[]>('PUT', `/api/sessions/${sessionId}/dict/excludes`, { patterns }),
+  dictBaseline: (sessionId: number) => request<DictReport>('POST', `/api/sessions/${sessionId}/dict/baseline`, {}),
+  clearDictBaseline: (sessionId: number) => request('DELETE', `/api/sessions/${sessionId}/dict/baseline`),
+  setBaselineStatus: (sessionId: number, keys: { name: string; issue: string }[], status: BaselineStatus, note: string) =>
+    request('PUT', `/api/sessions/${sessionId}/dict/baseline/status`, { keys, status, note }),
+  dictUsage: (sessionId: number, refresh = false) => request<DictUsage>('GET', `/api/sessions/${sessionId}/dict/usage?refresh=${refresh ? 1 : 0}`),
+  dictIgnores: (sessionId: number) => request<{ name: string; reason: string; created_at: string }[]>('GET', `/api/sessions/${sessionId}/dict/ignores`),
+  setDictIgnore: (sessionId: number, name: string, reason: string | null) => request('PUT', `/api/sessions/${sessionId}/dict/ignores`, { name, reason }),
+  syncCheck: (sessionId: number) => request<SyncReport>('POST', `/api/sessions/${sessionId}/sync/check`, {}),
+  setSyncDecisions: (sessionId: number, keys: string[], patch: { side?: SyncSide | null; status?: SyncStatus; note?: string }) =>
+    request('PUT', `/api/sessions/${sessionId}/sync/decisions`, { keys, ...patch }),
+  applySyncDict: (sessionId: number, drafts: DraftInput[]) => request<{ results: DraftResult[] }>('POST', `/api/sessions/${sessionId}/sync/apply-dict`, { drafts }),
+  applySyncErd: (sessionId: number, keys: string[], kinds?: string[]) => request<ErdApplyResult>('POST', `/api/sessions/${sessionId}/sync/apply-erd`, { keys, kinds }),
+  undoSyncRun: (sessionId: number, runId: number) => request<{ undone: number; failed: string[] }>('POST', `/api/sessions/${sessionId}/sync/runs/${runId}/undo`, {}),
+  syncSourceTodo: (sessionId: number, keys?: string[]) => request<{ todos: unknown[]; roots: string[]; text: string }>('POST', `/api/sessions/${sessionId}/sync/source-todo`, { keys }),
+  dictRequests: (sessionId: number) => request<DictRequest[]>('GET', `/api/sessions/${sessionId}/dict/requests`),
+  addDictRequest: (sessionId: number, body: { kind: 'term'; payload: TermPayload; reason?: string } | { kind: 'word'; payload: WordPayload; reason?: string }) =>
+    request<DictRequest>('POST', `/api/sessions/${sessionId}/dict/requests`, body),
+  approveDictRequest: (id: number, payload: TermPayload | WordPayload | ErdPayload) => request<DictRequest>('POST', `/api/dict-requests/${id}/approve`, { payload }),
+  rejectDictRequest: (id: number) => request('POST', `/api/dict-requests/${id}/reject`, {}),
   queries: (worktreeId: number, sort: QuerySort, warningsOnly: boolean) => request<QueryList>('GET', `/api/worktrees/${worktreeId}/queries?sort=${sort}&warnings=${warningsOnly ? 1 : 0}`),
   query: (worktreeId: number, key: string) => request<QueryDetail>('GET', `/api/worktrees/${worktreeId}/queries/${key}`),
   resetQueries: (worktreeId: number) => request('POST', `/api/worktrees/${worktreeId}/queries/reset`, {}),

@@ -120,10 +120,16 @@ export function deleteProject(id: number) {
   db.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
 }
 
-export type WorkspaceView = { id: number; name: string; jira_project: string | null; projects: { id: number; name: string; kind: string; repo_root: string }[] };
+/** 워크스페이스가 쓰는 erd-vibe ERD 프로젝트를 정한다(null이면 연결을 끊는다). */
+export function setWorkspaceErd(id: number, erdProjectId: string | null) {
+  if (!db.prepare(`SELECT id FROM workspaces WHERE id = ? AND deleted = 0`).get(id)) throw new Error('워크스페이스가 없습니다.');
+  db.prepare(`UPDATE workspaces SET erd_project_id = ? WHERE id = ?`).run(erdProjectId?.trim() || null, id);
+}
+
+export type WorkspaceView = { id: number; name: string; jira_project: string | null; erd_project_id: string | null; projects: { id: number; name: string; kind: string; repo_root: string }[] };
 
 export function listWorkspaces(): WorkspaceView[] {
-  const ws = db.prepare(`SELECT id, name, jira_project FROM workspaces WHERE deleted = 0 ORDER BY name`).all() as { id: number; name: string; jira_project: string | null }[];
+  const ws = db.prepare(`SELECT id, name, jira_project, erd_project_id FROM workspaces WHERE deleted = 0 ORDER BY name`).all() as { id: number; name: string; jira_project: string | null; erd_project_id: string | null }[];
   const rows = db.prepare(`
     SELECT wp.workspace_id, p.id, p.name, p.kind, COALESCE(p.repo_root, p.local_path) AS repo_root FROM workspace_projects wp
     JOIN projects p ON p.id = wp.project_id ORDER BY wp.position`).all() as { workspace_id: number; id: number; name: string; kind: string; repo_root: string }[];

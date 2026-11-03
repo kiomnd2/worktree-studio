@@ -24,7 +24,11 @@ export type Project = {
   missing: boolean;
 };
 
-export type Workspace = { id: number; name: string; jira_project: string | null; projects: { id: number; name: string; kind: ProjectKind; repo_root: string }[] };
+export type Workspace = {
+  id: number; name: string; jira_project: string | null;
+  /** 이 워크스페이스의 세션이 쓰는 erd-vibe ERD 프로젝트(uuid) */
+  erd_project_id: string | null;
+  projects: { id: number; name: string; kind: ProjectKind; repo_root: string }[] };
 
 /** 새 티켓을 만들 때 프로젝트가 필수로 요구하는 칸(스프린트 등) */
 export type JiraRequiredField = {
@@ -115,6 +119,9 @@ export type ServerEvent =
   | { type: 'tasks.updated'; sessionId: number }
   | { type: 'tests.updated'; sessionId: number }
   | { type: 'queries'; sessionId: number; worktreeId: number }
+  | { type: 'dict.requests'; sessionId: number }
+  | { type: 'erd.updated'; projectId: string }
+  | { type: 'dict.updated' }
   | { type: 'test.result'; sessionId: number; ticket: string; caseId: number; title: string; status: TestCase['status']; summary: string; index: number; total: number };
 
 export type TestCase = {
@@ -192,7 +199,7 @@ export type PrDraft = {
   existing_pr: { number: number; url: string; state: PrState; head_oid: string } | null;
   pr_mode: 'new' | 'update' | 'none'; pr_note: string | null; commit_message: string; title: string; body: string;
 };
-export type PrStep = { name: 'commit' | 'check' | 'push' | 'pr'; status: 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'ignored'; started_at: number | null; ended_at: number | null; detail: string | null; output: string | null };
+export type PrStep = { name: 'commit' | 'check' | 'dict' | 'schema' | 'push' | 'pr'; status: 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'ignored'; started_at: number | null; ended_at: number | null; detail: string | null; output: string | null };
 export type PrJob = {
   session_id: number; status: 'running' | 'done' | 'failed'; started_at: number; ended_at: number | null; error: string | null; servers_stopped: boolean; ignore_check_failures: boolean;
   repos: { worktree_id: number; project_name: string; pr_url: string | null; steps: PrStep[] }[];
@@ -339,3 +346,167 @@ export type ProjectAnalysis = {
   env_keys: { key: string; reason: string }[];
   notes: string[];
 };
+
+// erd-vibe 용어·도메인 사전 (server/src/erdvibe.ts, dictcheck.ts, dictscan.ts, dictrequests.ts와 같은 모양)
+export type ErdConfig = { base_url: string; has_key: boolean; configured: boolean };
+export type ErdStatus = { ok: boolean; error: string | null; counts: { words: number; terms: number; domains: number } | null; loaded_at: number | null };
+export type ErdProjectSummary = { id: string; name: string; description: string | null; dbms_type: string; updated_at: string | null };
+export type ErdColumn = {
+  id: string; table_id: string; logical_name: string; physical_name: string; data_type: string | null; data_length: string | number | null;
+  is_primary_key: boolean; is_nullable: boolean; is_unique: boolean; default_value: string | null;
+  description: string | null; order_index: number; term_dictionary_id: string | null;
+};
+export type ErdTable = {
+  id: string; logical_name: string; physical_name: string; description: string | null;
+  position_x: number; position_y: number; header_color: string | null; default_has_pk_auto_increment: boolean | null;
+  updated_at: string | null; columns: ErdColumn[];
+};
+export type RelationshipType = 'one_to_one' | 'one_to_many' | 'many_to_many';
+export type ErdRelationship = { id: string; from_table_id: string; from_column_id: string; to_table_id: string; to_column_id: string; relationship_type: RelationshipType; description: string | null };
+export type ErdMemo = { id: string; content: string; position_x: number; position_y: number; width: number | null; height: number | null; background_color: string | null };
+export type ErdProject = {
+  id: string; name: string; description: string | null; dbms_type: string; updated_at: string | null;
+  tables: ErdTable[]; relationships: ErdRelationship[]; memos: ErdMemo[];
+};
+export type ErdFinding = { table: string; column: string; logical_name: string; type: string | null; resolution: Resolution; issues: DictIssue[] };
+export type ErdView = { web_url: string; linked_id: string | null; project: ErdProject | null; findings: ErdFinding[]; terms: Record<string, { logical_name: string; standard: string }> };
+export type ColumnEdit = {
+  id?: string; physical_name: string; logical_name: string; data_type: string; is_primary_key: boolean; is_nullable: boolean;
+  is_unique?: boolean; default_value?: string; description?: string; term_dictionary_id?: string | null;
+};
+export type ParsedDdlColumn = { logical_name: string; physical_name: string; data_type: string; is_nullable: boolean; is_primary_key: boolean; is_unique: boolean; description: string; order_index: number };
+export type ParsedDdl = {
+  tables: { logical_name: string; physical_name: string; description?: string; columns: ParsedDdlColumn[] }[];
+  relationships: { constraint_name: string; from_table_name: string; from_column_name: string; to_table_name: string; to_column_name: string; relationship_type: RelationshipType }[];
+};
+export type DdlPreview = {
+  physical_name: string; logical_name: string; columns: number; status: 'new' | 'changed' | 'same'; added_columns: number; changed_columns: number;
+  violations: { name: string; verdict: Verdict; standard: string | null }[];
+};
+export type SchemaDiff = {
+  kind: 'source_only_table' | 'erd_only_table' | 'source_only_column' | 'erd_only_column' | 'type_mismatch';
+  table: string; column: string | null; erd_type: string | null; source_type: string | null; file: string | null; line: number | null;
+  columns?: { name: string; type: string | null }[];
+};
+export type DictWord = { id: string; name: string; english_name: string; abbreviation: string | null; definition: string };
+export type DictDomain = {
+  id: string; name: string; description: string | null; data_type_default: string | null; type_for_dbms: string | null;
+  data_type_oracle: string | null; data_type_mysql: string | null; data_type_postgresql: string | null;
+};
+export type TermRef = { id: string; logical_name: string; standard: string; physical_name: string; domain_name: string | null; domain_type: string | null };
+export type Verdict = 'standard' | 'variant' | 'unregistered_term' | 'unknown_word';
+export type Resolution = {
+  name: string; verdict: Verdict; term: TermRef | null; tokens: { token: string; word: string | null }[]; missing: string[];
+  draft: { logical_name: string; physical_name: string; physical_abbr_name: string; words: string[] } | null; similar: TermRef[];
+};
+export type DictSearch = {
+  dbms: string; query: string; resolution: Resolution | null;
+  terms: (TermRef & { description: string; physical_abbr_name: string | null })[];
+  words: DictWord[]; domains: DictDomain[]; total: { terms: number; words: number; domains: number };
+  erd_usage: Record<string, number>; domain_usage: Record<string, number>;
+};
+export type DictIssue = 'variant' | 'unregistered_term' | 'unknown_word' | 'domain_mismatch' | 'not_in_erd' | 'no_term_link';
+export type DictOccurrence = { file: string; line: number; kind: 'sql' | 'resultmap' | 'ddl' | 'liquibase' | 'jpa'; table: string | null; type: string | null; text: string; added: boolean };
+export type DictFinding = {
+  name: string; project_name: string; resolution: Resolution; issues: DictIssue[]; added: boolean; blocking: boolean;
+  domain: { expected: string; actual: string[] } | null; occurrences: DictOccurrence[]; occurrence_count: number;
+};
+export type DictReport = {
+  scope: 'changed' | 'all'; generated_at: number; dbms: string; erd_project: { id: string; name: string; dbms_type: string } | null;
+  scanned_files: number; findings: DictFinding[];
+  mixed: { logical_name: string; standard: string; spellings: { name: string; count: number; standard: boolean }[] }[];
+  erd_findings: ErdFinding[];
+  dictionary_duplicates: { logical_name: string; standards: string[] }[]; ignored: number; error: string | null;
+  groups: DictGroup[]; hot_files: { project_name: string; file: string; names: number; occurrences: number }[];
+  baseline: DictBaseline | null; excluded_files: number;
+};
+export type DictGroup = {
+  key: string; kind: 'word' | 'domain' | 'variant' | 'term' | 'not_in_erd'; issue: DictIssue;
+  title: string; detail: string | null; names: string[]; occurrence_count: number; added: boolean;
+};
+export type BaselineStatus = 'todo' | 'hold' | 'accepted';
+export type DictBaseline = {
+  created_at: string; total: number; resolved: number; remaining: number; todo: number; hold: number; accepted: number; new_count: number;
+  /** "이름|위반 종류" → 상태. 해결됐거나 기준선에 없으면 빠져 있다 */
+  status: Record<string, BaselineStatus>; notes: Record<string, string>;
+};
+export type TermUsage = { source: number; files: number; erd_link: number; erd_name: number };
+export type DictUsage = {
+  scanned_at: number; erd_project: { id: string; name: string } | null; terms: Record<string, TermUsage>;
+  term_overlaps: { logical_name: string; terms: (TermRef & { physical_abbr_name: string | null; description: string; usage: TermUsage })[] }[];
+  word_overlaps: { abbreviation: string; words: DictWord[]; source: number; examples: { name: string; count: number }[] }[];
+};
+export type TermPayload = { logical_name: string; physical_name: string; physical_abbr_name: string | null; domain_name: string | null; description: string };
+export type WordPayload = { name: string; english_name: string; abbreviation: string | null; definition: string };
+export type DictRequest = {
+  id: number; session_id: number; reason: string; source: 'claude' | 'user'; status: 'pending' | 'done' | 'rejected' | 'failed';
+  error: string | null; created_at: string; resolved_at: string | null;
+} & RequestInput;
+export type ColumnDraft = { physical_name: string; logical_name: string; data_type: string; is_primary_key?: boolean; is_nullable?: boolean; term?: string | null };
+export type ErdPayload =
+  | { action: 'add_table'; table: { physical_name: string; logical_name: string; description?: string; columns: ColumnDraft[] } }
+  | { action: 'add_column'; table: string; column: ColumnDraft }
+  | { action: 'update_column'; table: string; column: string; patch: Partial<ColumnDraft> }
+  | { action: 'drop_column'; table: string; column: string };
+export type RequestInput = { kind: 'term'; payload: TermPayload } | { kind: 'word'; payload: WordPayload } | { kind: 'erd'; payload: ErdPayload };
+export type DictKind = 'word' | 'term' | 'domain';
+
+// ───── 소스 · ERD · 용어사전 전체 동기화 ─────
+export type SyncSide = 'source' | 'erd';
+export type SyncStatus = 'todo' | 'hold' | 'accepted';
+export type SyncIssue =
+  | 'table_source_only' | 'table_erd_only'
+  | 'source_only' | 'erd_only' | 'type_diff' | 'logical_diff'
+  | 'variant' | 'same_logical' | 'overlap_blocked' | 'unregistered_term' | 'unknown_word'
+  | 'domain_source' | 'domain_erd' | 'no_term_link' | 'logical_dup';
+export type SyncAction =
+  | { target: 'erd'; kind: 'add_table'; table: string; logical_name: string }
+  | { target: 'erd'; kind: 'add_column'; table: string; table_id: string | null; physical_name: string; logical_name: string; data_type: string | null; is_primary_key: boolean; is_nullable: boolean; term_id: string | null }
+  | { target: 'erd'; kind: 'rename_column'; column_id: string; before: string; after: string }
+  | { target: 'erd'; kind: 'set_logical'; column_id: string; before: string; after: string }
+  | { target: 'erd'; kind: 'set_type'; column_id: string; before: string | null; after: string }
+  | { target: 'erd'; kind: 'link_term'; column_id: string; before: string | null; after: string; term_name: string }
+  | { target: 'erd'; kind: 'delete_column'; column_id: string; physical_name: string }
+  | { target: 'erd'; kind: 'delete_table'; table_id: string; physical_name: string }
+  | { target: 'source'; kind: 'rename_column'; table: string; before: string; after: string }
+  | { target: 'source'; kind: 'modify_type'; table: string; column: string; before: string | null; after: string }
+  | { target: 'source'; kind: 'set_remarks'; table: string; column: string; before: string | null; after: string }
+  | { target: 'source'; kind: 'add_column'; table: string; column: string; data_type: string | null; logical_name: string }
+  | { target: 'source'; kind: 'drop_column'; table: string; column: string }
+  | { target: 'source'; kind: 'add_table'; table: string; logical_name: string; columns: { name: string; type: string | null; logical_name: string }[] }
+  | { target: 'source'; kind: 'drop_table'; table: string };
+export type DictDraft =
+  | { kind: 'word'; key: string; abbreviation: string; name: string; english_name: string; used_by: string[] }
+  | { kind: 'domain'; key: string; name: string; data_type: string; used_by: string[] }
+  | { kind: 'term'; key: string; logical_name: string; physical_name: string; physical_abbr_name: string; domain_name: string | null; words: string[]; needs: string[]; used_by: string[] };
+export type SyncItem = {
+  key: string; table: string; column: string | null;
+  logical: string | null; logical_from: 'source' | 'erd' | 'term' | 'draft' | null;
+  source: { name: string; type: string | null; remarks: string | null; change: { file: string; line: number; changeset: string } } | null;
+  erd: { id: string; table_id: string; name: string; logical_name: string; type: string | null; term_id: string | null } | null;
+  term: TermRef | null;
+  target_name: string | null; target_type: string | null;
+  issues: SyncIssue[];
+  default_side: SyncSide | null;
+  needs_side: boolean;
+  actions: { common: SyncAction[]; source: SyncAction[]; erd: SyncAction[] };
+  drafts: string[];
+  side: SyncSide | null; status: SyncStatus; note: string;
+};
+export type SyncRun = { id: number; created_at: string; summary: string; undone_at: string | null; count: number };
+export type SyncReport = {
+  generated_at: number;
+  erd_project: { id: string; name: string } | null;
+  apps: { project_name: string; kind: string; roots: string[]; tables: number }[];
+  summary: { tables: number; columns: number; ok: number; todo: number; issues: Partial<Record<SyncIssue, number>>; logical_dups: number; by_target: Record<'dict' | 'erd' | 'source', number> };
+  items: SyncItem[];
+  drafts: DictDraft[];
+  runs: SyncRun[];
+  error: string | null;
+};
+export type DraftInput =
+  | { kind: 'word'; key: string; name: string; english_name: string; abbreviation: string; definition?: string }
+  | { kind: 'domain'; key: string; name: string; data_type: string; description?: string }
+  | { kind: 'term'; key: string; logical_name: string; physical_name: string; physical_abbr_name: string; domain_name: string | null; description?: string };
+export type DraftResult = { key: string; ok: boolean; skipped?: string; error?: string };
+export type ErdApplyResult = { run_id: number | null; applied: number; failed: { key: string; action: string; error: string }[]; skipped: number };

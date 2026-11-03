@@ -14,7 +14,7 @@ const SKIP_DIRS = new Set(['node_modules', '.git', 'build', 'target', 'out', 'bi
 const CACHE_MS = 30_000;
 const cache = new Map<string, { at: number; statements: MapperStatement[]; sources: string[] }>();
 
-function walk(dir: string, visit: (file: string) => void) {
+export function walk(dir: string, visit: (file: string) => void) {
   let files = 0;
   const go = (d: string, depth: number) => {
     if (depth > 16 || files > 30000) return;

@@ -13,6 +13,12 @@ export type ServerEvent =
   | { type: 'docs.updated'; sessionId: number }
   | { type: 'tests.updated'; sessionId: number }
   | { type: 'tasks.updated'; sessionId: number }
+  /** 용어사전 등록 요청이 생기거나 처리됨 */
+  | { type: 'dict.requests'; sessionId: number }
+  /** studio에서 erd-vibe ERD를 고침(같은 ERD를 연 다른 화면이 다시 받게) */
+  | { type: 'erd.updated'; projectId: string }
+  /** studio에서 erd-vibe 사전을 고침 */
+  | { type: 'dict.updated' }
   /** 서버 로그에서 센 쿼리 집계가 바뀜(1초 묶음) */
   | { type: 'queries'; sessionId: number; worktreeId: number }
   /** 화면 테스트 케이스 하나가 끝남 */

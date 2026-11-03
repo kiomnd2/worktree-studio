@@ -19,6 +19,9 @@ import { accountsOf } from './accounts.js';
 import { recordUsage } from './usage.js';
 import { playwrightMcpCli } from './tests.js';
 import { SCREEN_DIR } from './screens.js';
+import { DICT_RULE, checkSession, createDictRequest, dictContextLines, erdTableText, formatCheck, formatLookup, schemaCheckText, searchDictionary, syncTodoText } from './dicttools.js';
+import { erdConfigured } from './erdvibe.js';
+import type { ErdPayload } from './dictrequests.js';
 
 // 대화가 이 크기(토큰)를 넘으면 앞부분을 요약해 줄인다. 매 호출이 대화 전체를 다시 읽으므로 길수록 토큰이 커진다.
 export const AUTO_COMPACT_TOKENS = 300_000;
@@ -118,6 +121,7 @@ function buildSystemAppend(repos: RepoView[], side: boolean, db: DbConnection | 
     '다른 역할의 테스트 계정이 필요하면 mcp__studio__request_test_account로 요청한다. 두 요청 모두 사용자가 화면에서 확인해야 적용된다.',
     '개발 DB의 데이터를 확인해야 하면 <tool_context>의 DB 연결에 mcp__studio__db_query로 질의한다. 읽기는 바로 실행되고, 데이터를 바꾸는 질의는 사용자가 SQL을 확인하고 승인해야 실행된다. DB 클라이언트를 Bash로 직접 쓰지 않는다.',
     '느린 화면이나 쿼리를 볼 때는 mcp__studio__server_queries로 BE 서버 로그에서 센 쿼리 집계(호출 수, 행 수, N+1 같은 경고)를 보고, mcp__studio__db_explain으로 실행 계획과 인덱스를 본다. 고칠 때는 근거(집계, 계획, 매퍼 위치)를 함께 적고 매퍼 XML 등 코드 수정을 제안한다. 인덱스 DDL은 mcp__studio__db_query로 보내 사용자 승인을 받는다.',
+    ...(erdConfigured() ? [DICT_RULE] : []),
     '작업 중에 사용자가 정해야 할 것(요구사항이 애매함, 방법이 여럿임, 데이터를 바꿔도 되는지 등)이 생기면 추측하지 말고 AskUserQuestion으로 바로 묻는다. 답을 받으면 이어서 작업한다.',
     '계획서, 화면설계서처럼 사람이 읽을 산출물은 mcp__studio__save_doc으로 HTML 문서로 저장한다. 저장소에 문서 파일을 만들지 않는다.',
     '저장한 문서 목록은 메시지의 <tool_context>에 나온다. 사용자가 문서를 언급하면 그 경로의 파일을 Read로 읽어 따른다.',
@@ -150,6 +154,7 @@ function runtimeContext(sessionId: number, chatId: number, dbs: (DbConnection & 
     lines.push('질의할 수 있는 DB 연결 (mcp__studio__db_query의 connection_id, 켜짐은 서버 실행 때 쓰는 연결):');
     lines.push(...dbs.map((c) => `- #${c.id} ${c.name}: ${describeConnection(c)} · ${c.project_name}${c.enabled ? ' · 켜짐' : ''}${engineSupported(c) ? '' : ' · 질의 지원 안 함'}`));
   }
+  lines.push(...dictContextLines(sessionId));
   if (accounts.length) {
     lines.push('화면 확인용 테스트 계정 (다른 세션과 같이 쓴다. 역할이 다르면 메모를 보고 골라 쓴다):');
     lines.push(...accounts.map((a) => `- ${a.login} / ${a.password}${a.note ? ` (${a.note})` : ''}`));
@@ -401,6 +406,131 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
         // 계획만 보고 롤백하므로 계획 모드에서도 쓸 수 있다.
         { annotations: { readOnlyHint: true } },
       ),
+      tool(
+        'dict_lookup',
+        'erd-vibe 용어사전(단어·용어·도메인)을 찾는다. 논리명(거래일자), 물리명(TR_DT, TRADE_DATE), camelCase(trDt), 단어(거래) 모두 된다. 식별자를 넣으면 표준인지, 아니면 표준 이름이 무엇인지도 판정한다.',
+        { query: z.string().describe('찾을 말. 비우면 전체 목록 앞부분') },
+        async (args) => {
+          try {
+            return text(formatLookup(await searchDictionary(getSession(sessionId)!, args.query)));
+          } catch (err) {
+            return fail(`용어사전 조회 오류: ${(err as Error).message}`);
+          }
+        },
+        { annotations: { readOnlyHint: true } },
+      ),
+      tool(
+        'dict_check',
+        '워크트리 소스(MyBatis 매퍼, SQL·DDL, Liquibase, JPA @Column)의 컬럼 이름을 용어사전·ERD와 맞대어 위반(비표준 표기, 미등록 용어·단어, 도메인 불일치, ERD에 없음, 같은 용어 혼용)을 찾는다. changed는 기준 브랜치에서 바뀐 파일만 본다.',
+        { scope: z.enum(['changed', 'all']).default('changed') },
+        async (args) => {
+          try {
+            return text(formatCheck(await checkSession(sessionId, args.scope)));
+          } catch (err) {
+            return fail(`용어 검사 오류: ${(err as Error).message}`);
+          }
+        },
+        { annotations: { readOnlyHint: true } },
+      ),
+      tool(
+        'schema_check',
+        'Liquibase changelog를 순서대로 적용한 최종 스키마와 매퍼 XML·JPA 엔티티가 쓰는 테이블·컬럼을 맞댄다. 없는 컬럼, rename·drop된 옛 이름 사용을 찾는다(이번 변경의 새 줄이면 PR이 막힌다). changed는 바뀐 파일만.',
+        { scope: z.enum(['changed', 'all']).default('changed') },
+        async (args) => {
+          try {
+            return text(await schemaCheckText(sessionId, args.scope));
+          } catch (err) {
+            return fail(`스키마 검사 오류: ${(err as Error).message}`);
+          }
+        },
+        { annotations: { readOnlyHint: true } },
+      ),
+      tool(
+        'sync_todo',
+        '용어사전·ERD와 맞추려고 소스에서 할 일(새 Liquibase changeset의 renameColumn·modifyDataType·addColumn과 매퍼·JPA 수정)을 받는다. 사용자가 동기화 화면에서 고른 기준과 상태를 따른다.',
+        { limit: z.number().int().min(1).max(100).default(30) },
+        async (args) => {
+          try {
+            return text(await syncTodoText(sessionId, args.limit));
+          } catch (err) {
+            return fail(`동기화 목록 오류: ${(err as Error).message}`);
+          }
+        },
+        { annotations: { readOnlyHint: true } },
+      ),
+      tool(
+        'dict_request_term',
+        'erd-vibe 용어사전에 없는 용어(또는 단어)를 등록하자고 사용자에게 요청한다. 사용자가 화면에서 고쳐 승인해야 팀 공유 사전에 들어간다. 기다리지 않고 바로 돌아오므로, 승인 전까지는 그 이름을 확정하지 말고 사용자에게 알린다. 단어가 사전에 없으면 kind "word"로 단어부터 요청한다.',
+        {
+          kind: z.enum(['term', 'word']),
+          logical_name: z.string().describe('term: 논리명(거래취소일자). word: 단어(취소)'),
+          physical_name: z.string().describe('term: 영문 전체 물리명(TRADE_CANCEL_DATE). word: 영문명(CANCEL)'),
+          abbr_name: z.string().optional().describe('term: 약어명(TR_CNCL_DT, 표준 이름). word: 약어(CNCL)'),
+          domain_name: z.string().optional().describe('term: 도메인사전의 도메인 이름'),
+          description: z.string().describe('정의 한두 문장'),
+          reason: z.string().describe('이 용어가 필요한 곳과 이유'),
+        },
+        async (args) => {
+          if (opts.dbOnly !== null) return fail('DB 대화에서는 등록 요청을 하지 않습니다.');
+          try {
+            const r = await createDictRequest(sessionId, args.kind === 'term'
+              ? { kind: 'term', payload: { logical_name: args.logical_name, physical_name: args.physical_name, physical_abbr_name: args.abbr_name ?? null, domain_name: args.domain_name ?? null, description: args.description } }
+              : { kind: 'word', payload: { name: args.logical_name, english_name: args.physical_name, abbreviation: args.abbr_name ?? null, definition: args.description } }, args.reason, 'claude');
+            return text(`등록 요청 #${r.id}을 올렸습니다. 사용자가 용어 검사 화면에서 승인하면 erd-vibe 사전에 들어갑니다. 승인 전에는 확정된 이름이 아닙니다.`);
+          } catch (err) {
+            return fail((err as Error).message);
+          }
+        },
+        // 저장소를 바꾸지 않고, 등록은 사용자가 승인해야 하므로 계획 모드에서도 쓸 수 있다.
+        { annotations: { readOnlyHint: true } },
+      ),
+      tool(
+        'erd_request_change',
+        '연결한 erd-vibe ERD에 테이블·컬럼을 추가하거나 바꾸자고 사용자에게 요청한다. 사용자가 ERD·용어 화면에서 고쳐 승인해야 반영된다. 기다리지 않고 바로 돌아온다. '
+          + '컬럼 물리명은 dict_lookup으로 확인한 표준 이름을 쓰고, term에 그 용어의 표준 이름을 넣으면 용어 연결도 채운다. 타입은 용어 도메인 타입을 쓴다.',
+        {
+          action: z.enum(['add_table', 'add_column', 'update_column', 'drop_column']),
+          table: z.string().min(1).describe('테이블 물리명'),
+          table_logical_name: z.string().optional().describe('add_table: 테이블 논리명'),
+          column: z.string().optional().describe('update_column·drop_column: 바꿀 컬럼 물리명'),
+          columns: z.array(z.object({
+            physical_name: z.string(), logical_name: z.string(), data_type: z.string(),
+            is_primary_key: z.boolean().optional(), is_nullable: z.boolean().optional(), term: z.string().optional().describe('용어 표준 이름'),
+          })).optional().describe('add_table: 컬럼 전부. add_column: 컬럼 하나. update_column: 바꿀 값만 담은 하나'),
+          reason: z.string().describe('이 변경이 필요한 곳과 이유'),
+        },
+        async (args) => {
+          if (opts.dbOnly !== null) return fail('DB 대화에서는 ERD 변경 요청을 하지 않습니다.');
+          const cols = args.columns ?? [];
+          let payload: ErdPayload;
+          if (args.action === 'add_table') payload = { action: 'add_table', table: { physical_name: args.table, logical_name: args.table_logical_name ?? '', columns: cols } };
+          else if (args.action === 'add_column') {
+            if (!cols[0]) return fail('add_column은 columns에 컬럼 하나를 넣는다.');
+            payload = { action: 'add_column', table: args.table, column: cols[0] };
+          } else if (!args.column) return fail('바꿀 컬럼(column)을 넣는다.');
+          else payload = args.action === 'drop_column' ? { action: 'drop_column', table: args.table, column: args.column } : { action: 'update_column', table: args.table, column: args.column, patch: cols[0] ?? {} };
+          try {
+            const r = await createDictRequest(sessionId, { kind: 'erd', payload }, args.reason, 'claude');
+            return text(`ERD 변경 요청 #${r.id}을 올렸습니다. 사용자가 승인하면 erd-vibe ERD에 반영됩니다. 승인 전에는 ERD가 바뀌지 않았습니다.`);
+          } catch (err) {
+            return fail((err as Error).message);
+          }
+        },
+        { annotations: { readOnlyHint: true } },
+      ),
+      tool(
+        'erd_table',
+        '이 세션 워크스페이스에 연결한 erd-vibe ERD에서 테이블 정의(컬럼, 타입, PK, NULL, 연결된 용어)를 본다. 물리명이나 논리명, 일부만 넣어도 된다.',
+        { name: z.string().min(1) },
+        async (args) => {
+          try {
+            return text(await erdTableText(sessionId, args.name));
+          } catch (err) {
+            return fail((err as Error).message);
+          }
+        },
+        { annotations: { readOnlyHint: true } },
+      ),
     ],
   });
 }
@@ -517,9 +647,9 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
           }),
         },
         settings: { autoCompactWindow: AUTO_COMPACT_TOKENS, enabledPlugins: Object.fromEntries(DISABLED_PLUGINS.map((p) => [p, false])) },
-        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks', 'mcp__studio__db_query', 'mcp__studio__server_queries', 'mcp__studio__db_explain', 'mcp__browser'],
+        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks', 'mcp__studio__db_query', 'mcp__studio__server_queries', 'mcp__studio__db_explain', 'mcp__studio__dict_lookup', 'mcp__studio__dict_check', 'mcp__studio__schema_check', 'mcp__studio__sync_todo', 'mcp__studio__dict_request_term', 'mcp__studio__erd_table', 'mcp__studio__erd_request_change', 'mcp__browser'],
         // 추가 대화는 세션 작업 목록을 바꾸지 않는다. DB 대화는 코드와 파일도 고치지 않는다.
-        ...(dbOnly ? { disallowedTools: ['mcp__studio__set_tasks', 'Edit', 'Write', 'NotebookEdit', 'Bash'] }
+        ...(dbOnly ? { disallowedTools: ['mcp__studio__set_tasks', 'mcp__studio__dict_request_term', 'mcp__studio__erd_request_change', 'Edit', 'Write', 'NotebookEdit', 'Bash'] }
           : chatId !== 0 ? { disallowedTools: ['mcp__studio__set_tasks'] } : {}),
       },
     });

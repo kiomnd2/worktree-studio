@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { api } from './api';
 import { setFocusedSession, useServerEvents } from './events';
 import type { Session } from './types';
@@ -14,6 +14,9 @@ import Toasts from './components/Toasts';
 import CleanupPage from './components/CleanupPage';
 import ChangesPage from './components/ChangesPage';
 import TestsPage from './components/TestsPage';
+import DictPage from './components/DictPage';
+// ERD 화면은 React Flow가 커서 열 때 받는다.
+const ErdPage = lazy(() => import('./components/ErdPage'));
 import DocsPage from './components/DocsPage';
 import ArchivePage from './components/ArchivePage';
 import UsagePage from './components/UsagePage';
@@ -26,6 +29,8 @@ type View =
   | { kind: 'env'; id: number; message?: string }
   | { kind: 'changes'; id: number }
   | { kind: 'tests'; id: number }
+  | { kind: 'dict'; id: number }
+  | { kind: 'erd'; id: number; table?: string }
   | { kind: 'docs'; id: number; name: string | null }
   | { kind: 'archive' }
   | { kind: 'usage' }
@@ -53,7 +58,7 @@ export default function App() {
   }, []);
   useEffect(reload, [reload]);
 
-  const selectedId = view.kind === 'session' || view.kind === 'env' || view.kind === 'changes' || view.kind === 'tests' || view.kind === 'docs' ? view.id : null;
+  const selectedId = view.kind === 'session' || view.kind === 'env' || view.kind === 'changes' || view.kind === 'tests' || view.kind === 'dict' || view.kind === 'erd' || view.kind === 'docs' ? view.id : null;
   const [servers, setServers] = useState<ServerView[]>([]);
   const reloadServers = useCallback(() => {
     if (selectedId) api.servers(selectedId).then(setServers).catch(() => setServers([]));
@@ -208,6 +213,13 @@ export default function App() {
           <DocsPage key={`a-${view.id}`} sessionId={view.id} ticket={view.ticket} initial={view.name} backLabel="보관함으로" onBack={() => setView({ kind: 'archive' })} />
         ) : view.kind === 'docs' && selected ? (
           <DocsPage key={selected.id} sessionId={selected.id} ticket={selected.ticket} live initial={view.name} backLabel="세션 화면으로" onBack={() => setView({ kind: 'session', id: selected.id })} />
+        ) : view.kind === 'dict' && selected ? (
+          <DictPage key={selected.id} session={selected} onBack={() => setView({ kind: 'session', id: selected.id })} onOpenErd={(table) => setView({ kind: 'erd', id: selected.id, table })} />
+        ) : view.kind === 'erd' && selected ? (
+          <Suspense fallback={<main className="main empty"><p><span className="spinner" aria-hidden="true" /> ERD 화면 불러오는 중…</p></main>}>
+            <ErdPage key={`${selected.id}:${view.table ?? ''}`} session={selected} initialTable={view.table} onBack={() => setView({ kind: 'session', id: selected.id })}
+              onOpenDict={() => setView({ kind: 'dict', id: selected.id })} onOpenSettings={() => setView({ kind: 'settings' })} />
+          </Suspense>
         ) : view.kind === 'tests' && selected ? (
           <TestsPage key={selected.id} session={selected} onBack={() => setView({ kind: 'session', id: selected.id })} />
         ) : view.kind === 'changes' && selected ? (
@@ -229,6 +241,8 @@ export default function App() {
               onOpenEnv={(message) => setView({ kind: 'env', id: selected.id, message })}
               onOpenChanges={() => setView({ kind: 'changes', id: selected.id })}
               onOpenTests={() => setView({ kind: 'tests', id: selected.id })}
+              onOpenDict={() => setView({ kind: 'dict', id: selected.id })}
+              onOpenErd={() => setView({ kind: 'erd', id: selected.id })}
               onOpenDocs={(name) => setView({ kind: 'docs', id: selected.id, name: name ?? null })}
               onClosed={() => { setView({ kind: 'session', id: null }); reload(); }}
               onOpenConflicts={() => setConflictOpen(true)}

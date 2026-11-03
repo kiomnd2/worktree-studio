@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import LocalSetupPanel from './LocalSetupPanel';
-import type { Account, AnalyzeField, JiraConfig, JiraStatus, PermissionMode, Project, ProjectAnalysis, ProjectKind, Settings, Workspace } from '../types';
+import type { Account, AnalyzeField, ErdConfig, ErdProjectSummary, ErdStatus, JiraConfig, JiraStatus, PermissionMode, Project, ProjectAnalysis, ProjectKind, Settings, Workspace } from '../types';
 
 const KINDS: { value: ProjectKind; label: string }[] = [
   { value: 'be', label: 'BE' }, { value: 'fe', label: 'FE' }, { value: 'full', label: '통합' }, { value: 'unknown', label: '미정' },
@@ -14,10 +14,11 @@ const MODES: { value: PermissionMode; label: string }[] = [
   { value: 'plan', label: 'plan (계획만)' },
 ];
 
-type Tab = 'projects' | 'jira' | 'accounts' | 'prefs';
+type Tab = 'projects' | 'jira' | 'erd' | 'accounts' | 'prefs';
 const TABS: { key: Tab; label: string }[] = [
   { key: 'projects', label: '워크스페이스·프로젝트' },
   { key: 'jira', label: 'Jira' },
+  { key: 'erd', label: 'erd-vibe 용어사전' },
   { key: 'accounts', label: '테스트 계정' },
   { key: 'prefs', label: 'Claude와 알림' },
 ];
@@ -74,6 +75,7 @@ export default function SettingsPage() {
       {notice && <p className="banner ok" role="status">{notice}</p>}
       {tab === 'projects' && <WorkspaceArea projects={projects} workspaces={workspaces} run={run} />}
       {tab === 'jira' && <JiraSection run={run} />}
+      {tab === 'erd' && <><ErdVibeSection run={run} /><ErdWorkspaceLinks workspaces={workspaces} run={run} /></>}
       {tab === 'accounts' && <AccountsSection accounts={accounts} workspaces={workspaces} run={run} />}
       {tab === 'prefs' && settings && <PreferencesSection settings={settings} setSettings={setSettings} run={run} />}
     </div>
@@ -423,6 +425,127 @@ function JiraKeyInput({ workspace, run }: { workspace: Workspace; run: Run }) {
       <input className="mono" aria-label={`${workspace.name} Jira 프로젝트 키`} placeholder="예: KERE" value={key}
         onChange={(e) => setKey(e.target.value.toUpperCase())} onBlur={save} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } }} />
     </label>
+  );
+}
+
+// erd-vibe ERD 목록. 설정을 저장하면 새로 받는다.
+let erdProjectsOnce: Promise<ErdProjectSummary[] | null> | null = null;
+const loadErdProjects = (force = false) => {
+  if (force || !erdProjectsOnce) {
+    erdProjectsOnce = api.erdConfig().then((c) => (c.configured ? api.erdProjects() : null)).catch(() => null);
+  }
+  return erdProjectsOnce;
+};
+
+/**
+ * 워크스페이스마다 쓸 erd-vibe ERD를 고른다. 그 워크스페이스의 세션은 용어 검사·ERD 화면·Claude 도구에서 이 ERD의 테이블·컬럼과 DBMS를 쓴다.
+ * erd-vibe를 연결하지 않았으면 숨긴다.
+ */
+function ErdWorkspaceLinks({ workspaces, run }: { workspaces: Workspace[]; run: Run }) {
+  const [list, setList] = useState<ErdProjectSummary[] | null>(null);
+  useEffect(() => { loadErdProjects().then(setList); }, [workspaces]);
+  if (!list) return null;
+  const linked = workspaces.filter((w) => w.erd_project_id).length;
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h2>워크스페이스별 ERD</h2>
+        <p className="muted small">워크스페이스의 세션은 여기서 고른 ERD로 용어를 검사하고 ERD 화면을 엽니다. 연결 {linked}/{workspaces.length}</p>
+      </div>
+      {workspaces.length === 0 ? <p className="muted small erd-links-empty">워크스페이스가 없습니다. 워크스페이스·프로젝트 탭에서 만드세요.</p> : (
+        <table className="dict-table erd-links">
+          <thead><tr><th>워크스페이스</th><th>프로젝트</th><th>ERD</th></tr></thead>
+          <tbody>
+            {workspaces.map((w) => {
+              const current = w.erd_project_id ?? '';
+              return (
+                <tr key={w.id}>
+                  <td className="nowrap">{w.name}</td>
+                  <td>
+                    {w.projects.length === 0 ? <span className="muted small">프로젝트 없음</span> : (
+                      <span className="erd-links-projects">
+                        {w.projects.map((p) => <span key={p.id}><span className={`kind ${p.kind}`}>{KIND_LABEL[p.kind]}</span> {p.name}</span>)}
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <select aria-label={`${w.name} ERD 프로젝트`} value={current}
+                      onChange={(e) => run(() => api.setWorkspaceErd(w.id, e.target.value || null), e.target.value ? `${w.name}에 ERD를 연결했습니다.` : `${w.name}의 ERD 연결을 끊었습니다.`)()}>
+                      <option value="">연결 안 함</option>
+                      {current && !list.some((x) => x.id === current) && <option value={current}>(목록에 없음) {current.slice(0, 8)}</option>}
+                      {list.map((x) => <option key={x.id} value={x.id}>{x.name} · {x.dbms_type}</option>)}
+                    </select>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+/**
+ * erd-vibe 연결: 팀이 같이 쓰는 단어·용어·도메인 사전과 ERD를 읽어 소스의 컬럼 이름을 검사한다.
+ * erd-vibe가 SSO를 쓰면 API 키가 있어야 한다(erd-vibe 쪽에서 발급). 키는 암호화해 저장한다.
+ */
+function ErdVibeSection({ run }: { run: Run }) {
+  const [cfg, setCfg] = useState<ErdConfig | null>(null);
+  const [status, setStatus] = useState<ErdStatus | null>(null);
+  const [url, setUrl] = useState('');
+  const [key, setKey] = useState('');
+  const [checking, setChecking] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const check = useCallback(async () => {
+    setChecking(true);
+    try { setStatus(await api.erdStatus()); } catch (e) { setStatus({ ok: false, error: (e as Error).message, counts: null, loaded_at: null }); }
+    setChecking(false);
+  }, []);
+  useEffect(() => {
+    api.erdConfig().then((c) => { setCfg(c); setUrl(c.base_url); if (c.configured) check(); }).catch((e) => setLoadError((e as Error).message));
+  }, [check]);
+  if (!cfg) return loadError ? <section className="card"><p className="error-text">erd-vibe 설정을 불러오지 못했습니다: {loadError}</p></section> : null;
+  const save = run(async () => {
+    const c = await api.saveErdConfig({ base_url: url, ...(key ? { api_key: key } : {}) });
+    setCfg(c); setKey('');
+    loadErdProjects(true);
+    await check();
+  }, 'erd-vibe 연결을 저장했습니다.');
+  return (
+    <section className="card">
+      <div className="card-head split">
+        <div>
+          <h2>erd-vibe 용어사전</h2>
+          <p className="muted small">
+            erd-vibe의 단어·용어·도메인 사전과 ERD를 읽어, Claude가 표준 용어로 이름을 짓게 하고 소스의 컬럼 이름이 사전·ERD와 다르면 찾아 PR 전에 막습니다.
+            표준 이름은 용어의 약어명입니다. 아래 워크스페이스별 ERD에서 워크스페이스마다 ERD 프로젝트를 고르세요.
+          </p>
+        </div>
+        {cfg.configured && (
+          <span className="chip-status">
+            <span className={`srv-dot ${checking ? 'starting' : status?.ok ? 'running' : 'failed'}`} aria-hidden="true" />
+            {checking ? '확인 중' : status?.ok && status.counts ? `연결됨 · 단어 ${status.counts.words} · 용어 ${status.counts.terms} · 도메인 ${status.counts.domains}` : status?.error ?? '확인 전'}
+          </span>
+        )}
+      </div>
+      <div className="grid2">
+        <label className="field">
+          <span>주소</span>
+          <input className="mono" value={url} placeholder="https://vibe-erd.60hz.cc" onChange={(e) => setUrl(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>API 키 {cfg.has_key ? '(저장됨, 바꿀 때만 입력)' : ''}</span>
+          <input className="mono" type="password" autoComplete="off" value={key} placeholder={cfg.has_key ? '••••••••' : 'erd-vibe에서 발급한 키 (인증을 끈 로컬이면 비워도 됨)'} onChange={(e) => setKey(e.target.value)} />
+        </label>
+      </div>
+      <div className="row">
+        {cfg.has_key && <button type="button" onClick={run(async () => { setCfg(await api.saveErdConfig({ api_key: '' })); await check(); }, 'API 키를 지웠습니다.')}>키 지우기</button>}
+        <span className="spacer" />
+        {cfg.configured && <button type="button" disabled={checking} onClick={run(async () => { await api.refreshDictionary(); await check(); }, '사전을 새로 받았습니다.')}>사전 새로 받기</button>}
+        <button type="button" className="primary" onClick={save}>저장하고 연결 확인</button>
+      </div>
+    </section>
   );
 }
 

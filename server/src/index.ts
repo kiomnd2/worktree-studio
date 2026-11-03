@@ -6,11 +6,11 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
-import { HOST, PORT, UPLOAD_DIR } from './config.js';
-import { addClient } from './hub.js';
+import { HOST, PORT, SESSION_SERVER, UPLOAD_DIR } from './config.js';
+import { addClient, broadcast } from './hub.js';
 import {
   addProject, createWorkspace, deleteProject, deleteWorkspace, describeProject,
-  addToWorkspace, getProject, getWorkspace, listProjectRows, listWorkspaces, setWorkspaceProjects, updateProject, updateWorkspace,
+  addToWorkspace, getProject, getWorkspace, listProjectRows, listWorkspaces, setWorkspaceErd, setWorkspaceProjects, updateProject, updateWorkspace,
 } from './projects.js';
 import { listBranches } from './git.js';
 import { closeChat, closeSession, createSession, getSession, listMessages, listSessions, removeQueued, setChat } from './sessions.js';
@@ -46,6 +46,19 @@ import { getProject as projectById } from './projects.js';
 import { assertNewWork, closePr, continueIgnoringChecks, getPrJob, listPrs, preparePr, startPr } from './pr.js';
 import { addScreen, capturePreview, detectScreens, removeScreen, screenState, setScreenChecked } from './screens.js';
 import { getQuery, getSqlLogInfo, listQueries, muteQuery, resetQueries } from './querylog.js';
+import { createDictEntry, createErdProject, deleteDictEntries, erdApi, erdConfigView, erdProject, erdStatus, erdWebUrl, dictionary, listErdProjects, saveErdConfig, updateDictEntry, type DictKind } from './erdvibe.js';
+import { checkSession, erdDiffSession, erdFindingsOf, excludesOf, ignoresOf, sessionIndex, setExcludes, setIgnore, sessionErdId } from './dictscan.js';
+import { clearBaseline, compareBaseline, setBaselineStatus, snapshotBaseline } from './dictbaseline.js';
+import { dictUsage, forgetUsage } from './dictusage.js';
+import { schemaCheck, schemaIgnoresOf, setSchemaIgnore } from './schemasync.js';
+import { applyDrafts, applyErd, setDecisions, sourceTodo, syncReport, undoRun } from './syncstate.js';
+import { searchDictionary } from './dictsearch.js';
+import { approveDictRequest, createDictRequest, duplicateOf, listDictRequests, rejectDictRequest } from './dictrequests.js';
+import { buildIndex, resolve as judgeName, typeMatches } from './dict/judge.js';
+import { columnType } from './dict/types.js';
+import { parseDDL } from './dict/ddlparse.js';
+import { generateDDL } from './dict/ddlgen.js';
+import { walk } from './mapperindex.js';
 import { cleanSession, listCleanup, refreshPrStates, refreshSessionPrsSoon, scheduleCleanupPoll, startupSweep } from './cleanup.js';
 
 const app = Fastify({ logger: { level: 'info' }, bodyLimit: 40 * 1024 * 1024 });
@@ -203,6 +216,15 @@ app.post('/api/workspaces', async (req) => {
 app.patch('/api/workspaces/:id', async (req) => {
   const b = z.object({ jira_project: z.string().nullable().optional(), name: z.string().optional() }).parse(req.body);
   updateWorkspace(idParam.parse(req.params).id, b);
+  return { ok: true };
+});
+// 워크스페이스마다 ERD를 고른다. 그 워크스페이스의 세션은 검사·ERD 화면·Claude 도구에서 이 ERD를 쓴다.
+app.put('/api/workspaces/:id/erd', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const { erd_project_id } = z.object({ erd_project_id: z.string().nullable() }).parse(req.body);
+  const want = erd_project_id?.trim() || null;
+  if (want && !(await listErdProjects()).some((p) => p.id === want)) throw new Error('erd-vibe에 없는 ERD 프로젝트입니다.');
+  setWorkspaceErd(id, want);
   return { ok: true };
 });
 app.put('/api/workspaces/:id/projects', async (req) => {
@@ -569,6 +591,407 @@ app.post('/api/sessions/:id/servers/:worktreeId/dismiss', async (req) => {
 });
 app.get('/api/worktrees/:id/logs', async (req) => getLogs(idParam.parse(req.params).id));
 
+// erd-vibe 용어·도메인 사전: 연결 설정, 사전 검색, ERD, 소스 용어 검사, 등록 요청
+app.get('/api/erd-vibe/config', async () => erdConfigView());
+app.put('/api/erd-vibe/config', async (req) => {
+  saveErdConfig(z.object({ base_url: z.string().optional(), api_key: z.string().optional() }).parse(req.body));
+  return erdConfigView();
+});
+app.get('/api/erd-vibe/status', async () => erdStatus());
+app.get('/api/erd-vibe/projects', async () => listErdProjects());
+app.post('/api/erd-vibe/refresh', async () => {
+  const d = await dictionary(true);
+  return { words: d.words.length, terms: d.terms.length, domains: d.domains.length, loaded_at: d.loaded_at };
+});
+const sessionOf = (id: number) => {
+  const s = getSession(id);
+  if (!s) throw new Error('세션이 없습니다.');
+  return s;
+};
+app.get('/api/sessions/:id/dict/search', async (req) => {
+  const { q, limit } = z.object({ q: z.string().default(''), limit: z.coerce.number().int().min(1).max(2000).default(50) }).parse(req.query);
+  return searchDictionary(sessionOf(idParam.parse(req.params).id), q, limit);
+});
+app.post('/api/sessions/:id/dict/check', async (req) => {
+  const { scope } = z.object({ scope: z.enum(['changed', 'all']).default('changed') }).parse(req.body ?? {});
+  return checkSession(idParam.parse(req.params).id, scope);
+});
+app.get('/api/sessions/:id/dict/ignores', async (req) => ignoresOf(sessionOf(idParam.parse(req.params).id).workspace_id));
+app.put('/api/sessions/:id/dict/ignores', async (req) => {
+  const b = z.object({ name: z.string().min(1), reason: z.string().nullable() }).parse(req.body);
+  setIgnore(sessionOf(idParam.parse(req.params).id).workspace_id, b.name, b.reason);
+  return { ok: true };
+});
+app.get('/api/sessions/:id/dict/excludes', async (req) => excludesOf(sessionOf(idParam.parse(req.params).id).workspace_id));
+app.put('/api/sessions/:id/dict/excludes', async (req) => {
+  const { patterns } = z.object({ patterns: z.array(z.string().max(300)).max(200) }).parse(req.body);
+  const s = sessionOf(idParam.parse(req.params).id);
+  setExcludes(s.workspace_id, patterns);
+  forgetUsage();
+  return excludesOf(s.workspace_id);
+});
+// 기준선: 전체 검사 결과를 찍어 두고 이후 검사마다 남음·해결을 센다.
+app.post('/api/sessions/:id/dict/baseline', async (req) => {
+  const id = idParam.parse(req.params).id;
+  const ws = sessionOf(id).workspace_id;
+  const report = await checkSession(id, 'all');
+  snapshotBaseline(ws, report.findings);
+  return { ...report, baseline: compareBaseline(ws, report.findings, 'all') };
+});
+app.delete('/api/sessions/:id/dict/baseline', async (req) => {
+  clearBaseline(sessionOf(idParam.parse(req.params).id).workspace_id);
+  return { ok: true };
+});
+app.put('/api/sessions/:id/dict/baseline/status', async (req) => {
+  const b = z.object({
+    keys: z.array(z.object({ name: z.string().min(1), issue: z.string().min(1) })).min(1).max(5000),
+    status: z.enum(['todo', 'hold', 'accepted']),
+    note: z.string().max(500).default(''),
+  }).parse(req.body);
+  if (b.status !== 'todo' && !b.note.trim()) throw new Error('보류·허용은 이유가 필요합니다.');
+  setBaselineStatus(sessionOf(idParam.parse(req.params).id).workspace_id, b.keys, b.status, b.note.trim());
+  return { ok: true };
+});
+app.get('/api/sessions/:id/dict/usage', async (req) => {
+  const { refresh } = z.object({ refresh: z.enum(['0', '1']).default('0') }).parse(req.query);
+  return dictUsage(sessionOf(idParam.parse(req.params).id), refresh === '1');
+});
+// Liquibase 최종 스키마 ↔ 매퍼·JPA
+app.post('/api/sessions/:id/schema/check', async (req) => {
+  const { scope } = z.object({ scope: z.enum(['changed', 'all']).default('changed') }).parse(req.body ?? {});
+  return schemaCheck(idParam.parse(req.params).id, scope);
+});
+app.get('/api/sessions/:id/schema/ignores', async (req) => schemaIgnoresOf(sessionOf(idParam.parse(req.params).id).workspace_id));
+app.put('/api/sessions/:id/schema/ignores', async (req) => {
+  const b = z.object({ key: z.string().min(1).max(300), reason: z.string().max(500).nullable() }).parse(req.body);
+  const s = sessionOf(idParam.parse(req.params).id);
+  setSchemaIgnore(s.workspace_id, b.key.toUpperCase(), b.reason);
+  return schemaIgnoresOf(s.workspace_id);
+});
+// 소스 · ERD · 용어사전 전체 동기화
+app.post('/api/sessions/:id/sync/check', async (req) => syncReport(idParam.parse(req.params).id));
+app.put('/api/sessions/:id/sync/decisions', async (req) => {
+  const b = z.object({
+    keys: z.array(z.string().min(1)).min(1).max(10000),
+    side: z.enum(['source', 'erd']).nullable().optional(),
+    status: z.enum(['todo', 'hold', 'accepted']).optional(),
+    note: z.string().max(500).optional(),
+  }).parse(req.body);
+  if (b.status && b.status !== 'todo' && !b.note?.trim()) throw new Error('보류·허용은 이유가 필요합니다.');
+  setDecisions(sessionOf(idParam.parse(req.params).id).workspace_id, b.keys, { side: b.side, status: b.status, note: b.note?.trim() });
+  return { ok: true };
+});
+app.post('/api/sessions/:id/sync/apply-dict', async (req) => {
+  const b = z.object({
+    drafts: z.array(z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('word'), key: z.string(), name: z.string(), english_name: z.string(), abbreviation: z.string(), definition: z.string().optional() }),
+      z.object({ kind: z.literal('domain'), key: z.string(), name: z.string().min(1), data_type: z.string().min(1), description: z.string().optional() }),
+      z.object({ kind: z.literal('term'), key: z.string(), logical_name: z.string().min(1), physical_name: z.string().min(1), physical_abbr_name: z.string().min(1), domain_name: z.string().nullable(), description: z.string().optional() }),
+    ])).min(1).max(1000),
+  }).parse(req.body);
+  sessionOf(idParam.parse(req.params).id);
+  const results = await applyDrafts(b.drafts);
+  forgetUsage();
+  return { results };
+});
+app.post('/api/sessions/:id/sync/apply-erd', async (req) => {
+  const { keys, kinds } = z.object({ keys: z.array(z.string().min(1)).min(1).max(5000), kinds: z.array(z.string()).optional() }).parse(req.body);
+  const r = await applyErd(idParam.parse(req.params).id, keys, kinds);
+  const pid = sessionErdId(sessionOf(idParam.parse(req.params).id));
+  if (pid) await afterEdit(pid);
+  return r;
+});
+app.post('/api/sessions/:id/sync/runs/:run/undo', async (req) => {
+  const { id, run } = z.object({ id: z.coerce.number().int(), run: z.coerce.number().int() }).parse(req.params);
+  const r = await undoRun(id, run);
+  const pid = sessionErdId(sessionOf(id));
+  if (pid) await afterEdit(pid);
+  return r;
+});
+app.post('/api/sessions/:id/sync/source-todo', async (req) => {
+  const { keys } = z.object({ keys: z.array(z.string()).max(5000).optional() }).parse(req.body ?? {});
+  return sourceTodo(idParam.parse(req.params).id, keys);
+});
+const termPayload = z.object({ logical_name: z.string(), physical_name: z.string(), physical_abbr_name: z.string().nullable(), domain_name: z.string().nullable(), description: z.string() });
+const wordPayload = z.object({ name: z.string(), english_name: z.string(), abbreviation: z.string().nullable(), definition: z.string() });
+// ERD 변경 초안은 dictrequests.validateErd가 모양을 확인한다.
+const erdPayload = z.object({ action: z.enum(['add_table', 'add_column', 'update_column', 'drop_column']) }).passthrough();
+app.get('/api/sessions/:id/dict/requests', async (req) => listDictRequests(idParam.parse(req.params).id));
+app.post('/api/sessions/:id/dict/requests', async (req) => {
+  const b = z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('term'), payload: termPayload, reason: z.string().default('') }),
+    z.object({ kind: z.literal('word'), payload: wordPayload, reason: z.string().default('') }),
+  ]).parse(req.body);
+  return createDictRequest(idParam.parse(req.params).id, b.kind === 'term' ? { kind: 'term', payload: b.payload } : { kind: 'word', payload: b.payload }, b.reason, 'user');
+});
+app.post('/api/dict-requests/:id/approve', async (req) => {
+  const b = z.object({ payload: z.union([erdPayload, termPayload, wordPayload]) }).parse(req.body);
+  return approveDictRequest(idParam.parse(req.params).id, b.payload as Parameters<typeof approveDictRequest>[1]);
+});
+app.post('/api/dict-requests/:id/reject', async (req) => {
+  rejectDictRequest(idParam.parse(req.params).id);
+  return { ok: true };
+});
+
+// erd-vibe 사전 직접 편집(사용자가 화면에서). 저장하면 팀 공유 사전에 바로 반영된다.
+const dictKind = z.object({ kind: z.enum(['word', 'term', 'domain']) });
+const upOrNull = (s: string | null | undefined) => (s ?? '').trim().toUpperCase() || null;
+const dictBody = {
+  term: z.object({ logical_name: z.string().trim().min(1, '논리명이 필요합니다.'), physical_name: z.string().trim().min(1, '물리명이 필요합니다.'), physical_abbr_name: z.string().nullable().default(null), domain_name: z.string().nullable().default(null), description: z.string().trim().min(1, '설명이 필요합니다.') })
+    .transform((t) => ({ ...t, physical_name: t.physical_name.toUpperCase(), physical_abbr_name: upOrNull(t.physical_abbr_name), domain_name: t.domain_name?.trim() || null })),
+  word: z.object({ name: z.string().trim().min(1, '단어가 필요합니다.'), english_name: z.string().trim().min(1, '영문명이 필요합니다.'), abbreviation: z.string().nullable().default(null), definition: z.string().trim().min(1, '정의가 필요합니다.') })
+    .transform((w) => ({ ...w, english_name: w.english_name.toUpperCase(), abbreviation: upOrNull(w.abbreviation) })),
+  domain: z.object({
+    name: z.string().trim().min(1, '도메인명이 필요합니다.'), data_type_default: z.string().trim().min(1, '기본 타입이 필요합니다.'),
+    data_type_oracle: z.string().nullable().optional(), data_type_mysql: z.string().nullable().optional(), data_type_postgresql: z.string().nullable().optional(), description: z.string().nullable().optional(),
+  }).transform((d) => Object.fromEntries(Object.entries(d).map(([k, v]) => [k, typeof v === 'string' ? v.trim() : v]).filter(([, v]) => v !== null && v !== undefined && v !== ''))),
+};
+async function checkDictDuplicate(kind: DictKind, body: Record<string, unknown>, exceptId?: string) {
+  if (kind === 'domain') {
+    const d = await dictionary();
+    const hit = d.domains.find((x) => x.id !== exceptId && x.name === body.name);
+    if (hit) throw new Error(`이미 있는 도메인입니다: ${hit.name}`);
+    return;
+  }
+  const dup = await duplicateOf(kind, body as never, exceptId);
+  if (dup) throw new Error(dup);
+}
+app.post('/api/erd-vibe/dict/:kind', async (req) => {
+  const { kind } = dictKind.parse(req.params);
+  const body = dictBody[kind].parse(req.body) as Record<string, unknown>;
+  await checkDictDuplicate(kind, body);
+  const created = await createDictEntry(kind, body);
+  broadcast({ type: 'dict.updated' });
+  return created;
+});
+app.put('/api/erd-vibe/dict/:kind/:id', async (req) => {
+  const { kind, id } = dictKind.extend({ id: z.string().min(1) }).parse(req.params);
+  const body = dictBody[kind].parse(req.body) as Record<string, unknown>;
+  await checkDictDuplicate(kind, body, id);
+  const updated = await updateDictEntry(kind, id, body);
+  broadcast({ type: 'dict.updated' });
+  return updated;
+});
+app.delete('/api/erd-vibe/dict/:kind', async (req) => {
+  const { kind } = dictKind.parse(req.params);
+  const { ids } = z.object({ ids: z.array(z.string().min(1)).min(1).max(500) }).parse(req.body);
+  await deleteDictEntries(kind, ids);
+  broadcast({ type: 'dict.updated' });
+  return { ok: true };
+});
+app.post('/api/erd-vibe/projects', async (req) => {
+  const b = z.object({ name: z.string().trim().min(1, 'ERD 이름이 필요합니다.'), description: z.string().optional() }).parse(req.body);
+  return createErdProject({ ...b, author: 'worktree-studio' });
+});
+
+// ERD 화면: 보기(판정 포함)는 세션 기준, 편집은 ERD 프로젝트 기준. 편집 뒤에는 최신 ERD를 돌려준다.
+app.get('/api/sessions/:id/erd', async (req) => {
+  const s = sessionOf(idParam.parse(req.params).id);
+  const q = z.object({ project: z.string().optional(), refresh: z.enum(['0', '1']).default('0') }).parse(req.query);
+  const linked = sessionErdId(s);
+  const pid = q.project || linked;
+  if (!pid) return { web_url: erdWebUrl(), linked_id: null, project: null, findings: [], terms: {} };
+  const [dict, erd] = await Promise.all([dictionary(), erdProject(pid, q.refresh === '1')]);
+  const ix = buildIndex(dict, erd.dbms_type);
+  const ignored = new Set(ignoresOf(s.workspace_id).map((i) => i.name));
+  const used = new Set(erd.tables.flatMap((t) => t.columns.map((c) => c.term_dictionary_id)).filter(Boolean));
+  const terms = Object.fromEntries(dict.terms.filter((t) => used.has(t.id)).map((t) => [t.id, { logical_name: t.logical_name, standard: (t.physical_abbr_name || t.physical_name).toUpperCase() }]));
+  return { web_url: erdWebUrl(), linked_id: linked, project: erd, findings: erdFindingsOf(ix, erd, ignored), terms };
+});
+app.get('/api/sessions/:id/erd/diff', async (req) => erdDiffSession(idParam.parse(req.params).id));
+
+const pidParam = z.object({ pid: z.string().min(1) });
+const afterEdit = async (pid: string) => {
+  broadcast({ type: 'erd.updated', projectId: pid });
+  return erdProject(pid, true);
+};
+const ident = z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_$]*$/, '물리명은 영문·숫자·밑줄만 씁니다.').transform((v) => v.toUpperCase());
+const tableBody = z.object({
+  physical_name: ident, logical_name: z.string().trim().min(1, '논리명이 필요합니다.'), description: z.string().optional(),
+  position_x: z.number().optional(), position_y: z.number().optional(), header_color: z.string().optional(),
+});
+const columnBody = z.object({
+  physical_name: ident, logical_name: z.string().trim().min(1, '논리명이 필요합니다.'), data_type: z.string().trim().min(1, '타입이 필요합니다.'),
+  is_primary_key: z.boolean().optional(), is_nullable: z.boolean().optional(), is_unique: z.boolean().optional(),
+  default_value: z.string().optional(), description: z.string().optional(), order_index: z.number().int().optional(),
+  term_dictionary_id: z.string().nullable().optional(),
+});
+const relType = z.enum(['one_to_one', 'one_to_many', 'many_to_many']);
+
+/** 저장하기 전에 다른 사람이 바꿨는지(updated_at) 본다. 다르면 409로 알려 화면이 덮어쓸지 묻게 한다. */
+async function assertFresh(pid: string, tableId: string, seen: string | null | undefined) {
+  if (!seen) return;
+  const now = (await erdProject(pid, true)).tables.find((t) => t.id === tableId);
+  if (now && now.updated_at && now.updated_at !== seen) {
+    const err = new Error('다른 사람이 이 테이블을 먼저 고쳤습니다. 다시 받아서 확인하거나 덮어쓰세요.') as Error & { statusCode: number };
+    err.statusCode = 409;
+    throw err;
+  }
+}
+
+app.post('/api/erd/:pid/tables', async (req) => {
+  const { pid } = pidParam.parse(req.params);
+  const b = tableBody.parse(req.body);
+  const erd = await erdProject(pid, true);
+  if (erd.tables.some((t) => t.physical_name.toUpperCase() === b.physical_name)) throw new Error(`이미 ${b.physical_name} 테이블이 있습니다.`);
+  const t = await erdApi.createTable(pid, b);
+  return { created_id: t.id, project: await afterEdit(pid) };
+});
+app.put('/api/erd/:pid/tables/:tid', async (req) => {
+  const { pid, tid } = pidParam.extend({ tid: z.string().min(1) }).parse(req.params);
+  const b = z.object({
+    table: tableBody.partial().optional(),
+    columns: z.array(columnBody.extend({ id: z.string().optional() })).optional(),
+    deleted_columns: z.array(z.string()).optional(),
+    seen_updated_at: z.string().nullable().optional(),
+    force: z.boolean().optional(),
+  }).parse(req.body);
+  if (!b.force) await assertFresh(pid, tid, b.seen_updated_at);
+  const erd = await erdProject(pid, true);
+  const table = erd.tables.find((t) => t.id === tid);
+  if (!table) throw new Error('ERD에 그 테이블이 없습니다. 다시 받아 주세요.');
+  if (b.table?.physical_name && erd.tables.some((t) => t.id !== tid && t.physical_name.toUpperCase() === b.table!.physical_name)) throw new Error(`이미 ${b.table.physical_name} 테이블이 있습니다.`);
+  if (b.columns) {
+    const names = b.columns.map((c) => c.physical_name);
+    const dup = names.find((n, i) => names.indexOf(n) !== i);
+    if (dup) throw new Error(`같은 컬럼 이름이 두 번 있습니다: ${dup}`);
+  }
+  if (b.table && Object.keys(b.table).length) await erdApi.updateTable(pid, tid, b.table);
+  for (const id of b.deleted_columns ?? []) await erdApi.deleteColumn(pid, id);
+  if (b.columns) {
+    const byId = new Map(table.columns.map((c) => [c.id, c]));
+    for (const [i, c] of b.columns.entries()) {
+      const { id, ...rest } = c;
+      const body = { ...rest, order_index: i, term_dictionary_id: rest.term_dictionary_id || undefined };
+      const prev = id ? byId.get(id) : undefined;
+      if (!prev) { await erdApi.createColumn(pid, tid, body); continue; }
+      const changed = (Object.keys(body) as (keyof typeof body)[]).some((k) => body[k] !== undefined && (prev as Record<string, unknown>)[k] !== body[k]);
+      if (changed) await erdApi.updateColumn(pid, prev.id, body);
+    }
+  }
+  return { project: await afterEdit(pid) };
+});
+app.delete('/api/erd/:pid/tables/:tid', async (req) => {
+  const { pid, tid } = pidParam.extend({ tid: z.string().min(1) }).parse(req.params);
+  await erdApi.deleteTable(pid, tid);
+  return { project: await afterEdit(pid) };
+});
+app.put('/api/erd/:pid/positions', async (req) => {
+  const { pid } = pidParam.parse(req.params);
+  const { moves } = z.object({ moves: z.array(z.object({ id: z.string(), x: z.number(), y: z.number() })).min(1).max(500) }).parse(req.body);
+  await erdApi.moveTables(pid, moves);
+  broadcast({ type: 'erd.updated', projectId: pid });
+  return { ok: true };
+});
+app.post('/api/erd/:pid/auto-layout', async (req) => {
+  const { pid } = pidParam.parse(req.params);
+  await erdApi.autoLayout(pid);
+  return { project: await afterEdit(pid) };
+});
+app.post('/api/erd/:pid/relationships', async (req) => {
+  const { pid } = pidParam.parse(req.params);
+  const b = z.object({ from_table_id: z.string(), from_column_id: z.string(), to_table_id: z.string(), to_column_id: z.string(), relationship_type: relType.default('one_to_many') }).parse(req.body);
+  if (b.from_column_id === b.to_column_id) throw new Error('같은 컬럼끼리는 연결할 수 없습니다.');
+  const erd = await erdProject(pid);
+  if (erd.relationships.some((r) => r.from_column_id === b.from_column_id && r.to_column_id === b.to_column_id)) throw new Error('이미 같은 관계가 있습니다.');
+  await erdApi.createRelationship(pid, b);
+  return { project: await afterEdit(pid) };
+});
+app.put('/api/erd/:pid/relationships/:rid', async (req) => {
+  const { pid, rid } = pidParam.extend({ rid: z.string().min(1) }).parse(req.params);
+  await erdApi.updateRelationship(pid, rid, z.object({ relationship_type: relType }).parse(req.body));
+  return { project: await afterEdit(pid) };
+});
+app.delete('/api/erd/:pid/relationships/:rid', async (req) => {
+  const { pid, rid } = pidParam.extend({ rid: z.string().min(1) }).parse(req.params);
+  await erdApi.deleteRelationship(pid, rid);
+  return { project: await afterEdit(pid) };
+});
+
+// DDL: 붙여넣은 글이나 워크트리 파일을 풀어 미리보기 → 반영(이름으로 맞춰 추가·갱신, 지우지 않음), DBMS별로 만들기
+/** DDL을 가져올 수 있는 워크트리 파일(.sql, Liquibase XML 중 CREATE TABLE이 있는 것) */
+app.get('/api/sessions/:id/erd/ddl/files', async (req) => {
+  const s = sessionOf(idParam.parse(req.params).id);
+  const out: { worktree_id: number; project_name: string; path: string }[] = [];
+  for (const w of s.repos.filter((r) => fs.existsSync(r.path))) {
+    walk(w.path, (abs) => {
+      if (out.length >= 300 || !/\.(sql|xml)$/i.test(abs)) return;
+      try {
+        if (fs.statSync(abs).size > 2_000_000) return;
+        if (/CREATE\s+TABLE/i.test(fs.readFileSync(abs, 'utf8'))) out.push({ worktree_id: w.id, project_name: w.project_name, path: path.relative(w.path, abs) });
+      } catch { /* 읽을 수 없는 파일 */ }
+    });
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path));
+});
+app.post('/api/sessions/:id/erd/ddl/parse', async (req) => {
+  const s = sessionOf(idParam.parse(req.params).id);
+  const b = z.object({ ddl: z.string().optional(), file: z.object({ worktree_id: z.number().int(), path: z.string().min(1) }).optional(), dbms: z.string().default('oracle'), project: z.string().optional() }).parse(req.body);
+  let ddl = b.ddl ?? '';
+  if (b.file) {
+    const w = s.repos.find((r) => r.id === b.file!.worktree_id);
+    if (!w) throw new Error('세션에 그 저장소가 없습니다.');
+    const abs = path.resolve(w.path, b.file.path);
+    if (path.relative(w.path, abs).startsWith('..')) throw new Error('워크트리 밖의 파일은 읽지 않습니다.');
+    ddl = fs.readFileSync(abs, 'utf8');
+  }
+  if (!ddl.trim()) throw new Error('DDL이 비어 있습니다.');
+  const parsed = parseDDL(ddl, b.dbms);
+  if (!parsed.tables.length) throw new Error('CREATE TABLE 문을 찾지 못했습니다. DBMS 종류가 맞는지 확인하세요.');
+  const pid = b.project || sessionErdId(s);
+  const erd = pid ? await erdProject(pid) : null;
+  const dict = await dictionary();
+  const ix = buildIndex(dict, erd?.dbms_type ?? b.dbms.toUpperCase());
+  const preview = parsed.tables.map((t) => {
+    const existing = erd?.tables.find((x) => x.physical_name.toUpperCase() === t.physical_name.toUpperCase());
+    const cols = new Map(existing?.columns.map((c) => [c.physical_name.toUpperCase(), c]) ?? []);
+    const added = t.columns.filter((c) => !cols.has(c.physical_name.toUpperCase())).length;
+    const changed = t.columns.filter((c) => { const e = cols.get(c.physical_name.toUpperCase()); return e && !typeMatches(c.data_type, columnType(e) ?? ''); }).length;
+    const verdicts = t.columns.map((c) => judgeName(ix, c.physical_name)).filter((r) => r.verdict !== 'standard');
+    return {
+      physical_name: t.physical_name, logical_name: t.logical_name, columns: t.columns.length,
+      status: !existing ? 'new' : added || changed ? 'changed' : 'same', added_columns: added, changed_columns: changed,
+      violations: verdicts.map((r) => ({ name: r.name, verdict: r.verdict, standard: r.term?.standard ?? r.draft?.physical_abbr_name ?? null })),
+    };
+  });
+  return { parsed, preview };
+});
+app.post('/api/erd/:pid/ddl/apply', async (req) => {
+  const { pid } = pidParam.parse(req.params);
+  const b = z.object({ tables: z.array(z.object({ physical_name: z.string(), logical_name: z.string(), description: z.string().optional(), columns: z.array(z.object({}).passthrough()) }).passthrough()).min(1), relationships: z.array(z.object({ from_table_name: z.string(), from_column_name: z.string(), to_table_name: z.string(), to_column_name: z.string(), relationship_type: relType })).default([]) }).parse(req.body);
+  // 용어 연결: 컬럼 물리명이 용어 표준 이름과 같으면 연결을 채운다.
+  const dict = await dictionary();
+  const ix = buildIndex(dict, 'ORACLE');
+  const tables = b.tables.map((t) => ({ ...t, columns: t.columns.map((c) => {
+    const term = ix.byStandard.get(String(c.physical_name ?? '').toUpperCase());
+    return term ? { ...c, term_dictionary_id: term.id } : c;
+  }) }));
+  await erdApi.syncTables(pid, tables);
+  let project = await erdProject(pid, true);
+  let relCreated = 0;
+  const relErrors: string[] = [];
+  const U = (s: string) => s.toUpperCase();
+  for (const r of b.relationships) {
+    const from = project.tables.find((t) => U(t.physical_name) === U(r.from_table_name));
+    const to = project.tables.find((t) => U(t.physical_name) === U(r.to_table_name));
+    const fc = from?.columns.find((c) => U(c.physical_name) === U(r.from_column_name));
+    const tc = to?.columns.find((c) => U(c.physical_name) === U(r.to_column_name));
+    if (!from || !to || !fc || !tc) { relErrors.push(`${r.to_table_name}.${r.to_column_name} → ${r.from_table_name}.${r.from_column_name}: ERD에 테이블이나 컬럼이 없습니다.`); continue; }
+    if (project.relationships.some((x) => x.from_column_id === fc.id && x.to_column_id === tc.id)) continue;
+    try { await erdApi.createRelationship(pid, { from_table_id: from.id, from_column_id: fc.id, to_table_id: to.id, to_column_id: tc.id, relationship_type: r.relationship_type }); relCreated++; }
+    catch (err) { relErrors.push((err as Error).message); }
+  }
+  project = await afterEdit(pid);
+  return { project, relationships_created: relCreated, relationship_errors: relErrors };
+});
+app.post('/api/erd/:pid/ddl/export', async (req) => {
+  const { pid } = pidParam.parse(req.params);
+  const b = z.object({ table_ids: z.array(z.string()).optional(), dbms: z.string().optional(), drop_first: z.boolean().default(false), comments: z.boolean().default(true), foreign_keys: z.boolean().default(true) }).parse(req.body ?? {});
+  const erd = await erdProject(pid);
+  const picked = b.table_ids?.length ? erd.tables.filter((t) => b.table_ids!.includes(t.id)) : erd.tables;
+  return { ddl: generateDDL(picked, erd.tables, erd.relationships, { dbms: b.dbms || erd.dbms_type, dropFirst: b.drop_first, comments: b.comments, foreignKeys: b.foreign_keys }) };
+});
+
 // 쿼리 감시: 서버 로그에서 센 쿼리 모양별 집계
 const queryKey = z.object({ id: z.coerce.number().int().positive(), key: z.string().regex(/^[0-9a-f]{16}$/) });
 app.get('/api/worktrees/:id/queries', async (req) => {
@@ -774,7 +1197,8 @@ await app.listen({ port: PORT, host: HOST });
 
 // 포트를 잡은 뒤에 정리한다. 도구를 실수로 두 번 띄우면 두 번째는 listen에서 실패하는데,
 // 그 전에 정리부터 하면 먼저 떠 있던 도구가 띄운 서버들을 남의 것으로 보고 꺼 버린다.
-const orphans = cleanupOrphans();
+// 세션 개발 서버로 뜬 경우에도 정리하지 않는다. servers 표에는 바깥 도구가 띄운 서버(이 프로세스 자신 포함)가 들어 있다.
+const orphans = SESSION_SERVER ? 0 : cleanupOrphans();
 if (orphans) app.log.info(`이전 실행에서 남은 서버 프로세스 ${orphans}개를 정리했습니다.`);
 startupSweep(orphans).catch((e) => app.log.error(e));
 scheduleCleanupPoll();
