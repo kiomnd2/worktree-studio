@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>쿼리 감시 플랜</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F5F6F8; --sheet:#FFFFFF; --ink:#1B2230; --muted:#5A6576; --rule:#D8DDE4;
+  --accent:#3446C4; --accent-soft:#E7EAFB; --branch:#0D7A68; --branch-soft:#E0F2EE; --warn:#A5531A; --warn-soft:#FBEDE2;
+  --sans:"IBM Plex Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#12161D; --sheet:#1A1F28; --ink:#E6E9EE; --muted:#9AA4B3; --rule:#2E3542;
+    --accent:#8F9BFF; --accent-soft:#252B4A; --branch:#4FC7AF; --branch-soft:#173530; --warn:#F0A46B; --warn-soft:#3A2618;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#12161D; --sheet:#1A1F28; --ink:#E6E9EE; --muted:#9AA4B3; --rule:#2E3542;
+  --accent:#8F9BFF; --accent-soft:#252B4A; --branch:#4FC7AF; --branch-soft:#173530; --warn:#F0A46B; --warn-soft:#3A2618;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:56px 24px 96px;display:grid;grid-template-columns:200px minmax(0,1fr);gap:56px}
+nav{position:sticky;top:calc(env(safe-area-inset-top,0px) + 32px);align-self:start;font-size:14px}
+nav a{display:block;color:var(--muted);text-decoration:none;padding:5px 0 5px 12px;border-left:2px solid var(--rule)}
+nav a:hover,nav a:focus-visible{color:var(--ink);border-left-color:var(--accent);outline:none}
+main{min-width:0}
+header{padding-bottom:40px;border-bottom:1px solid var(--rule);margin-bottom:48px}
+.doc-meta{font-size:14px;color:var(--muted);margin:0 0 20px;display:flex;flex-wrap:wrap;gap:6px 20px}
+.doc-meta span strong{color:var(--ink);font-weight:500}
+h1{font-size:clamp(30px,4.2vw,44px);line-height:1.25;font-weight:600;letter-spacing:-0.02em;margin:0 0 20px;max-width:18em}
+.lede{font-size:18px;color:var(--muted);max-width:38em;margin:0}
+section{margin-bottom:64px}
+h2{font-size:24px;font-weight:600;letter-spacing:-0.01em;margin:0 0 20px;line-height:1.4}
+h3{font-size:17px;font-weight:600;margin:28px 0 8px}
+p{margin:0 0 14px;max-width:42em}
+code{font-family:var(--mono);font-size:0.88em;background:var(--accent-soft);color:var(--ink);padding:1px 6px;border-radius:4px}
+pre{font-family:var(--mono);font-size:13.5px;line-height:1.65;background:var(--sheet);border:1px solid var(--rule);border-radius:6px;padding:16px 18px;overflow-x:auto;margin:12px 0 18px}
+pre code{background:none;padding:0}
+ul{padding-left:20px;margin:0 0 14px;max-width:42em}
+li{margin-bottom:6px}
+.scroll{overflow-x:auto;margin:8px 0 20px}
+table{border-collapse:collapse;width:100%;min-width:620px;font-size:14.5px;line-height:1.6;background:var(--sheet)}
+th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--rule)}
+th{font-weight:500;color:var(--muted);font-size:13.5px;border-bottom:1px solid var(--ink)}
+td:first-child{white-space:nowrap;font-weight:500}
+.tag{display:inline-block;font-size:12.5px;padding:1px 8px;border-radius:999px;font-weight:500;white-space:nowrap}
+.tag.mvp{background:var(--branch-soft);color:var(--branch)}
+.tag.later{background:var(--accent-soft);color:var(--accent)}
+.tag.risk{background:var(--warn-soft);color:var(--warn)}
+.scope{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.scope > div{border-top:3px solid var(--branch);padding-top:14px}
+.scope > div.out{border-top-color:var(--rule)}
+.scope h3{margin-top:0}
+figure{margin:12px 0 24px;background:var(--sheet);border:1px solid var(--rule);border-radius:6px;padding:20px;overflow-x:auto}
+figure svg{display:block;width:100%;min-width:560px;height:auto}
+figcaption{font-size:13.5px;color:var(--muted);margin-top:12px}
+.node rect{fill:var(--sheet);stroke:var(--rule)}
+.node.top rect{fill:var(--accent-soft);stroke:var(--accent)}
+.node.mod rect{fill:var(--branch-soft);stroke:var(--branch)}
+.node text{fill:var(--ink);font-family:var(--sans)}
+.node text.sub{fill:var(--muted)}
+.edge{stroke:var(--muted);stroke-width:1.2;fill:none}
+
+/* roadmap as a git graph */
+.graph{position:relative;margin:24px 0 0;padding-left:44px}
+.graph::before{content:"";position:absolute;left:15px;top:8px;bottom:8px;width:3px;background:var(--branch);border-radius:2px}
+.commit{position:relative;padding:0 0 36px}
+.commit:last-child{padding-bottom:0}
+.commit::before{content:"";position:absolute;left:-37px;top:6px;width:17px;height:17px;border-radius:50%;background:var(--sheet);border:3px solid var(--branch)}
+.commit.head::before{background:var(--branch)}
+.commit .ref{font-family:var(--mono);font-size:13px;color:var(--branch);margin:0 0 2px}
+.commit h3{margin:0 0 6px;font-size:19px}
+.commit .done{font-size:14.5px;color:var(--muted);margin:10px 0 0;padding:10px 14px;background:var(--sheet);border:1px solid var(--rule);border-radius:6px;max-width:42em}
+.commit .done strong{color:var(--ink);font-weight:500}
+
+.flow{counter-reset:step;list-style:none;padding:0;max-width:44em}
+.flow li{counter-increment:step;position:relative;padding:0 0 14px 44px;margin:0}
+.flow li::before{content:counter(step);position:absolute;left:0;top:1px;width:28px;height:28px;border-radius:50%;border:1px solid var(--rule);background:var(--sheet);font-size:13px;font-weight:500;display:grid;place-items:center;color:var(--muted)}
+.flow li strong{font-weight:500}
+.q{border-left:3px solid var(--accent);padding:2px 0 2px 16px;margin:0 0 16px;max-width:42em}
+.q p{margin:0}
+.q .why{color:var(--muted);font-size:14.5px}
+
+@media (max-width:820px){
+  .wrap{grid-template-columns:1fr;gap:0;padding-top:32px}
+  nav{display:none}
+  .scope{grid-template-columns:1fr}
+}
+@media print{nav{display:none}.wrap{grid-template-columns:1fr}body{background:#fff}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav aria-label="목차">
+  <a href="#why">배경과 목표</a>
+  <a href="#scope">범위</a>
+  <a href="#arch">아키텍처</a>
+  <a href="#features">기능 명세</a>
+  <a href="#rules">탐지 규칙</a>
+  <a href="#explain">실행 계획</a>
+  <a href="#flow">핵심 흐름</a>
+  <a href="#files">변경 파일</a>
+  <a href="#roadmap">로드맵</a>
+  <a href="#risks">리스크</a>
+  <a href="#questions">결정 사항</a>
+</nav>
+
+<main>
+<header>
+  <p class="doc-meta"><span><strong>문서</strong> 기능 계획서 v0.2</span><span><strong>작성일</strong> 2026-10-30</span><span><strong>상태</strong> 결정 사항 확정, 1단계 착수 대기</span></p>
+  <h1>서버 로그로 쿼리를 감시하고 최적화까지 잇는 기능</h1>
+  <p class="lede">띄운 BE 서버가 찍는 SQL 로그를 실시간으로 모아, 자주 불리거나 무겁거나 N+1로 반복되는 쿼리를 찾아 보여준다. 고를 때만 실행 계획을 받고, 고치는 일은 Claude가 제안하고 사용자가 승인한다.</p>
+</header>
+
+<section id="why">
+  <h2>배경과 목표</h2>
+  <p>지금은 화면이 느리면 로그 탭을 손으로 훑어 같은 쿼리가 몇 번 나왔는지 세고, SQL을 복사해 DB 도구에서 실행 계획을 따로 본다. 서버 로그와 DB 연결은 이미 이 도구 안에 있으니 그 사이를 잇는다.</p>
+  <h3>지금 있는 재료</h3>
+  <ul>
+    <li><code>runner.ts</code>의 <code>pushLine</code>이 서버 출력을 한 줄씩 받아 비밀값을 가린 뒤 3000줄까지 들고 있다.</li>
+    <li><code>dbquery.ts</code>의 <code>runQuery</code>가 세션 DB에 읽기 질의를 롤백 트랜잭션으로 실행한다. <code>EXPLAIN</code>은 이미 읽기로 본다.</li>
+    <li><code>claude.ts</code>의 <code>db_query</code> 도구와 <code>approvals.ts</code>의 <code>dbwrite</code> 승인 카드가 있다.</li>
+  </ul>
+  <h3>빠진 것</h3>
+  <ul>
+    <li>로그에서 SQL을 알아보는 코드가 없다. 로그는 3000줄에서 잘리므로 나중에 훑어서는 앞부분을 놓친다.</li>
+    <li>Oracle과 MSSQL은 실행 계획을 받는 문장이 <code>isReadOnly</code>에 걸려 막힌다.</li>
+    <li>Claude가 서버 로그나 쿼리 통계를 볼 도구가 없다.</li>
+  </ul>
+  <h3>목표</h3>
+  <ul>
+    <li>화면 하나를 눌렀을 때 어떤 쿼리가 몇 번, 몇 행씩 나갔는지 바로 보인다.</li>
+    <li>의심 쿼리를 골라 버튼 한 번으로 실행 계획과 인덱스 정보를 본다.</li>
+    <li>고칠 쿼리는 근거(통계, 계획, 매퍼 위치)를 붙여 Claude에게 넘기고, 수정과 DDL은 승인 뒤에만 반영된다.</li>
+  </ul>
+</section>
+
+<section id="scope">
+  <h2>범위</h2>
+  <div class="scope">
+    <div>
+      <h3>이번에 하는 것</h3>
+      <ul>
+        <li>MyBatis, Hibernate, p6spy 로그에서 SQL 추출</li>
+        <li>쿼리 모양별 집계와 규칙 기반 경고</li>
+        <li>집계를 SQLite에 보관(도구를 다시 켜도 남음)</li>
+        <li>RightPanel BE 서버 영역의 쿼리 탭</li>
+        <li>엔진별 실행 계획 조회(Oracle 우선)</li>
+        <li>Claude 최적화 요청 버튼과 조회 도구</li>
+        <li>매퍼 SQL 로그를 기본으로 켜는 환경값 넣기</li>
+      </ul>
+    </div>
+    <div class="out">
+      <h3>하지 않는 것</h3>
+      <ul>
+        <li>자동 수정, 자동 인덱스 생성</li>
+        <li>운영 DB 감시</li>
+        <li>DB 쪽 통계(<code>pg_stat_statements</code>, <code>V$SQL</code>) 수집. 이후 검토</li>
+        <li>Node ORM(Prisma, Sequelize 등) 로그. 2차</li>
+        <li>파라미터가 들어간 예시 SQL의 저장</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="arch">
+  <h2>아키텍처</h2>
+  <figure>
+    <svg viewBox="0 0 680 330" role="img" aria-label="서버 출력에서 쿼리 집계, 화면과 Claude, DB 실행 계획으로 이어지는 구조">
+      <g class="node top"><rect x="20" y="20" width="180" height="56" rx="6"/><text x="110" y="44" text-anchor="middle" font-size="14" font-weight="600">BE 서버 출력</text><text class="sub" x="110" y="63" text-anchor="middle" font-size="12">stdout / stderr</text></g>
+      <path class="edge" d="M200 48 H250"/>
+      <g class="node mod"><rect x="250" y="20" width="180" height="56" rx="6"/><text x="340" y="44" text-anchor="middle" font-size="14" font-weight="600">pushLine</text><text class="sub" x="340" y="63" text-anchor="middle" font-size="12">비밀값 가림 (기존)</text></g>
+      <path class="edge" d="M430 48 H480"/>
+      <g class="node mod"><rect x="480" y="20" width="180" height="56" rx="6"/><text x="570" y="44" text-anchor="middle" font-size="14" font-weight="600">SQL 추출기</text><text class="sub" x="570" y="63" text-anchor="middle" font-size="12">querylog.ts (신규)</text></g>
+      <path class="edge" d="M570 76 V120"/>
+      <g class="node top"><rect x="440" y="120" width="220" height="56" rx="6"/><text x="550" y="144" text-anchor="middle" font-size="14" font-weight="600">쿼리 집계</text><text class="sub" x="550" y="163" text-anchor="middle" font-size="12">워크트리별, SQLite 보관</text></g>
+      <path class="edge" d="M440 148 H360 V224 M550 176 V224"/>
+      <g class="node mod"><rect x="270" y="224" width="180" height="56" rx="6"/><text x="360" y="248" text-anchor="middle" font-size="14" font-weight="600">쿼리 탭</text><text class="sub" x="360" y="267" text-anchor="middle" font-size="12">RightPanel</text></g>
+      <g class="node mod"><rect x="470" y="224" width="190" height="56" rx="6"/><text x="565" y="248" text-anchor="middle" font-size="14" font-weight="600">Claude 도구</text><text class="sub" x="565" y="267" text-anchor="middle" font-size="12">server_queries · db_explain</text></g>
+      <path class="edge" d="M270 252 H200"/>
+      <g class="node mod"><rect x="20" y="224" width="180" height="56" rx="6"/><text x="110" y="248" text-anchor="middle" font-size="14" font-weight="600">explainQuery</text><text class="sub" x="110" y="267" text-anchor="middle" font-size="12">dbquery.ts, 롤백</text></g>
+      <path class="edge" d="M110 224 V176"/>
+      <g class="node"><rect x="20" y="120" width="180" height="56" rx="6"/><text x="110" y="144" text-anchor="middle" font-size="14" font-weight="600">세션 DB</text><text class="sub" x="110" y="163" text-anchor="middle" font-size="12">Oracle · PG · MySQL · MSSQL</text></g>
+      <path class="edge" d="M565 280 V310 H110 V280"/>
+    </svg>
+    <figcaption>추출과 집계는 줄이 들어올 때마다 한다. 실행 계획은 사용자가 고르거나 Claude가 도구를 부를 때만 DB에 묻는다.</figcaption>
+  </figure>
+</section>
+
+<section id="features">
+  <h2>기능 명세</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>기능</th><th>설명</th><th>구현 메모</th><th>단계</th></tr></thead>
+    <tbody>
+      <tr><td>1. SQL 추출</td><td>로그 줄에서 SQL, 파라미터, 결과 행 수, 실행 시간, 호출 위치를 뽑는다.</td><td>MyBatis: <code>==&gt;  Preparing:</code>, <code>==&gt; Parameters:</code>, <code>&lt;==      Total:</code>/<code>Updates:</code>. 로거 이름에서 매퍼 id, 스레드 이름(<code>[nio-9091-exec-1]</code>)으로 요청 묶음. Hibernate: <code>Hibernate:</code>, <code>org.hibernate.SQL</code>, 여러 줄 SQL은 다음 로그 머리가 나올 때까지 잇는다. p6spy: 한 줄에 시간과 SQL. <code>==&gt;</code>, <code>Hibernate</code> 같은 글자로 먼저 걸러 정규식 비용을 줄인다.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td>2. 쿼리 모양 묶기</td><td>값만 다른 쿼리를 하나로 센다.</td><td>문자열·숫자 리터럴을 <code>?</code>로, <code>IN (?, ?, …)</code>을 <code>IN (…)</code>으로, 공백·대소문자 정리. 해시를 키로 쓴다.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td>3. 집계</td><td>모양별 호출 수, 결과 행 합계·최대, 시간 합계·최대(있을 때), 매퍼 id, 처음·마지막 시각, 예시 하나.</td><td>메모리 <code>Map</code>에 모으고 5초마다 바뀐 행만 <code>query_stats</code> 테이블에 한 트랜잭션으로 쓴다. 키는 (워크트리, 모양 해시). 모양은 워크트리당 최대 500개, 넘으면 마지막 시각이 오래된 것부터 지움. 서버를 끄거나 도구를 다시 켜도 남고, 워크트리를 정리할 때 함께 지운다. "초기화" 버튼으로 비우고 화면 하나만 재기. 파라미터가 들어간 예시 SQL은 메모리에만 둔다.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td>4. 쿼리 탭</td><td>BE 서버 영역에서 로그와 쿼리를 오간다.</td><td>열: 쿼리 모양 앞부분, 매퍼, 호출 수, 평균·최대 행, 시간, 경고 표시. 호출 수·행·시간으로 정렬, 경고만 보기 필터. WebSocket <code>queries</code> 이벤트로 갱신(1초 묶음).</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td>5. 경고</td><td>N+1, 대량 결과, 느림, SQL 모양 문제를 표시한다.</td><td>아래 <a href="#rules">탐지 규칙</a> 참고.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td>6. 매퍼 로그 켜기</td><td>BE 서버를 띄울 때 SQL 로그를 기본으로 켠다. 서버 실행 대화상자에서 끌 수 있다.</td><td>Spring은 <code>LOGGING_LEVEL_&lt;매퍼 패키지&gt;=DEBUG</code>를 넣는다. 패키지는 <code>@MapperScan</code>, 매퍼 XML <code>namespace</code>에서 찾는다. 사용자가 같은 키를 환경값에 직접 넣었으면 그 값을 따른다. 로그 탭에는 SQL 줄 숨기기 토글을 둔다.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td>7. 실행 계획</td><td>쿼리를 골라 실행 계획과 관련 테이블의 인덱스·행 수를 본다. Oracle부터 한다.</td><td>새 함수 <code>explainQuery</code>. 아래 <a href="#explain">실행 계획</a> 참고. 도구를 다시 켜서 예시 SQL이 없으면 화면을 한 번 더 열어 달라고 안내한다.</td><td><span class="tag later">2단계</span></td></tr>
+      <tr><td>8. Claude 최적화 요청</td><td>쿼리 상세에서 버튼을 누르면 근거를 묶어 세션 대화로 보낸다.</td><td>보내는 것: 쿼리 모양, 예시 SQL, 집계 수치, 경고, 실행 계획, 매퍼 id. Claude는 매퍼 XML을 찾아 diff를 제안하고, 인덱스 DDL은 기존 <code>dbwrite</code> 승인 카드로 올린다.</td><td><span class="tag later">3단계</span></td></tr>
+      <tr><td>9. Claude 조회 도구</td><td>대화 중에 Claude가 직접 통계와 계획을 본다.</td><td><code>server_queries</code>: 세션 서버들의 집계 목록(정렬·경고 필터). <code>db_explain</code>: 연결 번호와 SQL로 실행 계획. 둘 다 읽기라 계획 모드에서도 허용.</td><td><span class="tag later">3단계</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="rules">
+  <h2>탐지 규칙</h2>
+  <p>규칙은 의심을 표시할 뿐 판단하지 않는다. 기준값은 처음엔 상수로 두고, 쓰면서 맞춘다.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>경고</th><th>조건</th><th>필요한 로그</th></tr></thead>
+    <tbody>
+      <tr><td>N+1 의심</td><td>같은 스레드에서 같은 모양이 2초 안에 10번 넘게, 파라미터만 바뀌어 나온다.</td><td>스레드 이름이 있는 로그 형식</td></tr>
+      <tr><td>대량 결과</td><td>한 번에 1,000행 넘게 돌려준다.</td><td>MyBatis <code>Total:</code></td></tr>
+      <tr><td>느림</td><td>한 번에 500ms를 넘긴다.</td><td>p6spy 같은 시간 로그. MyBatis 기본 로그에는 시간이 없다.</td></tr>
+      <tr><td>잦은 호출</td><td>측정 구간에서 호출 수 상위 5개 중 결과가 매번 같은 크기인 것(캐시 후보).</td><td>모든 형식</td></tr>
+      <tr><td>SQL 모양</td><td><code>SELECT *</code>, 앞에 <code>%</code>가 붙은 <code>LIKE</code>, WHERE 컬럼에 함수(<code>TO_CHAR(col)</code>, <code>UPPER(col)</code>), WHERE 없는 SELECT·UPDATE·DELETE, 큰 <code>OFFSET</code>.</td><td>모든 형식</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="explain">
+  <h2>실행 계획</h2>
+  <p><code>explainQuery(c, sql, params)</code>는 <code>isReadOnly</code>를 통과한 SELECT만 받고, 엔진별로 계획 문장을 감싸 한 연결·한 트랜잭션에서 실행한 뒤 롤백한다. <code>?</code> 자리에는 로그에서 잡은 파라미터 값을 넣는다.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>엔진</th><th>방법</th><th>주의</th></tr></thead>
+    <tbody>
+      <tr><td>Oracle</td><td><code>EXPLAIN PLAN SET STATEMENT_ID = :id FOR …</code> 다음 <code>SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY(NULL, :id, 'TYPICAL'))</code></td><td>두 문장이고 PLAN_TABLE에 쓰므로 지금 경로로는 막힌다. 전용 경로를 둔다. 리터럴로 넣은 계획은 바인드 변수 계획과 다를 수 있다고 화면에 적는다. 인덱스: <code>ALL_INDEXES</code>, <code>ALL_IND_COLUMNS</code>, 행 수: <code>ALL_TABLES.NUM_ROWS</code>.</td></tr>
+      <tr><td>PostgreSQL</td><td><code>EXPLAIN (FORMAT JSON) …</code>. 원하면 <code>ANALYZE</code>를 붙여 실제 실행(롤백).</td><td>ANALYZE는 실제로 돌리므로 버튼을 따로 둔다. 인덱스: <code>pg_indexes</code>, 행 수: <code>pg_class.reltuples</code>.</td></tr>
+      <tr><td>MySQL·MariaDB</td><td><code>EXPLAIN FORMAT=JSON …</code></td><td>인덱스: <code>information_schema.STATISTICS</code>.</td></tr>
+      <tr><td>MSSQL</td><td><code>SET SHOWPLAN_XML ON</code> 다음 질의, 끝나면 <code>OFF</code></td><td><code>SET</code>이 쓰기 단어라 전용 경로가 필요하다. 질의는 실행되지 않는다.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="flow">
+  <h2>핵심 흐름: 느린 화면에서 수정 제안까지</h2>
+  <ol class="flow">
+    <li><strong>서버 띄우기</strong> 평소처럼 띄우면 매퍼 SQL 로그가 켜진 채로 시작한다.</li>
+    <li><strong>측정 구간 잡기</strong> 쿼리 탭에서 초기화를 누르고 미리보기에서 느린 화면을 한 번 연다.</li>
+    <li><strong>의심 쿼리 보기</strong> 호출 수 순으로 보면 N+1 경고가 붙은 <code>selectDetail</code>이 40번 나간 것이 보인다.</li>
+    <li><strong>실행 계획</strong> 행을 눌러 상세를 열고 실행 계획을 받는다. 테이블 전체 읽기와 인덱스 목록이 함께 나온다.</li>
+    <li><strong>Claude에게 넘기기</strong> "최적화 요청"을 누르면 근거가 대화로 들어간다. Claude가 매퍼 XML을 찾아 JOIN 한 번으로 바꾸는 diff와 인덱스 DDL을 제안한다.</li>
+    <li><strong>승인과 확인</strong> 코드 수정은 평소처럼, DDL은 승인 카드로 반영한다. 다시 초기화하고 같은 화면을 열어 호출 수가 줄었는지 본다.</li>
+  </ol>
+</section>
+
+<section id="files">
+  <h2>변경 파일</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>파일</th><th>변경</th><th>단계</th></tr></thead>
+    <tbody>
+      <tr><td><code>server/src/querylog.ts</code></td><td>신규. 형식별 추출기, 모양 정규화, 워크트리별 집계, 경고 규칙.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td><code>server/src/runner.ts</code></td><td><code>pushLine</code>에서 추출기 호출, 서버를 띄울 때 로그 레벨 환경값 넣기.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td><code>server/src/db.ts</code></td><td><code>query_stats</code> 테이블 추가.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td><code>server/src/cleanup.ts</code></td><td>워크트리 정리 때 해당 집계 삭제.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td><code>server/src/hub.ts</code></td><td><code>queries</code> 이벤트 추가.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td><code>server/src/index.ts</code></td><td><code>GET /api/worktrees/:id/queries</code>, <code>POST …/queries/reset</code>, 2단계에 <code>POST …/queries/:key/explain</code>.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td><code>server/src/envscan.ts</code> 등</td><td>매퍼 패키지 찾기.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td><code>web/src/components/RightPanel.tsx</code></td><td>BE 서버 영역에 로그/쿼리 전환, 쿼리 목록과 상세.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td><code>web/src/types.ts</code>, <code>api.ts</code>, <code>events.ts</code></td><td>쿼리 집계 타입, API, 이벤트 처리.</td><td><span class="tag mvp">1단계</span></td></tr>
+      <tr><td><code>server/src/dbquery.ts</code></td><td><code>explainQuery</code>와 엔진별 인덱스·행 수 조회.</td><td><span class="tag later">2단계</span></td></tr>
+      <tr><td><code>server/src/claude.ts</code></td><td><code>server_queries</code>, <code>db_explain</code> 도구.</td><td><span class="tag later">3단계</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="roadmap">
+  <h2>로드맵</h2>
+  <div class="graph">
+    <div class="commit">
+      <p class="ref">step-1 · 3~4일</p>
+      <h3>추출, 집계, 쿼리 탭</h3>
+      <p>MyBatis와 Hibernate 추출기, 모양 묶기, 경고 규칙, SQLite 보관, 쿼리 탭, 매퍼 로그 기본 켜기. 이 단계는 찾아서 보여주기만 한다.</p>
+      <p class="done"><strong>완료 기준</strong> KEA BE를 따로 설정하지 않고 띄워 화면 하나를 열면, 그 화면이 낸 쿼리가 모양별 호출 수와 행 수로 보이고 반복 조회에는 N+1 표시가 붙는다. 도구를 다시 켜도 집계가 남아 있다.</p>
+    </div>
+    <div class="commit">
+      <p class="ref">step-2 · 2~3일</p>
+      <h3>실행 계획</h3>
+      <p>Oracle 전용 경로 먼저, 이어서 PostgreSQL, MySQL, MSSQL. 인덱스와 행 수를 함께 보여준다.</p>
+      <p class="done"><strong>완료 기준</strong> 쿼리 상세에서 버튼 한 번으로 Oracle 실행 계획과 관련 인덱스가 나오고, DB에는 아무것도 남지 않는다.</p>
+    </div>
+    <div class="commit head">
+      <p class="ref">step-3 · 2일</p>
+      <h3>Claude 연계</h3>
+      <p>최적화 요청 버튼과 <code>server_queries</code>, <code>db_explain</code> 도구.</p>
+      <p class="done"><strong>완료 기준</strong> 요청 버튼을 누르면 Claude가 해당 매퍼 XML 위치와 근거를 짚은 수정안을 내고, DDL은 승인 카드로만 올라온다.</p>
+    </div>
+  </div>
+</section>
+
+<section id="risks">
+  <h2>리스크와 대응</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>리스크</th><th>내용</th><th>대응</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag risk">높음</span> 로그가 안 나옴</td><td>매퍼 패키지를 못 찾거나 프로젝트가 다른 로깅 설정을 쓰면 기본 켜기가 효과가 없다. 프로젝트마다 로그 형식도 다르다.</td><td>쿼리 탭이 비어 있으면 넣은 환경값과 찾은 패키지를 보여주고 직접 고칠 수 있게 한다. 추출기는 형식별로 나눠 하나씩 붙인다.</td></tr>
+      <tr><td><span class="tag risk">높음</span> 로그가 SQL로 덮임</td><td>기본으로 켜므로 모든 BE 서버 로그에 SQL 줄이 크게 늘고, 3000줄 보관이 금방 차서 오류 줄이 밀려난다. 서버 도구도 느려질 수 있다.</td><td>로그 탭 SQL 줄 숨기기 토글. 실패 요약(<code>failureExcerpt</code>)은 SQL 줄을 빼고 고른다. 글자 검사로 먼저 거르고, 모양 수 상한, 1초 묶음 전송, 5초 묶음 저장.</td></tr>
+      <tr><td><span class="tag risk">중간</span> 계획이 실제와 다름</td><td>리터럴을 넣은 계획은 바인드 변수로 실행될 때 계획과 다를 수 있다.</td><td>화면에 적어 두고, PostgreSQL은 ANALYZE 선택지를 둔다. Oracle <code>V$SQL</code> 기반 실제 계획은 이후 검토.</td></tr>
+      <tr><td><span class="tag risk">중간</span> 경고 오탐</td><td>의도한 반복 조회나 배치 조회에도 N+1이 붙는다.</td><td>표시만 하고, 쿼리 모양별로 경고 숨기기를 둔다.</td></tr>
+      <tr><td><span class="tag risk">낮음</span> 파라미터 노출</td><td>예시 SQL에 개인정보가 들어간다.</td><td>이미 <code>maskSecrets</code>를 거친 줄만 쓴다. SQLite에는 값을 뺀 모양과 수치만 저장하고, 예시 SQL은 메모리에만 둔다.</td></tr>
+      <tr><td><span class="tag risk">낮음</span> PLAN_TABLE 권한</td><td>Oracle 계정에 PLAN_TABLE이 없거나 권한이 없다.</td><td>오류를 그대로 보여주고 필요한 권한을 안내한다.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="questions">
+  <h2>결정 사항</h2>
+  <div class="q"><p>집계 보관: SQLite</p><p class="why">도구를 다시 켜도 집계가 남는다. 값을 뺀 모양과 수치만 저장하고, 워크트리를 정리할 때 함께 지운다.</p></div>
+  <div class="q"><p>매퍼 로그 켜기: 기본으로 켬</p><p class="why">BE 서버를 띄우면 따로 설정하지 않아도 쿼리 탭이 채워진다. 서버 실행 대화상자에서 끌 수 있고, 로그 탭에는 SQL 줄 숨기기를 둔다.</p></div>
+  <div class="q"><p>엔진 순서: Oracle 먼저</p><p class="why">KEA 프로젝트가 Oracle이라 가장 먼저 쓴다. 전용 경로가 필요해 2단계 공수가 가장 크다.</p></div>
+  <div class="q"><p>고치는 방식: 제안과 승인만</p><p class="why">자동 수정은 넣지 않는다. 코드는 평소 대화 흐름으로, DDL은 <code>dbwrite</code> 승인 카드로만 반영한다.</p></div>
+</section>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,261 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { db } from './db.js';
+import { dropQueryStats } from './querylog.js';
+import { git } from './git.js';
+import { runFile } from './exec.js';
+import { getProject, listProjectRows } from './projects.js';
+import { getSession, listSessions, setSession, type SessionView } from './sessions.js';
+import { serverPorts, stopServers } from './runner.js';
+import { listPrs, type PullRequestRow } from './pr.js';
+import { deleteSessionScreens, screenDirSize } from './screens.js';
+import { deleteSessionTests } from './tests.js';
+import { getSettings } from './settings.js';
+import { sendNotification } from './notify.js';
+import { broadcast } from './hub.js';
+
+export type CleanupState = 'running' | 'protected' | 'ready' | 'waiting_merge' | 'active';
+
+export type CleanupRow = {
+  session_id: number;
+  ticket: string;
+  summary: string;
+  workspace_name: string;
+  closed: boolean;
+  updated_at: string;
+  idle_days: number;
+  prs: Pick<PullRequestRow, 'id' | 'number' | 'url' | 'state'>[];
+  servers: number;
+  worktrees: { id: number; project_name: string; path: string; branch: string; exists: boolean; dirty: number; size_kb: number | null }[];
+  screens_kb: number;
+  state: CleanupState;
+  reason: string;
+};
+
+export type StartupReport = { at: string; orphans_killed: number; pruned: { project: string; lines: string[] }[]; missing_worktrees: number };
+let startup: StartupReport | null = null;
+
+const sizeCache = new Map<string, { at: number; kb: number | null }>();
+
+/** 폴더 용량. node_modules가 크면 오래 걸려서 5분 동안 기억한다. */
+async function folderKb(dir: string): Promise<number | null> {
+  const hit = sizeCache.get(dir);
+  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.kb;
+  let kb: number | null = null;
+  try {
+    kb = Number((await runFile('du', ['-sk', dir], os.homedir(), 20_000)).split(/\s+/)[0]) || null;
+  } catch { kb = null; }
+  sizeCache.set(dir, { at: Date.now(), kb });
+  return kb;
+}
+
+function daysSince(sqlite: string) {
+  return Math.floor((Date.now() - new Date(`${sqlite.replace(' ', 'T')}Z`).getTime()) / 86_400_000);
+}
+
+function classify(s: SessionView, prs: PullRequestRow[], dirty: number): { state: CleanupState; reason: string } {
+  if (s.busy) return { state: 'running', reason: 'Claude가 작업 중' };
+  if (dirty > 0) return { state: 'protected', reason: `커밋하지 않은 변경 ${dirty}개` };
+  if (prs.some((p) => p.state === 'OPEN')) return { state: 'waiting_merge', reason: 'PR 머지 대기' };
+  if (prs.length > 0) return { state: 'ready', reason: prs.every((p) => p.state === 'MERGED') ? 'PR 머지됨' : 'PR 닫힘' };
+  if (s.closed) return { state: 'ready', reason: '닫은 세션' };
+  return { state: 'active', reason: 'PR 없음' };
+}
+
+/** 워크트리를 지운 뒤에 빌드 도구·IDE가 다시 만들 수 있는 캐시. 이것만 남은 폴더는 지워도 된다. */
+const LEFTOVER_CACHES = new Set(['.gradle', '.idea', '.vscode', '.next', '.nuxt', '.turbo', '.venv', '__pycache__', '.pytest_cache', '.ruff_cache', '.mypy_cache', 'node_modules', 'build', 'dist', 'out', 'target', '.bkit', '.claude']);
+
+/** 그 경로가 저장소에 등록된 워크트리인지. macOS 한글 경로는 정규화가 달라질 수 있어 맞춰서 비교한다. */
+async function isWorktreeOf(repo: string, dir: string): Promise<boolean> {
+  const norm = (p: string) => { try { return fs.realpathSync(p).normalize('NFC'); } catch { return path.resolve(p).normalize('NFC'); } };
+  const target = norm(dir);
+  const out = await git(repo, ['worktree', 'list', '--porcelain']).catch(() => '');
+  return out.split('\n').some((l) => l.startsWith('worktree ') && norm(l.slice(9)) === target);
+}
+
+async function rowOf(s: SessionView): Promise<CleanupRow> {
+  const prs = listPrs(s.id);
+  const worktrees = await Promise.all(s.repos.map(async (w) => {
+    const exists = fs.existsSync(w.path);
+    const dirty = exists ? (await git(w.path, ['status', '--porcelain']).catch(() => '')).split('\n').filter(Boolean).length : 0;
+    return { id: w.id, project_name: w.project_name, path: w.path, branch: w.branch, exists, dirty, size_kb: exists ? await folderKb(w.path) : 0 };
+  }));
+  const dirty = worktrees.reduce((n, w) => n + w.dirty, 0);
+  return {
+    session_id: s.id,
+    ticket: s.ticket,
+    summary: s.summary,
+    workspace_name: s.workspace_name,
+    closed: Boolean(s.closed),
+    updated_at: s.updated_at,
+    idle_days: daysSince(s.updated_at),
+    prs: prs.map((p) => ({ id: p.id, number: p.number, url: p.url, state: p.state })),
+    servers: serverPorts(s.id).length,
+    worktrees,
+    screens_kb: Math.round(screenDirSize(s.id) / 1024),
+    ...classify(s, prs, dirty),
+  };
+}
+
+/** 정리 화면 목록. 닫았지만 워크트리 폴더나 스크린샷이 남은 세션도 넣는다. */
+export async function listCleanup(): Promise<{ rows: CleanupRow[]; startup: StartupReport | null }> {
+  // 원본 폴더를 쓴 세션은 닫으면 지울 폴더가 없다(원본은 남겨 둔다).
+  const sessions = listSessions(true).filter((s) => !s.closed || s.worktrees.some((w) => !w.in_place && fs.existsSync(w.path)) || screenDirSize(s.id) > 0);
+  return { rows: await Promise.all(sessions.map(rowOf)), startup };
+}
+
+export type CleanStep = { name: string; ok: boolean; detail: string };
+
+/** 서버 종료 → 워크트리 삭제 → 로컬 브랜치 삭제 → (원격 브랜치 삭제) → 스크린샷 삭제 → 세션 보관 */
+export async function cleanSession(sessionId: number, opts: { deleteRemote: boolean; force: boolean }): Promise<CleanStep[]> {
+  const s = getSession(sessionId);
+  if (!s) throw new Error('세션이 없습니다.');
+  const row = await rowOf(s);
+  if (row.state === 'running') throw new Error(`${s.ticket}: Claude가 작업 중이라 정리할 수 없습니다.`);
+  if (row.state === 'waiting_merge') throw new Error(`${s.ticket}: PR이 아직 열려 있습니다. 머지하거나 닫은 뒤 정리하세요.`);
+  if (row.state === 'protected' && !opts.force) throw new Error(`${s.ticket}: 커밋하지 않은 변경이 있어 남겨 뒀습니다.`);
+
+  const steps: CleanStep[] = [];
+  const attempt = async (name: string, fn: () => Promise<string | void>) => {
+    try { steps.push({ name, ok: true, detail: (await fn()) || '' }); } catch (err) { steps.push({ name, ok: false, detail: (err as Error).message }); }
+  };
+
+  await attempt('서버 종료', async () => { await stopServers(sessionId); });
+  for (const w of s.repos) {
+    const project = getProject(w.project_id);
+    if (!project) continue;
+    const repo = project.repo_root || project.local_path;
+    // 원본 클론 폴더에서 한 세션: 폴더도, 체크아웃된 브랜치(main일 수도 있다)도, 원격 브랜치도 건드리지 않는다.
+    if (w.in_place) {
+      steps.push({ name: `${w.project_name} 원본 폴더`, ok: true, detail: `원본 폴더에서 작업한 세션이라 폴더와 브랜치 ${w.branch}를 그대로 둡니다.` });
+      continue;
+    }
+    await attempt(`${w.project_name} 워크트리 삭제`, async () => {
+      if (!fs.existsSync(w.path)) { await git(repo, ['worktree', 'prune']).catch(() => {}); return '이미 없음'; }
+      // 워크트리는 이미 지워졌는데 빌드 도구가 나중에 만든 캐시(.gradle 등)만 남아 폴더가 있는 경우.
+      // git은 워크트리가 아니라며 거절하므로, 캐시뿐이면 폴더를 지우고 다른 파일이 있으면 그대로 두고 알린다.
+      if (!(await isWorktreeOf(repo, w.path))) {
+        await git(repo, ['worktree', 'prune']).catch(() => {});
+        const left = fs.readdirSync(w.path).filter((n) => n !== '.DS_Store');
+        if (left.every((n) => LEFTOVER_CACHES.has(n))) {
+          fs.rmSync(w.path, { recursive: true, force: true });
+          sizeCache.delete(w.path);
+          return `워크트리는 이미 지워졌고, 남은 캐시 폴더(${left.join(', ') || '빈 폴더'})를 지웠습니다.`;
+        }
+        return `워크트리는 이미 지워졌습니다. 폴더에 다른 파일(${left.slice(0, 5).join(', ')})이 남아 있어 지우지 않았습니다. 확인 후 직접 지우세요: ${w.path}`;
+      }
+      await git(repo, ['worktree', 'remove', ...(opts.force ? ['--force'] : []), w.path]);
+      sizeCache.delete(w.path);
+    });
+    await attempt(`${w.project_name} 로컬 브랜치 ${w.branch} 삭제`, async () => {
+      const exists = await git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${w.branch}`]).then(() => true, () => false);
+      if (!exists) return '이미 없음';
+      await git(repo, ['branch', '-D', w.branch]);
+    });
+    if (opts.deleteRemote && row.prs.length > 0) {
+      await attempt(`${w.project_name} 원격 브랜치 삭제`, async () => {
+        await runFile('git', ['push', 'origin', '--delete', w.branch], repo, 60_000).catch((e) => {
+          if (/remote ref does not exist/.test((e as Error).message)) return;
+          throw e;
+        });
+      });
+    }
+  }
+  await attempt('스크린샷 삭제', async () => { deleteSessionScreens(sessionId); deleteSessionTests(sessionId); });
+  await attempt('쿼리 집계 삭제', async () => { dropQueryStats(s.worktrees.map((w) => w.id)); });
+  await attempt('세션 기록 보관', async () => { if (!s.closed) setSession(sessionId, { closed: 1 }); });
+  broadcast({ type: 'sessions.changed' });
+  broadcast({ type: 'cleanup.changed' });
+  return steps;
+}
+
+const lastSessionCheck = new Map<number, number>();
+
+/**
+ * 세션 화면을 열 때 그 세션의 열린 PR 상태를 바로 확인한다. 주기 확인(기본 10분)만으로는
+ * 방금 머지한 PR이 한참 "열림"으로 남는다. gh를 너무 자주 부르지 않게 세션마다 30초에 한 번만.
+ */
+export function refreshSessionPrsSoon(sessionId: number) {
+  const last = lastSessionCheck.get(sessionId) ?? 0;
+  if (Date.now() - last < 30_000) return;
+  lastSessionCheck.set(sessionId, Date.now());
+  refreshPrStates(sessionId).catch(() => {});
+}
+
+/** gh로 열린 PR 상태를 확인하고, 머지·닫힘이 되면 정리 대기로 알린다. sessionId를 주면 그 세션만 본다. */
+export async function refreshPrStates(sessionId?: number): Promise<number> {
+  const open = (sessionId
+    ? db.prepare(`SELECT * FROM pull_requests WHERE state = 'OPEN' AND session_id = ?`).all(sessionId)
+    : db.prepare(`SELECT * FROM pull_requests WHERE state = 'OPEN'`).all()) as PullRequestRow[];
+  let changedCount = 0;
+  const touched = new Set<number>();
+  for (const pr of open) {
+    try {
+      const out = await runFile('gh', ['pr', 'view', pr.url, '--json', 'state,mergeable'], os.homedir(), 20_000);
+      const { state, mergeable } = JSON.parse(out) as { state: string; mergeable: string };
+      db.prepare(`UPDATE pull_requests SET checked_at = datetime('now'), state = ?, mergeable = ? WHERE id = ?`).run(state, mergeable ?? null, pr.id);
+      if (state !== 'OPEN') { changedCount++; touched.add(pr.session_id); }
+      // 충돌이 생기거나 풀리면 화면의 PR 표시를 바꾼다.
+      else if ((mergeable ?? null) !== pr.mergeable) touched.add(pr.session_id);
+    } catch (err) {
+      // 오프라인이거나 gh 로그인이 풀렸으면 다음에 다시 본다.
+      console.warn(`[pr] #${pr.number} 상태를 확인하지 못했습니다:`, (err as Error).message);
+    }
+  }
+  const settings = getSettings();
+  for (const sessionId of touched) {
+    broadcast({ type: 'pr.updated', sessionId });
+    const prs = listPrs(sessionId);
+    if (prs.some((p) => p.state === 'OPEN')) continue;
+    const s = getSession(sessionId);
+    if (!s) continue;
+    const row = await rowOf(s);
+    if (settings.cleanup.autoCleanMerged && row.state === 'ready') {
+      const steps = await cleanSession(sessionId, { deleteRemote: settings.cleanup.deleteRemoteBranch, force: false }).catch(() => null);
+      if (steps && settings.notify.onCleanup) sendNotification(`${s.ticket} 정리했습니다`, 'PR이 머지·닫혀 워크트리와 브랜치를 지웠습니다.');
+    } else if (settings.notify.onCleanup) {
+      sendNotification(`${s.ticket} 정리 대기`, row.state === 'protected' ? 'PR은 끝났지만 커밋하지 않은 변경이 있어 남겨 뒀습니다.' : 'PR이 머지·닫혔습니다. 리소스 정리에서 지울 수 있습니다.');
+    }
+  }
+  if (touched.size) broadcast({ type: 'cleanup.changed' });
+  return changedCount;
+}
+
+/** 오래 손대지 않은 세션은 지우지 않고 알리기만 한다. 세션당 한 번. */
+function notifyStale() {
+  const days = getSettings().cleanup.staleDays;
+  if (!days || !getSettings().notify.onCleanup) return;
+  for (const s of listSessions()) {
+    if (s.busy || s.stale_notified) continue;
+    if (daysSince(s.updated_at) < days || listPrs(s.id).length > 0) continue;
+    sendNotification(`${s.ticket} ${days}일 동안 활동이 없습니다`, '필요 없으면 리소스 정리에서 지울 수 있습니다.', s.id);
+    db.prepare(`UPDATE sessions SET stale_notified = 1 WHERE id = ?`).run(s.id);
+  }
+}
+
+/** 도구를 시작할 때 폴더 없는 워크트리 기록과 닫힌 세션에 묶인 계정을 정리한다. */
+export async function startupSweep(orphansKilled: number): Promise<StartupReport> {
+  const pruned: StartupReport['pruned'] = [];
+  for (const p of listProjectRows()) {
+    if (!fs.existsSync(p.local_path)) continue;
+    const out = await git(p.local_path, ['worktree', 'prune', '--verbose']).catch(() => '');
+    const lines = out.split('\n').filter(Boolean);
+    if (lines.length) pruned.push({ project: p.name, lines });
+  }
+  const missing = (db.prepare(`SELECT w.path FROM worktrees w JOIN sessions s ON s.id = w.session_id WHERE s.closed = 0`).all() as { path: string }[])
+    .filter((w) => !fs.existsSync(w.path)).length;
+  startup = { at: new Date().toISOString(), orphans_killed: orphansKilled, pruned, missing_worktrees: missing };
+  return startup;
+}
+
+let timer: NodeJS.Timeout | null = null;
+
+/** PR 상태 확인과 미활동 알림을 설정한 간격으로 돌린다. 설정이 바뀌면 다시 부른다. */
+export function scheduleCleanupPoll() {
+  if (timer) clearInterval(timer);
+  const minutes = Math.max(1, getSettings().cleanup.pollMinutes);
+  const tick = () => { refreshPrStates().catch(() => {}); notifyStale(); };
+  timer = setInterval(tick, minutes * 60 * 1000);
+  setTimeout(tick, 15_000);
+}
