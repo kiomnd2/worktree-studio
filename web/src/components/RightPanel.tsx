@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { api, missingFrom } from '../api';
 import { attachToPrompt, insertIntoPrompt, openInPreview, useServerEvents } from '../events';
 import { DOC_KIND } from './DocsPage';
-import { type DocMeta, type LogLine, ScreenCheck, ScreenState, ServerView, Session, TestState, WorktreeChanges } from '../types';
+import { type DictRequest, type DocMeta, type LogLine, ScreenCheck, ScreenState, ServerView, Session, TestState, WorktreeChanges } from '../types';
+import { requestLabel } from './DictPage';
 import StartServersDialog from './StartServersDialog';
 import QueryPanel from './QueryPanel';
 
@@ -10,9 +11,9 @@ const STATUS_LABEL: Record<string, string> = {
   idle: '꺼짐', starting: '시작 중', running: '실행 중', unhealthy: '응답 없음', failed: '멈춤', stopped: '꺼짐',
 };
 
-type Props = { session: Session; onOpenEnv: (message?: string) => void; onOpenChanges: () => void; onOpenTests: () => void; onOpenDocs: (name?: string) => void; onClosed: () => void; onOpenConflicts: () => void };
+type Props = { session: Session; onOpenEnv: (message?: string) => void; onOpenChanges: () => void; onOpenTests: () => void; onOpenDict: () => void; onOpenErd: () => void; onOpenDocs: (name?: string) => void; onClosed: () => void; onOpenConflicts: () => void };
 
-export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTests, onOpenDocs, onClosed, onOpenConflicts }: Props) {
+export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTests, onOpenDict, onOpenErd, onOpenDocs, onClosed, onOpenConflicts }: Props) {
   const [servers, setServers] = useState<ServerView[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,6 +65,8 @@ export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTe
         anyRunning={anyRunning}
         onOpenChanges={onOpenChanges}
         onOpenTests={onOpenTests}
+        onOpenDict={onOpenDict}
+        onOpenErd={onOpenErd}
         onOpenDocs={onOpenDocs}
         onClosed={onClosed}
         onOpenConflicts={onOpenConflicts}
@@ -221,20 +224,22 @@ function isLive(s: ServerView) {
   return s.status === 'starting' || s.status === 'running' || s.status === 'unhealthy';
 }
 
-type MenuKey = 'changes' | 'docs' | 'tests' | 'session';
+type MenuKey = 'changes' | 'docs' | 'tests' | 'dict' | 'session';
 
 /**
  * 패널 맨 위의 메뉴. 변경 파일·계획 문서·화면 테스트·세션은 필요할 때만 펼쳐 보고,
  * 패널 본문에는 서버, 미리보기, 로그만 둔다. 숫자를 보여 주려고 내용은 닫혀 있어도 그려 둔다.
  */
-function PanelMenus({ session, anyRunning, onOpenChanges, onOpenTests, onOpenDocs, onClosed, onOpenConflicts }: {
-  session: Session; anyRunning: boolean; onOpenChanges: () => void; onOpenTests: () => void; onOpenDocs: (name?: string) => void; onClosed: () => void; onOpenConflicts: () => void;
+function PanelMenus({ session, anyRunning, onOpenChanges, onOpenTests, onOpenDict, onOpenErd, onOpenDocs, onClosed, onOpenConflicts }: {
+  session: Session; anyRunning: boolean; onOpenChanges: () => void; onOpenTests: () => void; onOpenDict: () => void; onOpenErd: () => void; onOpenDocs: (name?: string) => void; onClosed: () => void; onOpenConflicts: () => void;
 }) {
   const [open, setOpen] = useState<MenuKey | null>(null);
   const [changes, setChanges] = useState<number | null>(null);
   const [docs, setDocs] = useState(0);
   // 화면 테스트 진행·결과. 메뉴 버튼에 진행률이나 실패 수를 보여 준다.
   const [tests, setTests] = useState<{ running: boolean; done: number; total: number; bad: number; pass: number } | null>(null);
+  // erd-vibe를 연결했을 때만 용어 메뉴를 보인다. null: 연결 안 함
+  const [dict, setDict] = useState<{ pending: number } | null>(null);
   const box = useRef<HTMLDivElement>(null);
 
   // 바깥을 누르거나 Esc를 누르면 닫는다.
@@ -255,6 +260,7 @@ function PanelMenus({ session, anyRunning, onOpenChanges, onOpenTests, onOpenDoc
     { key: 'changes', label: '변경 파일', count: changes === null ? undefined : String(changes) },
     { key: 'docs', label: '산출물', count: String(docs) },
     { key: 'tests', label: '화면 테스트', ...testCount },
+    ...(dict ? [{ key: 'dict' as const, label: 'ERD·용어', count: dict.pending ? `요청 ${dict.pending}` : undefined, tone: dict.pending ? 'bad' as const : undefined }] : []),
     { key: 'session', label: '세션' },
   ];
   const close = () => setOpen(null);
@@ -288,6 +294,9 @@ function PanelMenus({ session, anyRunning, onOpenChanges, onOpenTests, onOpenDoc
       <div id="panel-menu-tests" className="panel-pop" hidden={open !== 'tests'}>
         <TestsBlock session={session} onOpen={() => { close(); onOpenTests(); }} onSummary={setTests} />
         <AccountBlock session={session} />
+      </div>
+      <div id="panel-menu-dict" className="panel-pop" hidden={open !== 'dict'}>
+        <DictBlock session={session} onOpen={() => { close(); onOpenDict(); }} onOpenErd={() => { close(); onOpenErd(); }} onState={setDict} />
       </div>
       <div id="panel-menu-session" className="panel-pop" hidden={open !== 'session'}>
         <div className="panel-block">
@@ -359,6 +368,40 @@ function ChangesBlock({ session, onOpen, onCount }: { session: Session; onOpen: 
             );
           })}
         </ul>
+      )}
+    </div>
+  );
+}
+
+/** erd-vibe 요약. 검사·사전 관리·요청은 용어 화면, 다이어그램은 ERD 화면에서 한다. */
+function DictBlock({ session, onOpen, onOpenErd, onState }: { session: Session; onOpen: () => void; onOpenErd: () => void; onState: (s: { pending: number } | null) => void }) {
+  const [configured, setConfigured] = useState(false);
+  const [requests, setRequests] = useState<DictRequest[]>([]);
+  const reload = useCallback(() => {
+    api.erdConfig().then((c) => {
+      setConfigured(c.configured);
+      if (!c.configured) { onState(null); return; }
+      api.dictRequests(session.id).then((r) => { setRequests(r); onState({ pending: r.filter((x) => x.status === 'pending').length }); }).catch(() => onState({ pending: 0 }));
+    }).catch(() => onState(null));
+  }, [session.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(reload, [reload]);
+  useServerEvents((e) => { if (e.type === 'dict.requests' && e.sessionId === session.id) reload(); });
+  if (!configured) return null;
+  const pending = requests.filter((r) => r.status === 'pending');
+  return (
+    <div className="panel-block dict-block">
+      <div className="block-head">
+        <h2>ERD·용어</h2>
+        <div className="row">
+          <button className="small-btn" onClick={onOpenErd}>ERD 열기</button>
+          <button className="small-btn primary" onClick={onOpen}>용어 열기</button>
+        </div>
+      </div>
+      <p className="muted small">
+        소스의 컬럼 이름을 erd-vibe 용어사전·ERD와 맞대어 비표준 표기(TR_DATE ↔ TR_DT), 미등록 용어, 도메인 불일치를 찾습니다. 이번 변경의 위반은 PR 전 검사에서 막힙니다.
+      </p>
+      {pending.length > 0 && (
+        <p className="small">승인 대기 {pending.length}건: {pending.slice(0, 3).map(requestLabel).join(', ')}</p>
       )}
     </div>
   );

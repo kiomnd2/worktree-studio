@@ -58,6 +58,16 @@
   - 설정한 간격(기본 10분)으로 `gh pr view`로 PR 상태 확인, 머지·닫히면 알림(설정하면 확인 없이 정리), 오래 쉰 세션 알림
   - 시작할 때 `git worktree prune`, 닫힌 세션에 묶인 계정 반납
 
+**erd-vibe 용어·도메인 사전 연동**
+- 설정 › erd-vibe 용어사전: 주소와 API 키(암호화 저장)를 넣으면 단어·용어·도메인 사전을 받아 5분간 메모리에 둠. 워크스페이스마다 ERD 프로젝트를 연결(DBMS는 ERD의 것을 씀)
+- 표준 이름은 용어의 약어명(`physical_abbr_name`, 없으면 물리명). 컬럼 이름을 `_`·camelCase로 나눠 단어사전의 약어·영문명으로 풀고 용어와 맞댐
+  - 비표준 표기(TR_DATE·TRADE_DATE → TR_DT), 미등록 용어(단어는 다 있음 → 등록 초안), 미등록 단어(TR_DD), 도메인 불일치(DDL·Liquibase 타입 vs 도메인), ERD에 없음, 같은 용어 혼용, ERD 컬럼 위반, 사전의 논리명 중복
+  - 대상: MyBatis 매퍼 SQL·resultMap, `.sql` DDL·DML, Liquibase `<column>`, JPA `@Column`/`@JoinColumn`. SQL은 밑줄 있는 이름과 `별칭.컬럼`만 봄. 워크스페이스별 무시 목록
+- 오른쪽 패널 "용어" → 용어 화면: 소스 검사(이번 변경/전체), 사전 찾기, ERD 테이블·컬럼 보기, 등록 요청 승인
+- Claude 도구 `dict_lookup`, `dict_check`, `dict_request_term`, `erd_table`과 "DB 이름은 사전의 표준 이름으로" 규칙. 등록은 사용자가 승인해야 erd-vibe에 들어감
+- PR 만들기에 "용어 검사" 단계: 이번 변경에서 추가한 줄의 위반이 있으면 멈춤(검사 실패 무시하고 진행 가능, 무시하면 PR 본문에 남김)
+- erd-vibe가 SSO를 쓰면 API 키(`Authorization: Bearer`)를 받아 주는 기능이 erd-vibe 쪽에 있어야 함. 인증을 끈 로컬 erd-vibe는 키 없이 됨
+
 ## 지원하는 프로젝트
 
 프로젝트를 등록하면 폴더를 보고 실행·설치·검사 명령과 헬스체크를 채웁니다. 모두 설정에서 고칠 수 있습니다.
@@ -122,7 +132,9 @@ npm run package:mac
 
 | 이름 | 기본값 | 설명 |
 | --- | --- | --- |
-| `WTS_PORT` | `4317` | 서버 포트 (개발 모드 화면의 프록시도 이 값을 씀) |
+| `WTS_PORT` | `4317` | 서버 포트 (개발 모드 화면의 프록시도 이 값을 씀). `PORT`가 있으면(세션 개발 서버) 이 값 대신 `PORT`+1 |
+| `WTS_API_PORT` | (없음) | 서버 포트를 직접 정함. `PORT`·`WTS_PORT`보다 먼저 쓰고, 개발 모드 화면의 프록시도 이 포트로 보냄 |
+| `WTS_WEB_ONLY` | (없음) | `1`이면 `web/`에서 `PORT`를 받고 떠도 API 서버를 같이 띄우지 않음. 기본은 짝 포트에 서버가 없으면 같이 띄움 (도구가 `web/`만 실행할 때) |
 | `WTS_HOST` | `127.0.0.1` | 바인딩 주소. 외부에 열지 마세요. |
 | `WTS_DATA_DIR` | `~/.worktree-studio` | SQLite DB, 첨부 이미지, 암호화 키(`secret.key`) 저장 위치 |
 | `WTS_CLAUDE_PATH` | (자동) | 특정 Claude Code 실행 파일을 쓰고 싶을 때 경로 |
@@ -148,6 +160,12 @@ server/src
   accounts.ts   테스트 계정 풀
   secret.ts     환경값·비밀번호 암호화, 로그 마스킹
   github.ts     gh 로그인 상태
+  erdvibe.ts    erd-vibe REST 클라이언트, 사전 캐시, ERD 조회, 용어·단어 등록
+  dictcheck.ts  이름 풀이·판정 (식별자 → 단어 → 논리명 → 용어)
+  dictscan.ts   소스 컬럼 추출, 추가 줄 판별, 용어 검사 보고서, 무시 목록
+  dictsearch.ts 사전 통합 검색
+  dictrequests.ts 사전 등록 요청(승인 후 등록)
+  dicttools.ts  Claude 도구 출력, 규칙, tool_context
 web/src
   App.tsx, components/  사이드바, 대화, 프롬프트 입력, 새 세션, 설정, 환경값 화면, 서버·미리보기·로그 패널
 ```

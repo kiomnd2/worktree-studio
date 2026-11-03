@@ -369,12 +369,14 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
     // 새 워크트리에는 .venv나 node_modules가 없어 처음 한 번은 설치부터 한다. 설치가 실패하면 서버를 띄우지 않는다.
     const setup = p.setup_cmd && !w.setup_done ? p.setup_cmd : null;
     const cmd = [docker, setup, startCmd].filter(Boolean).join(' && ');
+    // studio 자신의 포트(WTS_PORT)는 물려주지 않는다. worktree-studio를 세션으로 띄우면 그 서버가 이 포트로 뜨려다 충돌한다.
+    const { WTS_PORT: _ownPort, ...inherited } = process.env;
     const child = spawn(cmd, {
       // 모노레포면 앱 폴더(frontend/ 등)에서 띄운다.
       cwd: w.app_path,
       shell: true,
       detached: process.platform !== 'win32',
-      env: { ...process.env, ...sqlLog?.env, ...env, ...auto, FORCE_COLOR: '0' },
+      env: { ...inherited, ...sqlLog?.env, ...env, ...auto, FORCE_COLOR: '0' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const r: Running = {

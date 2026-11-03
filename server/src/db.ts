@@ -181,6 +181,17 @@ addColumn('test_accounts', 'workspace_id', 'workspace_id INTEGER REFERENCES work
 }
 // 워크스페이스마다 쓰는 Jira 프로젝트 키(예: KERE, DRMS). 세션을 만들 때 이 프로젝트에서 티켓을 고르거나 만든다.
 addColumn('workspaces', 'jira_project', 'jira_project TEXT');
+// erd-vibe ERD 프로젝트(uuid). 워크스페이스마다 고른다. 용어 검사가 이 ERD의 테이블·컬럼과 DBMS를 쓴다.
+addColumn('workspaces', 'erd_project_id', 'erd_project_id TEXT');
+// 잠깐 프로젝트마다 고르던 때의 열. 값이 있으면 그 워크스페이스로 되돌리고 비운다(FE가 아닌 프로젝트 것을 먼저).
+addColumn('projects', 'erd_project_id', 'erd_project_id TEXT');
+{
+  const rows = db.prepare(`
+    SELECT wp.workspace_id, p.id, p.kind, p.erd_project_id FROM workspace_projects wp JOIN projects p ON p.id = wp.project_id
+    WHERE p.erd_project_id IS NOT NULL ORDER BY (p.kind = 'fe'), wp.position`).all() as { workspace_id: number; id: number; kind: string; erd_project_id: string }[];
+  for (const r of rows) db.prepare(`UPDATE workspaces SET erd_project_id = ? WHERE id = ? AND erd_project_id IS NULL`).run(r.erd_project_id, r.workspace_id);
+  if (rows.length) db.prepare(`UPDATE projects SET erd_project_id = NULL`).run();
+}
 // 계획 모드로 실행할 프롬프트
 addColumn('prompt_queue', 'plan', 'plan INTEGER NOT NULL DEFAULT 0');
 addColumn('sessions', 'stale_notified', 'stale_notified INTEGER NOT NULL DEFAULT 0');

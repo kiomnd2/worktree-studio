@@ -1,3 +1,7 @@
+import { checkSession, findingLine, type DictReport } from './dictscan.js';
+import { erdConfigured } from './erdvibe.js';
+import { schemaCheck, type SchemaReport } from './schemasync.js';
+import { schemaLine } from './dicttools.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -54,7 +58,9 @@ export type PrDraft = {
   body: string;
 };
 
-type StepName = 'commit' | 'check' | 'push' | 'pr';
+/** dict: erd-vibe 용어사전 검사(이번 변경에서 새로 생긴 위반이 있으면 멈춘다)
+ *  schema: 매퍼·JPA가 Liquibase 최종 스키마에 없는 컬럼이나 rename·drop된 옛 이름을 새 줄에서 쓰면 멈춘다 */
+type StepName = 'commit' | 'check' | 'dict' | 'schema' | 'push' | 'pr';
 /** ignored: 검사가 실패했지만 사용자가 무시하고 진행하기로 함 */
 type StepState = { name: StepName; status: 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'ignored'; started_at: number | null; ended_at: number | null; detail: string | null; output: string | null };
 type RepoJob = { worktree_id: number; project_name: string; steps: StepState[]; pr_url: string | null };
@@ -483,7 +489,7 @@ export function startPr(sessionId: number, items: PrItem[], opts: { ignoreCheckF
       worktree_id: it.worktree_id,
       project_name: session.repos.find((w) => w.id === it.worktree_id)!.project_name,
       pr_url: null,
-      steps: (['commit', 'check', 'push', 'pr'] as StepName[]).map((name) => ({ name, status: 'pending', started_at: null, ended_at: null, detail: null, output: null })),
+      steps: (['commit', 'check', 'dict', 'schema', 'push', 'pr'] as StepName[]).map((name) => ({ name, status: 'pending', started_at: null, ended_at: null, detail: null, output: null })),
     })),
   };
   jobs.set(sessionId, job);
@@ -502,6 +508,10 @@ export function continueIgnoringChecks(sessionId: number): PrJob {
 async function runJob(session: SessionView, job: PrJob, items: PrItem[], prior?: PrJob) {
   const secrets = sessionSecrets(session);
   const ignored = new Map<number, string>(); // 검사를 무시한 레포: worktree_id → 검사 명령
+  const dictIgnored = new Map<number, number>(); // 용어 검사 위반을 무시한 레포: worktree_id → 건수
+  let dictReport: Promise<DictReport> | null = null; // 세션 전체를 한 번만 검사한다
+  const schemaIgnored = new Map<number, number>(); // 스키마 검사 막힘을 무시한 레포: worktree_id → 건수
+  let schemaReport: Promise<SchemaReport> | null = null;
   const wt = (id: number) => session.repos.find((w) => w.id === id)!;
   try {
     for (const repo of job.repos) {
@@ -540,6 +550,47 @@ async function runJob(session: SessionView, job: PrJob, items: PrItem[], prior?:
         }
         throw new Error(`${failure} PR을 만들지 않았습니다.`);
       });
+      await step(job, repo, 'dict', async (s) => {
+        if (!erdConfigured()) { s.status = 'skipped'; s.detail = 'erd-vibe 연결 없음 (설정에서 연결하면 용어를 검사합니다)'; return; }
+        dictReport ??= checkSession(session.id, 'changed');
+        let report: DictReport;
+        try { report = await dictReport; } catch (err) {
+          s.status = 'skipped'; s.detail = `용어사전을 받지 못해 건너뜀: ${(err as Error).message}`; return;
+        }
+        const mine = report.findings.filter((f) => f.project_name === repo.project_name);
+        const blocking = mine.filter((f) => f.blocking);
+        s.output = blocking.length ? blocking.map(findingLine).join('\n') : null;
+        s.detail = blocking.length ? `새 위반 ${blocking.length}건` : `위반 없음 (기존 위반·경고 ${mine.length}건)`;
+        if (!blocking.length) return;
+        if (job.ignore_check_failures) {
+          s.status = 'ignored';
+          s.detail = `새 위반 ${blocking.length}건, 무시하고 진행합니다.`;
+          dictIgnored.set(repo.worktree_id, blocking.length);
+          return;
+        }
+        throw new Error(`용어 검사에서 새 위반 ${blocking.length}건이 나왔습니다. PR을 만들지 않았습니다.`);
+      });
+      await step(job, repo, 'schema', async (s) => {
+        schemaReport ??= schemaCheck(session.id, 'changed');
+        let report: SchemaReport;
+        try { report = await schemaReport; } catch (err) {
+          s.status = 'skipped'; s.detail = `스키마 검사를 못 해 건너뜀: ${(err as Error).message}`; return;
+        }
+        const app = report.apps.find((a) => a.project_name === repo.project_name);
+        if (!app || app.kind === 'none') { s.status = 'skipped'; s.detail = 'Liquibase·DDL 없음'; return; }
+        const mine = report.findings.filter((f) => f.occurrences.some((o) => o.project_name === repo.project_name));
+        const blocking = mine.filter((f) => f.blocking && f.occurrences.some((o) => o.added && o.project_name === repo.project_name));
+        s.output = blocking.length ? blocking.map(schemaLine).join('\n') : null;
+        s.detail = blocking.length ? `없는 컬럼·옛 이름 사용 ${blocking.length}건` : `맞음 (기존 불일치 ${mine.length}건)`;
+        if (!blocking.length) return;
+        if (job.ignore_check_failures) {
+          s.status = 'ignored';
+          s.detail = `없는 컬럼·옛 이름 사용 ${blocking.length}건, 무시하고 진행합니다.`;
+          schemaIgnored.set(repo.worktree_id, blocking.length);
+          return;
+        }
+        throw new Error(`스키마 검사에서 Liquibase에 없는 컬럼이나 옛 이름 사용 ${blocking.length}건이 나왔습니다. PR을 만들지 않았습니다.`);
+      });
     }
 
     for (const repo of job.repos) {
@@ -558,7 +609,9 @@ async function runJob(session: SessionView, job: PrJob, items: PrItem[], prior?:
       const item = items.find((i) => i.worktree_id === repo.worktree_id)!;
       await step(job, repo, 'pr', async (s) => {
         // 검사를 무시하고 올리면 리뷰하는 사람이 알 수 있게 본문 끝에 남긴다.
-        const note = ignored.has(repo.worktree_id) ? `\n\n> ⚠️ PR 전 검사(\`${ignored.get(repo.worktree_id)}\`)가 실패한 상태로 올렸습니다.` : '';
+        const note = (ignored.has(repo.worktree_id) ? `\n\n> ⚠️ PR 전 검사(\`${ignored.get(repo.worktree_id)}\`)가 실패한 상태로 올렸습니다.` : '')
+          + (dictIgnored.has(repo.worktree_id) ? `\n\n> ⚠️ 용어 검사에서 용어사전과 맞지 않는 컬럼 이름 ${dictIgnored.get(repo.worktree_id)}건을 무시하고 올렸습니다.` : '')
+          + (schemaIgnored.has(repo.worktree_id) ? `\n\n> ⚠️ 스키마 검사에서 Liquibase 최종 스키마에 없는 컬럼·옛 이름 사용 ${schemaIgnored.get(repo.worktree_id)}건을 무시하고 올렸습니다.` : '');
         const body = maskSecrets(item.body.replace(/\s+$/, '') + note, secrets);
         const existing = await existingPr(w.path, w.branch);
         let url: string;

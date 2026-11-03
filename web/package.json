@@ -3,10 +3,12 @@
   "version": "0.2.0",
   "scripts": {
     "dev": "vite",
+    "dev:ui": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@xyflow/react": "^12.12.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-markdown": "^10.1.0",
