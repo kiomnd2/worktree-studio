@@ -1049,3 +1049,14 @@ button.chip-on { background: var(--ink); border-color: var(--ink); color: #fff; 
 .erd-physical.linked input { padding-right: 40px; }
 .erd-termmark { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); font-size: 10.5px; line-height: 16px; padding: 0 5px; border-radius: 4px; background: var(--ok-soft); color: var(--ok-ink); pointer-events: auto; cursor: default; }
 .erd-cols tr.erd-hint b { font-weight: 600; }
+
+/* 대화로 보내기 분할 버튼: 왼쪽은 보내기, 오른쪽 ▾는 보낼 곳(메인 대화, 새 대화) 고르기 */
+.send-split { position: relative; display: inline-flex; flex-shrink: 0; }
+/* .small-btn은 오른쪽으로 붙는(margin-left: auto) 버튼이라 감싼 쪽이 그 자리를 이어받는다. */
+.send-split:has(> .small-btn) { margin-left: auto; }
+.send-split > button:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; margin-left: 0; }
+.send-split > .send-split-caret { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-width: 0; margin-left: 0; padding: 0 6px; }
+.send-split-menu { position: fixed; z-index: 1000; font-family: var(--sans); display: flex; flex-direction: column; min-width: 150px; padding: 4px; background: var(--sheet); border: 1px solid var(--rule-strong); border-radius: 8px; box-shadow: 0 8px 24px rgba(27, 34, 48, 0.18); }
+.send-split-menu button { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 8px; border: 0; background: none; color: var(--ink); font-size: 12.5px; font-weight: 400; text-align: left; white-space: nowrap; }
+.send-split-menu button:hover { background: var(--soft); }
+.send-split-menu button span { width: 12px; color: var(--accent); }

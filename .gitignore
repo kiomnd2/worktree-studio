@@ -3,3 +3,6 @@ dist/
 *.log
 .DS_Store
 desktop/release/
+
+# 루트 .gitignore 의 build/ 가 앱 아이콘 폴더까지 막지 않게 한다
+!desktop/build/

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../api';
-import { hasNewChatPending, openDoc, useServerEvents } from '../events';
+import { openDoc, pendingTarget, useServerEvents, type SendTarget } from '../events';
 import type { Session, SessionDb, StoredMessage } from '../types';
 import PromptInput, { docLabel } from './PromptInput';
 import ApprovalCards from './ApprovalCards';
@@ -116,11 +116,15 @@ export default function ChatView({ session, onOpenDocs }: { session: Session; on
     : waiting ? { id: sel, status: 'running', queue: [], queue_paused: false }
     : { id: 0, status: session.status, queue: session.queue, queue_paused: session.queue_paused };
 
-  // 도구 화면에서 넘긴 프롬프트는 새 대화 탭에 연다. 입력창이 나타나면서 기다리던 것을 가져간다.
+  // 도구 화면에서 넘긴 프롬프트는 고른 곳(메인 대화나 새 대화 탭)에 연다. 입력창이 나타나면서 기다리던 것을 가져간다.
   useEffect(() => {
-    const open = () => { setSelRaw('new'); setNewDb(null); };
+    const go = (t: SendTarget | null) => {
+      if (t === 'new') { setSelRaw('new'); setNewDb(null); }
+      if (t === 'main') setSel(0);
+    };
+    const open = (e: Event) => go((e as CustomEvent<SendTarget>).detail);
     window.addEventListener('wts:new-chat', open);
-    if (hasNewChatPending()) open();
+    go(pendingTarget());
     // 도구가 시작한 대화(충돌 해결 등)를 연다. 목록에 나타나기 전이라도 그 대화로 간다.
     const openChat = (e: Event) => { const id = (e as CustomEvent<number>).detail; setStarted(id); setSel(id); };
     window.addEventListener('wts:open-chat', openChat);

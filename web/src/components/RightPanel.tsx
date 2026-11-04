@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, missingFrom } from '../api';
 import { attachToPrompt, insertIntoPrompt, openInPreview, useServerEvents } from '../events';
+import SendButton from './SendButton';
 import { DOC_KIND } from './DocsPage';
 import { type DictRequest, type DocMeta, type LogLine, ScreenCheck, ScreenState, ServerView, Session, TestState, WorktreeChanges } from '../types';
 import { requestLabel } from './DictPage';
@@ -148,7 +149,7 @@ function FailureBox({ server: s, sessionId, onChanged, onError }: {
       <code className="failure-summary">{f.summary}</code>
       <div className="failure-actions">
         <button className="small-btn" onClick={() => setShowLog((v) => !v)}>{showLog ? '로그 접기' : '오류 로그'}</button>
-        <button className="small-btn" title="새 대화 탭의 입력창에 넣습니다" onClick={() => insertIntoPrompt(`${s.project_name} 서버가 실행 중에 실패했어.\n실행 명령: ${f.command}\n\`\`\`\n${f.excerpt.split('\n').slice(-80).join('\n')}\n\`\`\``)}>새 대화로 보내기</button>
+        <SendButton onSend={() => insertIntoPrompt(`${s.project_name} 서버가 실행 중에 실패했어.\n실행 명령: ${f.command}\n\`\`\`\n${f.excerpt.split('\n').slice(-80).join('\n')}\n\`\`\``)} />
         <button className="small-btn" onClick={async () => {
           onError(null);
           try { onChanged(await api.dismissFailure(sessionId, s.worktree_id)); } catch (e) { onError((e as Error).message); }
@@ -606,9 +607,7 @@ function Preview({ sessionId, baseUrl, ready }: { sessionId: number; baseUrl: st
         <label className="preview-fit small" title={`페이지를 ${DESKTOP_WIDTH}px 폭으로 그려 패널에 맞게 줄입니다`}>
           <input type="checkbox" checked={fit} onChange={(e) => { setFit(e.target.checked); writeNumber(PREVIEW_FIT_KEY, e.target.checked ? 1 : 2); }} /> 화면 맞춤
         </label>
-        <button type="button" className="small-btn" disabled={!ready || capturing} title="지금 탭 화면을 찍어 새 대화 탭에 첨부합니다" onClick={capture}>
-          {capturing ? '찍는 중' : '새 대화로 보내기'}
-        </button>
+        <SendButton disabled={!ready || capturing} title="지금 탭 화면을 찍어 대화에 첨부합니다" label={capturing ? '찍는 중' : undefined} onSend={capture} />
         <ExpandButton expanded={expanded} onToggle={() => setExpanded(!expanded)} />
       </div>
       <div className="preview-chrome">
@@ -764,9 +763,7 @@ function Logs({ servers }: { servers: ServerView[] }) {
             <span className="log-time">{clock(l.t)}</span>
             <span className="log-text">{l.text}</span>
             {l.level !== 'info' && (
-              <button className="log-send" title="새 대화 탭의 입력창에 넣습니다" onClick={() => insertIntoPrompt(`${project} 서버 로그에서 이 오류가 났어. 원인 찾아서 고쳐줘.\n\`\`\`\n${contextAround(lines[active!] ?? [], l)}\n\`\`\``)}>
-                새 대화로 보내기
-              </button>
+              <SendButton className="log-send" onSend={() => insertIntoPrompt(`${project} 서버 로그에서 이 오류가 났어. 원인 찾아서 고쳐줘.\n\`\`\`\n${contextAround(lines[active!] ?? [], l)}\n\`\`\``)} />
             )}
           </div>
         ))}
@@ -777,14 +774,19 @@ function Logs({ servers }: { servers: ServerView[] }) {
   );
 }
 
-/** 미리보기나 로그를 화면 가득 키운다. Esc로 원래 크기로 돌아온다. */
+/**
+ * 미리보기나 로그를 화면 가득 키운다. Esc로 원래 크기로 돌아온다.
+ * 대화로 보내기(로그 줄, 화면 캡처 등)를 하면 원래 크기로 돌아와 대화 입력창이 보이게 한다.
+ */
 function useExpand() {
   const [expanded, setExpanded] = useState(false);
   useEffect(() => {
     if (!expanded) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpanded(false); };
+    const toChat = () => setExpanded(false);
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('wts:new-chat', toChat);
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('wts:new-chat', toChat); };
   }, [expanded]);
   return [expanded, setExpanded] as const;
 }

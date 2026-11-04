@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, docUrl } from '../api';
 import { reportPrompt } from './TaskBar';
 import { insertIntoPrompt, useServerEvents } from '../events';
+import SendButton from './SendButton';
 import type { DocKind, DocMeta } from '../types';
 
 export const DOC_KIND: Record<DocKind, string> = { plan: '계획서', screen: '화면설계서', test: '테스트 결과서', report: '완료 보고서', other: '기타 문서' };
@@ -111,7 +112,7 @@ export default function DocsPage({ sessionId, ticket, live = false, initial, bac
                         ))}
                       </select>
                     )}
-                    {live && <button className="small-btn primary" onClick={() => mention(current)}>새 대화에서 언급</button>}
+                    {live && <SendButton className="small-btn primary" label="대화에서 언급" onSend={() => mention(current)} />}
                     <a className="small-btn" href={docUrl(sessionId, current.name, shown)} target="_blank" rel="noreferrer">새 창으로</a>
                     <button className="small-btn" onClick={() => remove(current)}>삭제</button>
                   </div>

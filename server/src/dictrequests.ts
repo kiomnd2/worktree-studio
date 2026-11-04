@@ -43,8 +43,11 @@ export type DictRequest = {
 type Row = Omit<DictRequest, 'payload' | 'kind'> & { kind: RequestInput['kind']; payload: string };
 const view = (r: Row) => ({ ...r, payload: JSON.parse(r.payload) }) as DictRequest;
 
+/** 처리할 요청(대기·실패)은 전부, 처리 끝난 요청은 최근 200건만. 대기까지 잘라 버리면 일괄 승인이 화면에 보이는 것만 처리하고 개수가 그대로인 것처럼 보인다. */
 export function listDictRequests(sessionId: number): DictRequest[] {
-  return (db.prepare(`SELECT * FROM dict_requests WHERE session_id = ? ORDER BY status = 'pending' DESC, id DESC LIMIT 200`).all(sessionId) as Row[]).map(view);
+  const open = db.prepare(`SELECT * FROM dict_requests WHERE session_id = ? AND status IN ('pending', 'failed') ORDER BY id DESC`).all(sessionId) as Row[];
+  const closed = db.prepare(`SELECT * FROM dict_requests WHERE session_id = ? AND status NOT IN ('pending', 'failed') ORDER BY id DESC LIMIT 200`).all(sessionId) as Row[];
+  return [...open, ...closed].map(view);
 }
 export const pendingDictRequests = (sessionId: number) => listDictRequests(sessionId).filter((r) => r.status === 'pending');
 

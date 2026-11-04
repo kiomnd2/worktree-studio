@@ -27,6 +27,12 @@ function typeOf(f: File): string | null {
 /** preview는 이미지일 때만 있다. */
 type Attachment = { id: string; name: string; mediaType: string; data: string; preview: string; size: number };
 
+/**
+ * 대화별로 쓰다 만 텍스트와 첨부. 탭을 옮기면 입력창이 새로 그려지므로(대화로 보내기로 다른 탭이 열릴 때도) 여기에 두었다가 돌아오면 되살린다.
+ * 첨부 미리보기 URL은 초안에 남아 있는 동안 살려 두고, 보내거나 지울 때 해제한다.
+ */
+const drafts = new Map<string, { text: string; attachments: Attachment[] }>();
+
 function readAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -47,8 +53,9 @@ function formatSize(n: number) {
 
 /** thread의 대화로 보낸다. 'new'면 보낼 때 새 대화를 열고 onStarted로 그 대화 id를 알린다. */
 export default function PromptInput({ session, thread, onStarted }: { session: Session; thread: Thread; onStarted: (chatId: number) => void }) {
-  const [text, setText] = useState('');
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const draftKey = `${session.id}:${thread.id === 'new' ? `new:${thread.db?.id ?? ''}` : thread.id}`;
+  const [text, setText] = useState(() => drafts.get(draftKey)?.text ?? '');
+  const [attachments, setAttachments] = useState<Attachment[]>(() => drafts.get(draftKey)?.attachments ?? []);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -66,13 +73,17 @@ export default function PromptInput({ session, thread, onStarted }: { session: S
   const running = thread.status === 'running';
   const chat = thread.id === 'new' ? 0 : thread.id;
 
-  useEffect(() => () => attachments.forEach((a) => a.preview && URL.revokeObjectURL(a.preview)), []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // 새 대화 입력창은 도구 화면에서 넘긴 텍스트와 이미지를 받는다(나타날 때 기다리던 것과 그 뒤에 오는 것).
   useEffect(() => {
-    if (thread.id !== 'new') return;
+    if (text || attachments.length) drafts.set(draftKey, { text, attachments });
+    else drafts.delete(draftKey);
+  }, [draftKey, text, attachments]);
+
+  // 메인 대화와 새 대화 입력창은 도구 화면에서 자기 쪽으로 넘긴 텍스트와 이미지를 받는다(나타날 때 기다리던 것과 그 뒤에 오는 것).
+  useEffect(() => {
+    const target = thread.id === 'new' ? 'new' : thread.id === 0 ? 'main' : null;
+    if (!target) return;
     const take = () => {
-      const items = takeNewChatPending();
+      const items = takeNewChatPending(target);
       if (!items.length) return;
       const texts = items.flatMap((i) => ('text' in i ? [i.text] : []));
       if (texts.length) setText((prev) => [prev.replace(/\s+$/, ''), ...texts].filter(Boolean).join('\n\n'));
