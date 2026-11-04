@@ -934,24 +934,6 @@ td .small-btn { white-space: nowrap; }
 .dict-groups > li.blocking { border-left: 3px solid var(--err); padding-left: 10px; }
 .dict-groups .dict-findings { padding-left: 14px; border-left: 2px solid var(--rule); }
 .dict-groups .small-btn, .dict-findings .small-btn { margin-left: 0; }
-.sync-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.sync-step { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; padding: 16px 18px; margin: 0; }
-.sync-groups > li > .row { align-items: center; }
-.sync-step h2 { margin: 0; display: flex; gap: 8px; align-items: center; }
-.sync-step p { margin: 0; }
-.sync-step button { margin-top: auto; }
-.sync-bulk { padding: 8px 10px; background: var(--ground); border-radius: 6px; }
-.sync-table td { vertical-align: top; }
-.sync-table td.nowrap { white-space: nowrap; }
-.sync-table .sync-file { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sync-table tr.muted td { opacity: .6; }
-.sync-acts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-.sync-scroll { max-height: 50vh; overflow: auto; }
-.sync-scroll input:not([type=checkbox]) { width: 100%; min-width: 140px; }
-tr.sync-bad td { background: rgba(200, 40, 40, .06); }
-.sync-need { color: var(--err); }
-.chip-btn.danger.on { background: var(--err); border-color: var(--err); }
-@media (max-width: 900px) { .sync-steps { grid-template-columns: 1fr; } }
 .small-select { min-height: 30px; font-size: 12.5px; padding: 0 6px; }
 .dict-progress { width: 180px; height: 8px; border-radius: 4px; background: var(--soft); overflow: hidden; }
 .dict-progress i { display: block; height: 100%; background: var(--ok); }

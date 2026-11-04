@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { insertIntoPrompt, useServerEvents } from '../events';
-import SyncTab from './SyncTab';
 import type { BaselineStatus, ColumnDraft, DictBaseline, DictDomain, DictFinding, DictGroup, DictIssue, DictKind, DictReport, DictUsage, TermUsage, DictRequest, DictSearch, ErdPayload, Resolution, Session, TermPayload, WordPayload } from '../types';
 
 /**
@@ -9,7 +8,7 @@ import type { BaselineStatus, ColumnDraft, DictBaseline, DictDomain, DictFinding
  * 표준 이름은 용어의 약어명(없으면 물리명)이다. ERD 다이어그램은 ErdPage에서 본다.
  */
 
-type Tab = 'check' | 'sync' | 'manage' | 'requests';
+type Tab = 'check' | 'manage' | 'requests';
 /** 사전 관리의 보기: 종류별 목록, 또는 겹치는 용어·단어 */
 type ManageView = DictKind | 'overlap';
 /** 사전 추가·수정 창에 넣을 값. id가 있으면 수정. */
@@ -70,7 +69,7 @@ export default function DictPage({ session, onBack, onOpenErd }: { session: Sess
           <div className="row"><button onClick={() => onOpenErd()}>ERD 화면</button><button onClick={onBack}>세션 화면으로</button></div>
         </div>
         <nav className="tabs" role="tablist" aria-label="용어사전 메뉴">
-          {([['check', '소스 검사'], ['sync', '동기화'], ['manage', '사전 관리'], ['requests', '요청']] as [Tab, string][]).map(([k, label]) => (
+          {([['check', '소스 검사'], ['manage', '사전 관리'], ['requests', '요청']] as [Tab, string][]).map(([k, label]) => (
             <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>
               {label}{k === 'requests' && pending > 0 && <span className="panel-menu-count bad">{pending}</span>}
             </button>
@@ -79,7 +78,6 @@ export default function DictPage({ session, onBack, onOpenErd }: { session: Sess
         {error && <p className="banner error" role="alert">{error}</p>}
         <datalist id="dict-domains">{domains.map((d) => <option key={d.id} value={d.name}>{d.type_for_dbms ?? d.data_type_default ?? ''}</option>)}</datalist>
         {tab === 'check' && <CheckTab session={session} onRegister={register} onOpenErd={onOpenErd} onShowInManage={showInManage} />}
-        {tab === 'sync' && <SyncTab session={session} onOpenErd={onOpenErd} onShowOverlap={() => showInManage('overlap', '')} />}
         {tab === 'manage' && <ManageTab key={manageQuery ? `${manageQuery.kind}:${manageQuery.q}` : ''} session={session} initial={manageQuery} onEdit={setEditing} />}
         {tab === 'requests' && <RequestsTab session={session} domains={domains} onOpenErd={onOpenErd} />}
         {editing && <DictEditor session={session} editing={editing} domains={domains} onClose={() => setEditing(null)} />}
@@ -776,19 +774,49 @@ function RequestsTab({ session, domains, onOpenErd }: { session: Session; domain
     if (e.type === 'dict.requests' && e.sessionId === session.id) reload();
     if (e.type === 'dict.updated') reloadTerms();
   });
+  const [bulk, setBulk] = useState<string | null>(null);
   if (!list) return error ? <p className="banner error">{error}</p> : <p className="muted">불러오는 중</p>;
   const open = (r: DictRequest) => r.status === 'pending' || r.status === 'failed';
   const shown = (view === 'pending' ? list.filter(open) : list).sort((a, b) => Number(open(b)) - Number(open(a)) || b.id - a.id);
+  // 일괄 승인은 승인 대기 중인 ERD 요청만. 테이블 추가 뒤에 그 테이블의 컬럼 요청이 오도록 먼저 만든 요청부터 반영한다.
+  const erdPending = list.filter((r) => r.kind === 'erd' && r.status === 'pending').sort((a, b) => a.id - b.id);
+  const approveAllErd = async () => {
+    const drops = erdPending.filter((r) => (r.payload as ErdPayload).action === 'drop_column').length;
+    const msg = `승인 대기 중인 ERD 변경 요청 ${erdPending.length}건을 저장된 초안 그대로 ERD에 반영합니다.`
+      + (drops ? `\n컬럼 삭제 ${drops}건이 들어 있습니다. 삭제한 컬럼에 걸린 관계도 함께 지워집니다.` : '')
+      + '\n카드에서 고친 내용은 반영되지 않습니다. 계속할까요?';
+    if (!confirm(msg)) return;
+    setError(null);
+    const failed: string[] = [];
+    for (const [i, r] of erdPending.entries()) {
+      setBulk(`${i + 1}/${erdPending.length}`);
+      try {
+        const res = await api.approveDictRequest(r.id, r.payload as ErdPayload);
+        if (res.status !== 'done') failed.push(`#${r.id} ${res.error ?? ''}`);
+      } catch (e) { failed.push(`#${r.id} ${(e as Error).message}`); }
+    }
+    setBulk(null);
+    if (failed.length) setError(`${erdPending.length}건 중 ${failed.length}건을 반영하지 못했습니다.\n${failed.join('\n')}`);
+    reload();
+  };
   return (
     <>
       <div className="card">
         <p className="muted small">Claude가 만든 용어·단어 등록, ERD 변경 초안입니다. 고쳐서 승인하면 erd-vibe에 들어가 팀 모두가 씁니다. 승인하기 전에는 아무것도 바뀌지 않습니다.</p>
-        <div className="seg" role="group" aria-label="보기">
-          <button className={`chip-btn${view === 'pending' ? ' on' : ''}`} onClick={() => setView('pending')}>대기 {list.filter(open).length}</button>
-          <button className={`chip-btn${view === 'all' ? ' on' : ''}`} onClick={() => setView('all')}>전체 {list.length}</button>
+        <div className="row">
+          <div className="seg" role="group" aria-label="보기">
+            <button className={`chip-btn${view === 'pending' ? ' on' : ''}`} onClick={() => setView('pending')}>대기 {list.filter(open).length}</button>
+            <button className={`chip-btn${view === 'all' ? ' on' : ''}`} onClick={() => setView('all')}>전체 {list.length}</button>
+          </div>
+          <span className="spacer" />
+          {erdPending.length > 0 && (
+            <button className="primary" disabled={bulk !== null} onClick={approveAllErd}>
+              {bulk ? `반영 중 ${bulk}` : `ERD 요청 ${erdPending.length}건 일괄 승인`}
+            </button>
+          )}
         </div>
       </div>
-      {error && <p className="banner error" role="alert">{error}</p>}
+      {error && <p className="banner error" role="alert" style={{ whiteSpace: 'pre-line' }}>{error}</p>}
       {shown.length === 0 && <p className="muted">{view === 'pending' ? '승인을 기다리는 요청이 없습니다.' : '요청이 없습니다.'}</p>}
       {shown.map((r) => <RequestCard key={r.id} r={r} domains={domains} terms={terms} onDone={reload} onOpenErd={onOpenErd} />)}
     </>
