@@ -51,7 +51,6 @@ import { checkSession, erdDiffSession, erdFindingsOf, excludesOf, ignoresOf, ses
 import { clearBaseline, compareBaseline, setBaselineStatus, snapshotBaseline } from './dictbaseline.js';
 import { dictUsage, forgetUsage } from './dictusage.js';
 import { schemaCheck, schemaIgnoresOf, setSchemaIgnore } from './schemasync.js';
-import { applyDrafts, applyErd, setDecisions, sourceTodo, syncReport, undoRun } from './syncstate.js';
 import { searchDictionary } from './dictsearch.js';
 import { approveDictRequest, createDictRequest, duplicateOf, listDictRequests, rejectDictRequest } from './dictrequests.js';
 import { buildIndex, resolve as judgeName, typeMatches } from './dict/judge.js';
@@ -667,50 +666,6 @@ app.put('/api/sessions/:id/schema/ignores', async (req) => {
   const s = sessionOf(idParam.parse(req.params).id);
   setSchemaIgnore(s.workspace_id, b.key.toUpperCase(), b.reason);
   return schemaIgnoresOf(s.workspace_id);
-});
-// 소스 · ERD · 용어사전 전체 동기화
-app.post('/api/sessions/:id/sync/check', async (req) => syncReport(idParam.parse(req.params).id));
-app.put('/api/sessions/:id/sync/decisions', async (req) => {
-  const b = z.object({
-    keys: z.array(z.string().min(1)).min(1).max(10000),
-    side: z.enum(['source', 'erd']).nullable().optional(),
-    status: z.enum(['todo', 'hold', 'accepted']).optional(),
-    note: z.string().max(500).optional(),
-  }).parse(req.body);
-  if (b.status && b.status !== 'todo' && !b.note?.trim()) throw new Error('보류·허용은 이유가 필요합니다.');
-  setDecisions(sessionOf(idParam.parse(req.params).id).workspace_id, b.keys, { side: b.side, status: b.status, note: b.note?.trim() });
-  return { ok: true };
-});
-app.post('/api/sessions/:id/sync/apply-dict', async (req) => {
-  const b = z.object({
-    drafts: z.array(z.discriminatedUnion('kind', [
-      z.object({ kind: z.literal('word'), key: z.string(), name: z.string(), english_name: z.string(), abbreviation: z.string(), definition: z.string().optional() }),
-      z.object({ kind: z.literal('domain'), key: z.string(), name: z.string().min(1), data_type: z.string().min(1), description: z.string().optional() }),
-      z.object({ kind: z.literal('term'), key: z.string(), logical_name: z.string().min(1), physical_name: z.string().min(1), physical_abbr_name: z.string().min(1), domain_name: z.string().nullable(), description: z.string().optional() }),
-    ])).min(1).max(1000),
-  }).parse(req.body);
-  sessionOf(idParam.parse(req.params).id);
-  const results = await applyDrafts(b.drafts);
-  forgetUsage();
-  return { results };
-});
-app.post('/api/sessions/:id/sync/apply-erd', async (req) => {
-  const { keys, kinds } = z.object({ keys: z.array(z.string().min(1)).min(1).max(5000), kinds: z.array(z.string()).optional() }).parse(req.body);
-  const r = await applyErd(idParam.parse(req.params).id, keys, kinds);
-  const pid = sessionErdId(sessionOf(idParam.parse(req.params).id));
-  if (pid) await afterEdit(pid);
-  return r;
-});
-app.post('/api/sessions/:id/sync/runs/:run/undo', async (req) => {
-  const { id, run } = z.object({ id: z.coerce.number().int(), run: z.coerce.number().int() }).parse(req.params);
-  const r = await undoRun(id, run);
-  const pid = sessionErdId(sessionOf(id));
-  if (pid) await afterEdit(pid);
-  return r;
-});
-app.post('/api/sessions/:id/sync/source-todo', async (req) => {
-  const { keys } = z.object({ keys: z.array(z.string()).max(5000).optional() }).parse(req.body ?? {});
-  return sourceTodo(idParam.parse(req.params).id, keys);
 });
 const termPayload = z.object({ logical_name: z.string(), physical_name: z.string(), physical_abbr_name: z.string().nullable(), domain_name: z.string().nullable(), description: z.string() });
 const wordPayload = z.object({ name: z.string(), english_name: z.string(), abbreviation: z.string().nullable(), definition: z.string() });

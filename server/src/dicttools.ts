@@ -4,7 +4,6 @@ import { searchDictionary, type DictSearchResult } from './dictsearch.js';
 import { cachedErdProject, erdConfigured } from './erdvibe.js';
 import { getSession } from './sessions.js';
 import { schemaCheck, type SchemaReport } from './schemasync.js';
-import { sourceTodo } from './syncstate.js';
 import type { SchemaFinding } from './dict/srcrefs.js';
 
 /** Claude에게 주는 용어사전 도구의 글 모양과, 시스템 프롬프트·tool_context에 붙일 줄. */
@@ -108,10 +107,4 @@ export function formatSchema(r: SchemaReport): string {
 }
 
 export async function schemaCheckText(sessionId: number, scope: 'changed' | 'all') { return formatSchema(await schemaCheck(sessionId, scope)); }
-export async function syncTodoText(sessionId: number, limit: number) {
-  const r = await sourceTodo(sessionId);
-  const more = r.todos.length > limit ? `\n\n(${r.todos.length}건 중 앞 ${limit}건. 다 고친 뒤 다시 부르면 다음 것이 나온다)` : '';
-  return (r.todos.length > limit ? (await sourceTodo(sessionId, r.todos.slice(0, limit).map((t) => t.key))).text : r.text) + more;
-}
-
 export { checkSession, createDictRequest, searchDictionary };

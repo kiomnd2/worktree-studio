@@ -19,7 +19,7 @@ import { accountsOf } from './accounts.js';
 import { recordUsage } from './usage.js';
 import { playwrightMcpCli } from './tests.js';
 import { SCREEN_DIR } from './screens.js';
-import { DICT_RULE, checkSession, createDictRequest, dictContextLines, erdTableText, formatCheck, formatLookup, schemaCheckText, searchDictionary, syncTodoText } from './dicttools.js';
+import { DICT_RULE, checkSession, createDictRequest, dictContextLines, erdTableText, formatCheck, formatLookup, schemaCheckText, searchDictionary } from './dicttools.js';
 import { erdConfigured } from './erdvibe.js';
 import type { ErdPayload } from './dictrequests.js';
 
@@ -446,19 +446,6 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
         { annotations: { readOnlyHint: true } },
       ),
       tool(
-        'sync_todo',
-        '용어사전·ERD와 맞추려고 소스에서 할 일(새 Liquibase changeset의 renameColumn·modifyDataType·addColumn과 매퍼·JPA 수정)을 받는다. 사용자가 동기화 화면에서 고른 기준과 상태를 따른다.',
-        { limit: z.number().int().min(1).max(100).default(30) },
-        async (args) => {
-          try {
-            return text(await syncTodoText(sessionId, args.limit));
-          } catch (err) {
-            return fail(`동기화 목록 오류: ${(err as Error).message}`);
-          }
-        },
-        { annotations: { readOnlyHint: true } },
-      ),
-      tool(
         'dict_request_term',
         'erd-vibe 용어사전에 없는 용어(또는 단어)를 등록하자고 사용자에게 요청한다. 사용자가 화면에서 고쳐 승인해야 팀 공유 사전에 들어간다. 기다리지 않고 바로 돌아오므로, 승인 전까지는 그 이름을 확정하지 말고 사용자에게 알린다. 단어가 사전에 없으면 kind "word"로 단어부터 요청한다.',
         {
@@ -647,7 +634,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
           }),
         },
         settings: { autoCompactWindow: AUTO_COMPACT_TOKENS, enabledPlugins: Object.fromEntries(DISABLED_PLUGINS.map((p) => [p, false])) },
-        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks', 'mcp__studio__db_query', 'mcp__studio__server_queries', 'mcp__studio__db_explain', 'mcp__studio__dict_lookup', 'mcp__studio__dict_check', 'mcp__studio__schema_check', 'mcp__studio__sync_todo', 'mcp__studio__dict_request_term', 'mcp__studio__erd_table', 'mcp__studio__erd_request_change', 'mcp__browser'],
+        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks', 'mcp__studio__db_query', 'mcp__studio__server_queries', 'mcp__studio__db_explain', 'mcp__studio__dict_lookup', 'mcp__studio__dict_check', 'mcp__studio__schema_check', 'mcp__studio__dict_request_term', 'mcp__studio__erd_table', 'mcp__studio__erd_request_change', 'mcp__browser'],
         // 추가 대화는 세션 작업 목록을 바꾸지 않는다. DB 대화는 코드와 파일도 고치지 않는다.
         ...(dbOnly ? { disallowedTools: ['mcp__studio__set_tasks', 'mcp__studio__dict_request_term', 'mcp__studio__erd_request_change', 'Edit', 'Write', 'NotebookEdit', 'Bash'] }
           : chatId !== 0 ? { disallowedTools: ['mcp__studio__set_tasks'] } : {}),

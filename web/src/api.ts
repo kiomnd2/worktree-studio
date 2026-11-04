@@ -7,7 +7,6 @@ import type {
   Account, Approval, ChangeScope, ArchiveEntry, DocMeta, JiraConfig, JiraIssue, JiraRequiredField, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
   ExplainResult, QueryDetail, QueryList, QuerySort,
   BaselineStatus, ColumnEdit, DdlPreview, DictKind, DictUsage, DictReport, DictRequest, DictSearch, ErdConfig, ErdPayload, ErdProject, ErdProjectSummary, ErdStatus, ErdView, ParsedDdl, RelationshipType, SchemaDiff, TermPayload, WordPayload,
-  DraftInput, DraftResult, ErdApplyResult, SyncReport, SyncSide, SyncStatus,
   ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, UsageReport, Workspace,
 } from './types';
 
@@ -170,13 +169,6 @@ export const api = {
   dictUsage: (sessionId: number, refresh = false) => request<DictUsage>('GET', `/api/sessions/${sessionId}/dict/usage?refresh=${refresh ? 1 : 0}`),
   dictIgnores: (sessionId: number) => request<{ name: string; reason: string; created_at: string }[]>('GET', `/api/sessions/${sessionId}/dict/ignores`),
   setDictIgnore: (sessionId: number, name: string, reason: string | null) => request('PUT', `/api/sessions/${sessionId}/dict/ignores`, { name, reason }),
-  syncCheck: (sessionId: number) => request<SyncReport>('POST', `/api/sessions/${sessionId}/sync/check`, {}),
-  setSyncDecisions: (sessionId: number, keys: string[], patch: { side?: SyncSide | null; status?: SyncStatus; note?: string }) =>
-    request('PUT', `/api/sessions/${sessionId}/sync/decisions`, { keys, ...patch }),
-  applySyncDict: (sessionId: number, drafts: DraftInput[]) => request<{ results: DraftResult[] }>('POST', `/api/sessions/${sessionId}/sync/apply-dict`, { drafts }),
-  applySyncErd: (sessionId: number, keys: string[], kinds?: string[]) => request<ErdApplyResult>('POST', `/api/sessions/${sessionId}/sync/apply-erd`, { keys, kinds }),
-  undoSyncRun: (sessionId: number, runId: number) => request<{ undone: number; failed: string[] }>('POST', `/api/sessions/${sessionId}/sync/runs/${runId}/undo`, {}),
-  syncSourceTodo: (sessionId: number, keys?: string[]) => request<{ todos: unknown[]; roots: string[]; text: string }>('POST', `/api/sessions/${sessionId}/sync/source-todo`, { keys }),
   dictRequests: (sessionId: number) => request<DictRequest[]>('GET', `/api/sessions/${sessionId}/dict/requests`),
   addDictRequest: (sessionId: number, body: { kind: 'term'; payload: TermPayload; reason?: string } | { kind: 'word'; payload: WordPayload; reason?: string }) =>
     request<DictRequest>('POST', `/api/sessions/${sessionId}/dict/requests`, body),
