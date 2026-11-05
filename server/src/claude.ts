@@ -19,7 +19,10 @@ import { accountsOf } from './accounts.js';
 import { recordUsage } from './usage.js';
 import { playwrightMcpCli } from './tests.js';
 import { SCREEN_DIR } from './screens.js';
-import { DICT_RULE, checkSession, createDictRequest, dictContextLines, erdTableText, formatCheck, formatLookup, schemaCheckText, searchDictionary } from './dicttools.js';
+import { DICT_RULE, checkFilterShape, checkSession, createDictRequest, dictContextLines, erdTableText, exportReport, formatCheck, formatLookup, schemaCheckText, searchDictionary } from './dicttools.js';
+import { requestLabel } from './dictrequests.js';
+import { refreshSessionDictionary } from './dictscan.js';
+import { ISSUES } from './dict/extract.js';
 import { erdConfigured } from './erdvibe.js';
 import type { ErdPayload } from './dictrequests.js';
 
@@ -409,9 +412,10 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       tool(
         'dict_lookup',
         'erd-vibe 용어사전(단어·용어·도메인)을 찾는다. 논리명(거래일자), 물리명(TR_DT, TRADE_DATE), camelCase(trDt), 단어(거래) 모두 된다. 식별자를 넣으면 표준인지, 아니면 표준 이름이 무엇인지도 판정한다.',
-        { query: z.string().describe('찾을 말. 비우면 전체 목록 앞부분') },
+        { query: z.string().describe('찾을 말. 비우면 전체 목록 앞부분'), refresh: z.boolean().optional().describe('erd-vibe에서 사전을 다시 받고 찾는다(방금 등록·수정한 것이 안 보일 때)') },
         async (args) => {
           try {
+            if (args.refresh) await refreshSessionDictionary(getSession(sessionId)!);
             return text(formatLookup(await searchDictionary(getSession(sessionId)!, args.query)));
           } catch (err) {
             return fail(`용어사전 조회 오류: ${(err as Error).message}`);
@@ -421,11 +425,24 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'dict_check',
-        '워크트리 소스(MyBatis 매퍼, SQL·DDL, Liquibase, JPA @Column)의 컬럼 이름을 용어사전·ERD와 맞대어 위반(비표준 표기, 미등록 용어·단어, 도메인 불일치, ERD에 없음, 같은 용어 혼용)을 찾는다. changed는 기준 브랜치에서 바뀐 파일만 본다.',
-        { scope: z.enum(['changed', 'all']).default('changed') },
+        '워크트리 소스(MyBatis 매퍼, SQL·DDL, Liquibase, JPA @Column)의 컬럼 이름을 용어사전·ERD와 맞대어 위반(비표준 표기, 미등록 용어·단어, 도메인 불일치, ERD에 없음, 같은 용어 혼용)을 (테이블, 컬럼) 단위로 찾는다. '
+          + 'changed는 기준 브랜치에서 바뀐 파일만 본다. 기준선이 있으면 기준선에 없는 키만 막힘. 결과가 길면 section·offset·limit으로 나눠 보고, 전체는 export로 JSON 파일을 받는다.',
+        {
+          scope: z.enum(['changed', 'all']).default('changed'),
+          ...checkFilterShape,
+          section: z.enum(['all', 'findings', 'held', 'groups', 'mixed', 'erd']).optional().describe('all: 요약+앞부분(기본), findings: 소스 위반, held: 보류·허용, groups: 원인별 묶음, mixed: 표기 혼용, erd: ERD 컬럼 위반'),
+          offset: z.number().int().min(0).optional(),
+          limit: z.number().int().min(1).max(500).optional().describe('한 번에 볼 줄 수(최대 500)'),
+          detail: z.boolean().optional().describe('위반마다 위치 전부(도메인 불일치는 틀린 타입이 적힌 테이블.컬럼·타입·파일:줄)'),
+          export: z.boolean().optional().describe('결과 전체를 세션 보관함에 JSON으로 쓰고 경로를 알려 준다'),
+          refresh: z.boolean().optional().describe('erd-vibe 사전·ERD를 다시 받고 검사한다'),
+        },
         async (args) => {
           try {
-            return text(formatCheck(await checkSession(sessionId, args.scope)));
+            const { scope, section, offset, limit, detail, export: exp, ...opts } = args;
+            const r = await checkSession(sessionId, scope, opts);
+            const out = formatCheck(r, { section, offset, limit, detail });
+            return text(exp ? `${out}\n전체 결과 JSON: ${exportReport(sessionId, 'dict-check', r)}` : out);
           } catch (err) {
             return fail(`용어 검사 오류: ${(err as Error).message}`);
           }
@@ -435,10 +452,16 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       tool(
         'schema_check',
         'Liquibase changelog를 순서대로 적용한 최종 스키마와 매퍼 XML·JPA 엔티티가 쓰는 테이블·컬럼을 맞댄다. 없는 컬럼, rename·drop된 옛 이름 사용을 찾는다(이번 변경의 새 줄이면 PR이 막힌다). changed는 바뀐 파일만.',
-        { scope: z.enum(['changed', 'all']).default('changed') },
+        {
+          scope: z.enum(['changed', 'all']).default('changed'),
+          tables: checkFilterShape.tables, exclude_paths: checkFilterShape.exclude_paths,
+          offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(500).optional(),
+          detail: z.boolean().optional().describe('불일치마다 위치 전부'), export: z.boolean().optional().describe('전체를 JSON 파일로'),
+        },
         async (args) => {
           try {
-            return text(await schemaCheckText(sessionId, args.scope));
+            const { scope, tables, exclude_paths, ...v } = args;
+            return text(await schemaCheckText(sessionId, scope, { tables, exclude_paths }, v));
           } catch (err) {
             return fail(`스키마 검사 오류: ${(err as Error).message}`);
           }
@@ -508,10 +531,86 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       tool(
         'erd_table',
         '이 세션 워크스페이스에 연결한 erd-vibe ERD에서 테이블 정의(컬럼, 타입, PK, NULL, 연결된 용어)를 본다. 물리명이나 논리명, 일부만 넣어도 된다.',
-        { name: z.string().min(1) },
+        { name: z.string().min(1), refresh: z.boolean().optional().describe('erd-vibe에서 ERD를 다시 받는다') },
         async (args) => {
           try {
+            if (args.refresh) await refreshSessionDictionary(getSession(sessionId)!);
             return text(await erdTableText(sessionId, args.name));
+          } catch (err) {
+            return fail((err as Error).message);
+          }
+        },
+        { annotations: { readOnlyHint: true } },
+      ),
+      tool(
+        'dict_reload',
+        'erd-vibe에서 용어·단어·도메인 사전과 연결한 ERD를 다시 받는다. erd-vibe 화면이나 다른 곳에서 바로 고친 것이 검사·찾기에 안 보일 때 쓴다(평소에는 1분마다 새로 받는다).',
+        {},
+        async () => {
+          try {
+            const r = await refreshSessionDictionary(getSession(sessionId)!);
+            return text(`사전을 다시 받았습니다: 단어 ${r.words} · 용어 ${r.terms} · 도메인 ${r.domains}${r.erd_tables !== null ? ` · ERD 테이블 ${r.erd_tables}` : ''}`);
+          } catch (err) {
+            return fail(`사전 다시 받기 오류: ${(err as Error).message}`);
+          }
+        },
+        { annotations: { readOnlyHint: true } },
+      ),
+      tool(
+        'dict_request_exception',
+        '용어 검사에서 이 위반을 예외로 두자고 사용자에게 요청한다. 사용자가 승인해야 반영된다. mode "ignore"는 검사에서 아예 뺀다. mode "hold"는 기준선 항목을 보류로 둬서 남은 일로는 세지만 위반·막힘 집계에서 뺀다(기준선이 있어야 한다). '
+          + 'table·issue를 비우면 그 컬럼 이름 전부에 걸린다. 고칠 수 있는 위반을 숨기는 데 쓰지 않는다.',
+        {
+          mode: z.enum(['ignore', 'hold']),
+          name: z.string().min(1).describe('컬럼 이름'),
+          table: z.string().optional().describe('테이블 물리명. 비우면 모든 테이블'),
+          issue: z.enum(ISSUES).optional().describe('위반 종류. 비우면 전부'),
+          note: z.string().min(1).describe('예외로 두는 사유(화면과 검사 결과에 남는다)'),
+          reason: z.string().optional().describe('요청 설명'),
+        },
+        async (args) => {
+          if (opts.dbOnly !== null) return fail('DB 대화에서는 예외 요청을 하지 않습니다.');
+          try {
+            const r = await createDictRequest(sessionId, { kind: 'exception', payload: { mode: args.mode, name: args.name, table: args.table ?? '', issue: args.issue ?? '', note: args.note } }, args.reason ?? args.note, 'claude');
+            return text(`예외 요청 #${r.id}을 올렸습니다. 사용자가 용어 검사 화면의 요청 탭에서 승인하면 반영됩니다. 승인 전에는 검사 결과가 그대로입니다.`);
+          } catch (err) {
+            return fail((err as Error).message);
+          }
+        },
+        { annotations: { readOnlyHint: true } },
+      ),
+      tool(
+        'dict_request_baseline',
+        '지금 워크트리 전체 검사 결과를 기준선으로 저장하자고 사용자에게 요청한다. 승인하면 그때 전체 검사를 돌려 기준선에 더하고, 이후에는 기준선에 없는 (테이블, 컬럼, 위반 종류)만 PR을 막는다. 이미 있는 항목의 상태·메모는 그대로.',
+        { reason: z.string().describe('기준선을 저장하려는 이유') },
+        async (args) => {
+          if (opts.dbOnly !== null) return fail('DB 대화에서는 기준선 요청을 하지 않습니다.');
+          try {
+            const r = await createDictRequest(sessionId, { kind: 'baseline', payload: { scope: 'all' } }, args.reason, 'claude');
+            return text(`기준선 저장 요청 #${r.id}을 올렸습니다. 사용자가 승인하면 그 시점의 전체 검사 결과가 기준선이 됩니다.`);
+          } catch (err) {
+            return fail((err as Error).message);
+          }
+        },
+        { annotations: { readOnlyHint: true } },
+      ),
+      tool(
+        'dict_request_edit',
+        'erd-vibe 사전의 용어·단어·도메인을 추가하거나 고치자고 사용자에게 요청한다(REST를 직접 부르지 않는다). 사용자가 바꾸기 전·후를 보고 승인해야 팀 공유 사전에 들어간다. '
+          + 'update는 target에 대상(용어는 표준 이름·물리명·논리명, 단어는 단어·약어, 도메인은 이름, 또는 id)을 넣고 values에는 바꿀 칸만 넣는다. 새 용어·단어 등록은 dict_request_term을 써도 된다.',
+        {
+          entity: z.enum(['term', 'word', 'domain']),
+          action: z.enum(['create', 'update']),
+          target: z.string().optional().describe('update: 고칠 항목'),
+          values: z.record(z.string(), z.string().nullable()).describe('term: logical_name, physical_name, physical_abbr_name, domain_name, description · word: name, english_name, abbreviation, definition · domain: name, data_type_default, data_type_oracle, data_type_mysql, data_type_postgresql, description'),
+          reason: z.string().describe('바꾸려는 이유와 영향(예: 이 용어를 쓰는 컬럼)'),
+        },
+        async (args) => {
+          if (opts.dbOnly !== null) return fail('DB 대화에서는 사전 수정 요청을 하지 않습니다.');
+          if (args.action === 'update' && !args.target) return fail('update는 target에 고칠 항목을 넣는다.');
+          try {
+            const r = await createDictRequest(sessionId, { kind: 'dict_edit', payload: { entity: args.entity, action: args.action, id: null, target: args.target ?? '', before: null, values: args.values } }, args.reason, 'claude');
+            return text(`사전 ${args.action === 'create' ? '추가' : '수정'} 요청 #${r.id}을 올렸습니다(${requestLabel(r)}). 사용자가 승인하기 전에는 사전이 바뀌지 않았습니다.`);
           } catch (err) {
             return fail((err as Error).message);
           }
@@ -634,9 +733,9 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
           }),
         },
         settings: { autoCompactWindow: AUTO_COMPACT_TOKENS, enabledPlugins: Object.fromEntries(DISABLED_PLUGINS.map((p) => [p, false])) },
-        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks', 'mcp__studio__db_query', 'mcp__studio__server_queries', 'mcp__studio__db_explain', 'mcp__studio__dict_lookup', 'mcp__studio__dict_check', 'mcp__studio__schema_check', 'mcp__studio__dict_request_term', 'mcp__studio__erd_table', 'mcp__studio__erd_request_change', 'mcp__browser'],
+        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks', 'mcp__studio__db_query', 'mcp__studio__server_queries', 'mcp__studio__db_explain', 'mcp__studio__dict_lookup', 'mcp__studio__dict_check', 'mcp__studio__schema_check', 'mcp__studio__dict_request_term', 'mcp__studio__erd_table', 'mcp__studio__erd_request_change', 'mcp__studio__dict_reload', 'mcp__studio__dict_request_exception', 'mcp__studio__dict_request_baseline', 'mcp__studio__dict_request_edit', 'mcp__browser'],
         // 추가 대화는 세션 작업 목록을 바꾸지 않는다. DB 대화는 코드와 파일도 고치지 않는다.
-        ...(dbOnly ? { disallowedTools: ['mcp__studio__set_tasks', 'mcp__studio__dict_request_term', 'mcp__studio__erd_request_change', 'Edit', 'Write', 'NotebookEdit', 'Bash'] }
+        ...(dbOnly ? { disallowedTools: ['mcp__studio__set_tasks', 'mcp__studio__dict_request_term', 'mcp__studio__erd_request_change', 'mcp__studio__dict_request_exception', 'mcp__studio__dict_request_baseline', 'mcp__studio__dict_request_edit', 'Edit', 'Write', 'NotebookEdit', 'Bash'] }
           : chatId !== 0 ? { disallowedTools: ['mcp__studio__set_tasks'] } : {}),
       },
     });

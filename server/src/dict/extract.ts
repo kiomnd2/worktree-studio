@@ -11,19 +11,39 @@ import type { BaselineView, FindingGroup, HotFile } from './triage.js';
 export type OccurrenceKind = 'sql' | 'resultmap' | 'ddl' | 'liquibase' | 'jpa';
 export type Occurrence = { file: string; line: number; kind: OccurrenceKind; table: string | null; type: string | null; text: string; added: boolean };
 export type Issue = Exclude<Verdict, 'standard'> | 'domain_mismatch' | 'not_in_erd';
+export const ISSUES = ['variant', 'unregistered_term', 'unknown_word', 'domain_mismatch', 'not_in_erd'] as const satisfies readonly Issue[];
+/** 도메인과 다른 타입이 적힌 곳 하나 */
+export type DomainMiss = { table: string | null; file: string; line: number; type: string; added: boolean };
+/** 위반 묶음의 기준선 상태. 종류 중 하나라도 기준선에 없으면 new */
+export type FindingBaseline = 'new' | 'todo' | 'hold' | 'accepted';
 export type Finding = {
+  /** 테이블.컬럼(테이블을 모르면 컬럼만). 판정·기준선·예외의 단위 */
+  key: string;
   name: string;
+  /** 위치에서 알아낸 테이블. resultMap이나 테이블이 여럿인 SQL처럼 모르면 null */
+  table: string | null;
   project_name: string;
   resolution: Resolution;
   issues: Issue[];
   /** 이번 변경에서 추가된 줄에 나왔는지 */
   added: boolean;
-  /** PR을 막는 위반인지(added이고 not_in_erd만 있는 게 아님) */
+  /** PR을 막는 위반인지(added이고 not_in_erd만 있는 게 아니고, 기준선이 있으면 기준선에 없는 종류가 있음) */
   blocking: boolean;
-  domain: { expected: string; actual: string[] } | null;
+  domain: { expected: string; actual: string[]; bad: DomainMiss[] } | null;
+  /** 기준선을 찍었을 때만 */
+  baseline: FindingBaseline | null;
   occurrences: Occurrence[];
   occurrence_count: number;
 };
+/** 출처 종류. mapper = 매퍼 XML의 SQL·resultMap, sql = .sql 파일의 DML */
+export type SourceKind = 'ddl' | 'liquibase' | 'mapper' | 'sql' | 'jpa';
+export const SOURCE_KINDS: SourceKind[] = ['ddl', 'liquibase', 'mapper', 'sql', 'jpa'];
+export const sourceKind = (o: { kind: OccurrenceKind; file: string }): SourceKind =>
+  o.kind === 'resultmap' || (o.kind === 'sql' && o.file.toLowerCase().endsWith('.xml')) ? 'mapper' : o.kind;
+export type CheckFilter = { tables?: string[]; exclude_paths?: string[]; kinds?: SourceKind[]; issues?: Issue[] };
+/** 예외(무시) 판정: 테이블·위반 종류를 비운 규칙은 전부에 걸린다. issue를 안 주면 종류를 비운 규칙만 본다 */
+export type IgnoreMatch = (table: string | null, name: string, issue?: Issue | 'no_term_link') => boolean;
+export const findingKey = (table: string | null, name: string) => (table ? `${table}.${name}` : name);
 export type MixedGroup = { logical_name: string; standard: string; spellings: { name: string; count: number; standard: boolean }[] };
 export type ErdFinding = { table: string; column: string; logical_name: string; type: string | null; resolution: Resolution; issues: (Issue | 'no_term_link')[] };
 export type DictReport = {
@@ -37,6 +57,10 @@ export type DictReport = {
   erd_findings: ErdFinding[];
   dictionary_duplicates: { logical_name: string; standards: string[] }[];
   ignored: number;
+  /** 기준선에서 보류·허용으로 둔 위반(findings에는 있지만 새 위반·막힘에서 빠진다) */
+  suppressed: number;
+  /** 이번 검사에 건 범위 필터(없으면 null) */
+  filter: CheckFilter | null;
   /** 원인별 묶음 */
   groups: FindingGroup[];
   hot_files: HotFile[];
@@ -158,11 +182,14 @@ export function scanText(text: string, ext: string, rel: string, tableNames: Set
   if (!SCAN_EXTS.includes(ext)) return [];
   const out: Raw[] = [];
   if (ext === '.java' || ext === '.kt') {
+    // 컬럼보다 앞에 나온 마지막 @Table(name)이 그 엔티티의 테이블
+    const tables = [...text.matchAll(/@Table\s*\([^)]*?\bname\s*=\s*"([^"]+)"/g)].map((m) => ({ at: m.index ?? 0, name: m[1].toUpperCase().split('.').pop()! }));
     for (const m of text.matchAll(/@(?:Column|JoinColumn)\s*\(([^)]*)\)/g)) {
       const name = m[1].match(/\bname\s*=\s*"([^"]+)"/)?.[1];
       if (!name) continue;
       const type = m[1].match(/\bcolumnDefinition\s*=\s*"([^"]+)"/)?.[1] ?? null;
-      out.push({ name, file: rel, line: lineAt(text, m.index ?? 0), kind: 'jpa', table: null, type });
+      const table = tables.filter((t) => t.at < (m.index ?? 0)).pop()?.name ?? null;
+      out.push({ name, file: rel, line: lineAt(text, m.index ?? 0), kind: 'jpa', table, type });
     }
     return out;
   }
@@ -206,18 +233,20 @@ export function scanText(text: string, ext: string, rel: string, tableNames: Set
 
 
 /** ERD 컬럼을 같은 규칙으로 판정하고, 용어에 연결하지 않은 컬럼도 표시한다. */
-export function erdFindingsOf(ix: DictIndex, erd: ErdProject, ignored: Set<string>): ErdFinding[] {
+export function erdFindingsOf(ix: DictIndex, erd: ErdProject, ignored: IgnoreMatch): ErdFinding[] {
   const out: ErdFinding[] = [];
   for (const t of erd.tables) for (const c of t.columns) {
+    const name = normalizeIdent(c.physical_name);
+    const table = t.physical_name.toUpperCase();
+    if (ignored(table, name)) continue;
     const res = resolve(ix, c.physical_name);
     const issues: ErdFinding['issues'] = [];
     if (res.verdict !== 'standard') issues.push(res.verdict);
     if (!c.term_dictionary_id) issues.push('no_term_link');
     const type = columnType(c);
-    if (type && res.term?.domain_type && !typeMatches(type, res.term.domain_type)) issues.push('domain_mismatch');
-    if (issues.length && !ignored.has(normalizeIdent(c.physical_name))) {
-      out.push({ table: t.physical_name, column: c.physical_name, logical_name: c.logical_name, type, resolution: res, issues });
-    }
+    if (type && res.term?.domain_type && !typeMatches(type, res.term.domain_type, ix.dbms)) issues.push('domain_mismatch');
+    const left = issues.filter((i) => !ignored(table, name, i));
+    if (left.length) out.push({ table: t.physical_name, column: c.physical_name, logical_name: c.logical_name, type, resolution: res, issues: left });
   }
   return out;
 }
@@ -228,16 +257,26 @@ const ISSUE_LABEL: Record<Issue | 'no_term_link', string> = {
 };
 export const issueLabel = (i: Issue | 'no_term_link') => ISSUE_LABEL[i];
 
-/** Claude·PR 출력용 한 줄 요약 */
-export function findingLine(f: Finding): string {
+/** Claude·PR 출력용 한 줄 요약. detail이면 위치를 전부(도메인 불일치는 틀린 타입이 적힌 곳마다) 줄을 바꿔 붙인다 */
+export function findingLine(f: Finding, detail = false): string {
   const r = f.resolution;
   const hint = r.term && r.verdict === 'variant' ? ` → 표준 ${r.term.standard} (${r.term.logical_name})`
     : r.draft ? ` → 사전에 없는 용어 "${r.draft.logical_name}" (등록 초안 ${r.draft.physical_abbr_name})`
     : r.missing.length ? ` → 단어사전에 없는 토큰 ${r.missing.join(', ')}${r.similar.length ? `, 비슷한 용어 ${r.similar.map((t) => `${t.standard}(${t.logical_name})`).join(', ')}` : ''}`
     : '';
   const dom = f.domain ? ` · 도메인 ${f.domain.expected}인데 ${f.domain.actual.join(', ')}` : '';
+  const st = f.baseline && f.baseline !== 'todo' ? ` (기준선 ${{ new: '새로 생김', hold: '보류', accepted: '허용' }[f.baseline]})` : '';
+  const head = `- ${f.blocking ? '[막힘] ' : ''}${f.table ? `${f.table}.` : '(테이블 모름) '}${f.name} [${f.issues.map(issueLabel).join(', ')}]${st}${hint}${dom}`;
   const o = f.occurrences[0];
-  return `- ${f.name} [${f.issues.map(issueLabel).join(', ')}]${hint}${dom} · ${f.project_name}/${o.file}:${o.line}${f.occurrence_count > 1 ? ` 외 ${f.occurrence_count - 1}곳` : ''}`;
+  if (!detail) return `${head} · ${f.project_name}/${o.file}:${o.line}${f.occurrence_count > 1 ? ` 외 ${f.occurrence_count - 1}곳` : ''}`;
+  const lines = f.domain
+    ? f.domain.bad.map((b) => `    ${b.table ?? '?'}.${f.name} ${b.type} · ${f.project_name}/${b.file}:${b.line}${b.added ? ' (추가)' : ''}`)
+    : [];
+  const shownAt = new Set(f.domain?.bad.map((b) => `${b.file}:${b.line}`) ?? []);
+  lines.push(...f.occurrences.filter((x) => !shownAt.has(`${x.file}:${x.line}`))
+    .map((x) => `    ${f.project_name}/${x.file}:${x.line} [${sourceKind(x)}]${x.type ? ` ${x.type}` : ''}${x.added ? ' (추가)' : ''} ${x.text}`));
+  if (f.occurrence_count > f.occurrences.length) lines.push(`    … 위치 ${f.occurrence_count - f.occurrences.length}곳은 결과에 담지 않음`);
+  return [`${head} · ${f.occurrence_count}곳`, ...lines].join('\n');
 }
 
 export type SchemaDiffKind = 'source_only_table' | 'erd_only_table' | 'source_only_column' | 'erd_only_column' | 'type_mismatch';
@@ -278,7 +317,7 @@ export function diffSchema(raws: Raw[], erd: ErdProject): SchemaDiff[] {
       const ec = ecols.get(cn);
       if (!ec) { out.push({ kind: 'source_only_column', table: name, column: cn, erd_type: null, source_type: c.type, file: c.file, line: c.line }); continue; }
       const et2 = columnType(ec);
-      if (et2 && c.type && !typeMatches(c.type, et2) && !typeMatches(et2, c.type)) {
+      if (et2 && c.type && !typeMatches(c.type, et2, erd.dbms_type) && !typeMatches(et2, c.type, erd.dbms_type)) {
         out.push({ kind: 'type_mismatch', table: name, column: cn, erd_type: et2, source_type: c.type, file: c.file, line: c.line });
       }
     }

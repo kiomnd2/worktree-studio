@@ -4,6 +4,7 @@ import { db } from './db.js';
 import { walk } from './mapperindex.js';
 import { getSession, type SessionView } from './sessions.js';
 import { addedLines, excludeMatcher } from './dictscan.js';
+import { globToRegExp } from './dict/triage.js';
 import { buildSchema, emptySchema, type ChangelogIO, type LbSchema } from './dict/liquibase.js';
 import type { Raw } from './dict/extract.js';
 import { compareRefs, jpaClasses, jpaRefs, mapperRefs, type JpaClass, type LocatedRef, type SchemaFinding, type SchemaFindingKind, type SourceRef } from './dict/srcrefs.js';
@@ -212,7 +213,9 @@ export async function addedBySession(s: SessionView): Promise<Map<string, Map<st
   return out;
 }
 
-export async function schemaCheck(sessionId: number, scope: 'changed' | 'all'): Promise<SchemaReport> {
+export type SchemaFilter = { tables?: string[]; exclude_paths?: string[] };
+
+export async function schemaCheck(sessionId: number, scope: 'changed' | 'all', filter: SchemaFilter = {}): Promise<SchemaReport> {
   const s = getSession(sessionId);
   if (!s) throw new Error('세션이 없습니다.');
   const { apps, schema } = sessionSchemas(s);
@@ -227,7 +230,11 @@ export async function schemaCheck(sessionId: number, scope: 'changed' | 'all'): 
   const ignores = schemaIgnoresOf(s.workspace_id);
   const ignored = new Set(ignores.map((i) => i.key));
   // Liquibase·DDL이 하나도 없으면 비교할 기준이 없다
-  const findings = schema.tables.size ? compareRefs(schema, refs, { withUnused: scope === 'all', ignored }) : [];
+  const tableRes = (filter.tables ?? []).map((p) => p.trim()).filter(Boolean).map((p) => globToRegExp(p.toUpperCase()));
+  const pathRes = (filter.exclude_paths ?? []).map((p) => p.trim()).filter(Boolean).map(globToRegExp);
+  if (pathRes.length) refs = refs.filter((r) => !pathRes.some((re) => re.test(r.file) || re.test(`${r.project_name}/${r.file}`)));
+  const findings = (schema.tables.size ? compareRefs(schema, refs, { withUnused: scope === 'all', ignored }) : [])
+    .filter((f) => !tableRes.length || (f.table !== null && tableRes.some((re) => re.test(f.table!.toUpperCase()))));
   const counts: SchemaReport['counts'] = {};
   for (const f of findings) counts[f.kind] = (counts[f.kind] ?? 0) + 1;
   return {

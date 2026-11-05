@@ -16,7 +16,7 @@ export type FindingGroup = {
   title: string;
   /** variant: 표준 용어 논리명 */
   detail: string | null;
-  /** 출현이 많은 순 */
+  /** 위반 키(테이블.컬럼, 테이블을 모르면 컬럼). 출현이 많은 순 */
   names: string[];
   occurrence_count: number;
   added: boolean;
@@ -27,7 +27,7 @@ export function groupFindings(findings: Finding[]): FindingGroup[] {
   const groups = new Map<string, FindingGroup & { counts: Map<string, number> }>();
   const add = (key: string, kind: GroupKind, issue: Issue, title: string, detail: string | null, f: Finding) => {
     const g = groups.get(key) ?? { key, kind, issue, title, detail, names: [], occurrence_count: 0, added: false, counts: new Map() };
-    if (!g.counts.has(f.name)) { g.counts.set(f.name, f.occurrence_count); g.occurrence_count += f.occurrence_count; }
+    if (!g.counts.has(f.key)) { g.counts.set(f.key, f.occurrence_count); g.occurrence_count += f.occurrence_count; }
     g.added ||= f.added;
     groups.set(key, g);
   };
@@ -55,7 +55,7 @@ export function hotFiles(findings: Finding[], limit = 10): HotFile[] {
   for (const f of findings) for (const o of f.occurrences) {
     const k = `${f.project_name}\0${o.file}`;
     const h = m.get(k) ?? { project_name: f.project_name, file: o.file, names: 0, occurrences: 0, set: new Set() };
-    h.set.add(f.name); h.occurrences++;
+    h.set.add(f.key); h.occurrences++;
     m.set(k, h);
   }
   return [...m.values()].map(({ set, ...h }) => ({ ...h, names: set.size }))
@@ -71,15 +71,23 @@ export type BaselineView = {
   todo: number;
   hold: number;
   accepted: number;
-  /** 기준선에 없는 위반(이름|종류) 수 */
+  /** 기준선에 없는 위반(테이블.컬럼|종류) 수 */
   new_count: number;
-  /** 이름|종류 → 상태. 기준선에 없으면 빠져 있다 */
+  /** 기준선에 있는데 출현 수가 늘어난·줄어든 키 수와, 늘어난·줄어든 출현 합 */
+  increased: number;
+  decreased: number;
+  occ_added: number;
+  occ_removed: number;
+  /** 이번 검사 위반의 키(baselineKey) → 상태. 기준선에 없으면 빠져 있다 */
   status: Record<string, BaselineStatus>;
   notes: Record<string, string>;
 };
 
-/** 기준선 한 줄의 키. 이름과 위반 종류 단위로 잡아, 도메인만 고쳐도 그만큼 해결로 센다. */
-export const baselineKey = (name: string, issue: Issue) => `${name}|${issue}`;
+/**
+ * 기준선 한 줄의 키. (테이블, 컬럼, 위반 종류) 단위로 잡아, 도메인만 고쳐도 그만큼 해결로 센다.
+ * 테이블을 모르는 위치는 빈 테이블, 옛 기준선(이름 단위)에서 옮긴 줄은 '*'(아무 테이블)다.
+ */
+export const baselineKey = (table: string | null, name: string, issue: Issue) => `${table ?? ''}|${name}|${issue}`;
 
 /** 검사 제외 경로 패턴. `**`는 여러 폴더, `*`는 폴더 안의 이름 일부. 패턴에 /가 없으면 어느 폴더에서든 이름이 맞으면 */
 export function globToRegExp(pattern: string): RegExp {

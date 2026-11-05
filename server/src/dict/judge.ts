@@ -166,15 +166,23 @@ function similarTerms(ix: DictIndex, toks: string[], cands: Word[][]): TermRef[]
 /**
  * VARCHAR2(10 BYTE) → VARCHAR(10), NUMBER ( 10, 2 ) → NUMBER(10,2).
  * VARCHAR2와 VARCHAR는 같게 본다(erd-vibe DDL 가져오기가 Oracle VARCHAR2를 VARCHAR로 저장한다).
+ * Oracle에서는 Liquibase가 Oracle에 만드는 타입으로 맞춘다: BIGINT → NUMBER(19), INT·INTEGER → NUMBER(10),
+ * SMALLINT → NUMBER(5), TINYINT → NUMBER(3), DECIMAL·NUMERIC(p,s) → NUMBER(p,s), NUMBER(p,0) → NUMBER(p).
  */
-export function normalizeType(t: string): string {
-  return up(t).replace(/\s+(BYTE|CHAR)\s*\)/g, ')').replace(/\s+/g, '').replace(/^VARCHAR2\b/, 'VARCHAR');
+export function normalizeType(t: string, dbms = 'ORACLE'): string {
+  let n = up(t).replace(/\s+(BYTE|CHAR)\s*\)/g, ')').replace(/\s+/g, '').replace(/^VARCHAR2\b/, 'VARCHAR');
+  if (dbms.toUpperCase() !== 'ORACLE') return n.replace(/^NUMERIC\b/, 'DECIMAL');
+  const ints: Record<string, string> = { BIGINT: 'NUMBER(19)', INTEGER: 'NUMBER(10)', INT: 'NUMBER(10)', SMALLINT: 'NUMBER(5)', TINYINT: 'NUMBER(3)' };
+  const head = n.match(/^[A-Z0-9]+/)?.[0] ?? '';
+  if (ints[head]) return ints[head];
+  if (head === 'DECIMAL' || head === 'NUMERIC') n = `NUMBER${n.slice(head.length)}`;
+  return n.replace(/^NUMBER\((\d+),0\)$/, 'NUMBER($1)');
 }
 
-/** 실제 타입이 용어 도메인 타입과 같은지. 도메인에 길이가 없으면(DATE) 이름만 본다. */
-export function typeMatches(actual: string, expected: string): boolean {
-  const a = normalizeType(actual);
-  const e = normalizeType(expected);
+/** 실제 타입이 용어 도메인 타입과 같은지. 도메인에 길이가 없으면(DATE, NUMBER) 이름만 본다. */
+export function typeMatches(actual: string, expected: string, dbms = 'ORACLE'): boolean {
+  const a = normalizeType(actual, dbms);
+  const e = normalizeType(expected, dbms);
   if (a === e) return true;
   // 길이를 안 적은 CHAR는 CHAR(1)
   if ((a === 'CHAR' && e === 'CHAR(1)') || (e === 'CHAR' && a === 'CHAR(1)')) return true;

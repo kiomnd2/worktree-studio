@@ -559,7 +559,7 @@ async function runJob(session: SessionView, job: PrJob, items: PrItem[], prior?:
         }
         const mine = report.findings.filter((f) => f.project_name === repo.project_name);
         const blocking = mine.filter((f) => f.blocking);
-        s.output = blocking.length ? blocking.map(findingLine).join('\n') : null;
+        s.output = blocking.length ? blocking.map((f) => findingLine(f)).join('\n') : null;
         s.detail = blocking.length ? `새 위반 ${blocking.length}건` : `위반 없음 (기존 위반·경고 ${mine.length}건)`;
         if (!blocking.length) return;
         if (job.ignore_check_failures) {

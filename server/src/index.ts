@@ -47,10 +47,12 @@ import { assertNewWork, closePr, continueIgnoringChecks, getPrJob, listPrs, prep
 import { addScreen, capturePreview, detectScreens, removeScreen, screenState, setScreenChecked } from './screens.js';
 import { getQuery, getSqlLogInfo, listQueries, muteQuery, resetQueries } from './querylog.js';
 import { createDictEntry, createErdProject, deleteDictEntries, erdApi, erdConfigView, erdProject, erdStatus, erdWebUrl, dictionary, listErdProjects, saveErdConfig, updateDictEntry, type DictKind } from './erdvibe.js';
-import { checkSession, erdDiffSession, erdFindingsOf, excludesOf, ignoresOf, sessionIndex, setExcludes, setIgnore, sessionErdId } from './dictscan.js';
+import { checkSession, erdDiffSession, erdFindingsOf, excludesOf, ignoreMatcher, ignoresOf, refreshSessionDictionary, sessionIndex, setExcludes, setIgnore, sessionErdId } from './dictscan.js';
 import { clearBaseline, compareBaseline, setBaselineStatus, snapshotBaseline } from './dictbaseline.js';
 import { dictUsage, forgetUsage } from './dictusage.js';
 import { schemaCheck, schemaIgnoresOf, setSchemaIgnore } from './schemasync.js';
+import { checkFilterShape } from './dicttools.js';
+import { ISSUES } from './dict/extract.js';
 import { searchDictionary } from './dictsearch.js';
 import { approveDictRequest, createDictRequest, duplicateOf, listDictRequests, rejectDictRequest } from './dictrequests.js';
 import { buildIndex, resolve as judgeName, typeMatches } from './dict/judge.js';
@@ -612,13 +614,19 @@ app.get('/api/sessions/:id/dict/search', async (req) => {
   return searchDictionary(sessionOf(idParam.parse(req.params).id), q, limit);
 });
 app.post('/api/sessions/:id/dict/check', async (req) => {
-  const { scope } = z.object({ scope: z.enum(['changed', 'all']).default('changed') }).parse(req.body ?? {});
-  return checkSession(idParam.parse(req.params).id, scope);
+  const b = z.object({ scope: z.enum(['changed', 'all']).default('changed'), refresh: z.boolean().optional(), ...checkFilterShape }).parse(req.body ?? {});
+  const { scope, ...opts } = b;
+  return checkSession(idParam.parse(req.params).id, scope, opts);
+});
+app.post('/api/sessions/:id/dict/refresh', async (req) => {
+  const r = await refreshSessionDictionary(sessionOf(idParam.parse(req.params).id));
+  broadcast({ type: 'dict.updated' });
+  return r;
 });
 app.get('/api/sessions/:id/dict/ignores', async (req) => ignoresOf(sessionOf(idParam.parse(req.params).id).workspace_id));
 app.put('/api/sessions/:id/dict/ignores', async (req) => {
-  const b = z.object({ name: z.string().min(1), reason: z.string().nullable() }).parse(req.body);
-  setIgnore(sessionOf(idParam.parse(req.params).id).workspace_id, b.name, b.reason);
+  const b = z.object({ name: z.string().min(1), reason: z.string().nullable(), table: z.string().max(200).default(''), issue: z.enum(['', ...ISSUES]).default('') }).parse(req.body);
+  setIgnore(sessionOf(idParam.parse(req.params).id).workspace_id, b.name, b.reason, b.table, b.issue);
   return { ok: true };
 });
 app.get('/api/sessions/:id/dict/excludes', async (req) => excludesOf(sessionOf(idParam.parse(req.params).id).workspace_id));
@@ -643,7 +651,7 @@ app.delete('/api/sessions/:id/dict/baseline', async (req) => {
 });
 app.put('/api/sessions/:id/dict/baseline/status', async (req) => {
   const b = z.object({
-    keys: z.array(z.object({ name: z.string().min(1), issue: z.string().min(1) })).min(1).max(5000),
+    keys: z.array(z.object({ table: z.string().nullable().optional(), name: z.string().min(1), issue: z.string().min(1) })).min(1).max(5000),
     status: z.enum(['todo', 'hold', 'accepted']),
     note: z.string().max(500).default(''),
   }).parse(req.body);
@@ -657,8 +665,8 @@ app.get('/api/sessions/:id/dict/usage', async (req) => {
 });
 // Liquibase 최종 스키마 ↔ 매퍼·JPA
 app.post('/api/sessions/:id/schema/check', async (req) => {
-  const { scope } = z.object({ scope: z.enum(['changed', 'all']).default('changed') }).parse(req.body ?? {});
-  return schemaCheck(idParam.parse(req.params).id, scope);
+  const { scope, tables, exclude_paths } = z.object({ scope: z.enum(['changed', 'all']).default('changed'), tables: checkFilterShape.tables, exclude_paths: checkFilterShape.exclude_paths }).parse(req.body ?? {});
+  return schemaCheck(idParam.parse(req.params).id, scope, { tables, exclude_paths });
 });
 app.get('/api/sessions/:id/schema/ignores', async (req) => schemaIgnoresOf(sessionOf(idParam.parse(req.params).id).workspace_id));
 app.put('/api/sessions/:id/schema/ignores', async (req) => {
@@ -669,8 +677,6 @@ app.put('/api/sessions/:id/schema/ignores', async (req) => {
 });
 const termPayload = z.object({ logical_name: z.string(), physical_name: z.string(), physical_abbr_name: z.string().nullable(), domain_name: z.string().nullable(), description: z.string() });
 const wordPayload = z.object({ name: z.string(), english_name: z.string(), abbreviation: z.string().nullable(), definition: z.string() });
-// ERD 변경 초안은 dictrequests.validateErd가 모양을 확인한다.
-const erdPayload = z.object({ action: z.enum(['add_table', 'add_column', 'update_column', 'drop_column']) }).passthrough();
 app.get('/api/sessions/:id/dict/requests', async (req) => listDictRequests(idParam.parse(req.params).id));
 app.post('/api/sessions/:id/dict/requests', async (req) => {
   const b = z.discriminatedUnion('kind', [
@@ -680,7 +686,8 @@ app.post('/api/sessions/:id/dict/requests', async (req) => {
   return createDictRequest(idParam.parse(req.params).id, b.kind === 'term' ? { kind: 'term', payload: b.payload } : { kind: 'word', payload: b.payload }, b.reason, 'user');
 });
 app.post('/api/dict-requests/:id/approve', async (req) => {
-  const b = z.object({ payload: z.union([erdPayload, termPayload, wordPayload]) }).parse(req.body);
+  // 모양은 종류마다 dictrequests가 확인한다(ERD·예외·기준선·사전 수정)
+  const b = z.object({ payload: z.union([termPayload, wordPayload, z.object({}).passthrough()]) }).parse(req.body);
   return approveDictRequest(idParam.parse(req.params).id, b.payload as Parameters<typeof approveDictRequest>[1]);
 });
 app.post('/api/dict-requests/:id/reject', async (req) => {
@@ -748,7 +755,7 @@ app.get('/api/sessions/:id/erd', async (req) => {
   if (!pid) return { web_url: erdWebUrl(), linked_id: null, project: null, findings: [], terms: {} };
   const [dict, erd] = await Promise.all([dictionary(), erdProject(pid, q.refresh === '1')]);
   const ix = buildIndex(dict, erd.dbms_type);
-  const ignored = new Set(ignoresOf(s.workspace_id).map((i) => i.name));
+  const ignored = ignoreMatcher(s.workspace_id);
   const used = new Set(erd.tables.flatMap((t) => t.columns.map((c) => c.term_dictionary_id)).filter(Boolean));
   const terms = Object.fromEntries(dict.terms.filter((t) => used.has(t.id)).map((t) => [t.id, { logical_name: t.logical_name, standard: (t.physical_abbr_name || t.physical_name).toUpperCase() }]));
   return { web_url: erdWebUrl(), linked_id: linked, project: erd, findings: erdFindingsOf(ix, erd, ignored), terms };
@@ -901,7 +908,7 @@ app.post('/api/sessions/:id/erd/ddl/parse', async (req) => {
     const existing = erd?.tables.find((x) => x.physical_name.toUpperCase() === t.physical_name.toUpperCase());
     const cols = new Map(existing?.columns.map((c) => [c.physical_name.toUpperCase(), c]) ?? []);
     const added = t.columns.filter((c) => !cols.has(c.physical_name.toUpperCase())).length;
-    const changed = t.columns.filter((c) => { const e = cols.get(c.physical_name.toUpperCase()); return e && !typeMatches(c.data_type, columnType(e) ?? ''); }).length;
+    const changed = t.columns.filter((c) => { const e = cols.get(c.physical_name.toUpperCase()); return e && !typeMatches(c.data_type, columnType(e) ?? '', ix.dbms); }).length;
     const verdicts = t.columns.map((c) => judgeName(ix, c.physical_name)).filter((r) => r.verdict !== 'standard');
     return {
       physical_name: t.physical_name, logical_name: t.logical_name, columns: t.columns.length,

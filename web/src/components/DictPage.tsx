@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { insertIntoPrompt, useServerEvents } from '../events';
-import type { BaselineStatus, ColumnDraft, DictBaseline, DictDomain, DictFinding, DictGroup, DictIssue, DictKind, DictReport, DictUsage, TermUsage, DictRequest, DictSearch, ErdPayload, Resolution, Session, TermPayload, WordPayload } from '../types';
+import type { BaselinePayload, BaselineStatus, ColumnDraft, DictBaseline, DictDomain, DictEditPayload, DictFinding, DictGroup, DictIssue, DictKind, DictReport, DictSourceKind, DictUsage, TermUsage, DictRequest, DictSearch, ErdPayload, ExceptionPayload, Resolution, Session, TermPayload, WordPayload } from '../types';
 
 /**
  * erd-vibe 용어사전 화면. 소스의 컬럼 이름 검사, 사전 관리(단어·용어·도메인 찾기·추가·수정·삭제), Claude 요청 승인을 한 곳에서 한다.
@@ -34,7 +34,7 @@ function hint(r: Resolution): string {
 function findingPrompt(fs: DictFinding[]): string {
   const lines = fs.map((f) => {
     const o = f.occurrences[0];
-    return `- ${f.name} [${f.issues.map((i) => ISSUE[i].label).join(', ')}] ${hint(f.resolution)}${f.domain ? ` · 도메인 ${f.domain.expected}인데 ${f.domain.actual.join(', ')}` : ''} · ${f.project_name}/${o.file}:${o.line}${f.occurrence_count > 1 ? ` 외 ${f.occurrence_count - 1}곳` : ''}`;
+    return `- ${f.key} [${f.issues.map((i) => ISSUE[i].label).join(', ')}] ${hint(f.resolution)}${f.domain ? ` · 도메인 ${f.domain.expected}인데 ${f.domain.actual.join(', ')}` : ''} · ${f.project_name}/${o.file}:${o.line}${f.occurrence_count > 1 ? ` 외 ${f.occurrence_count - 1}곳` : ''}`;
   });
   return `용어 검사에서 용어사전과 맞지 않는 컬럼 이름이 나왔어. dict_lookup으로 표준 이름과 도메인을 확인해서 고치고, 사전에 없는 용어는 dict_request_term으로 등록을 요청해줘.\n${lines.join('\n')}`;
 }
@@ -90,12 +90,11 @@ type StatusFilter = 'todo' | 'new' | 'hold' | 'accepted' | 'all';
 const STATUS_LABEL: Record<BaselineStatus | 'new', string> = { todo: '할 일', hold: '보류', accepted: '허용', new: '새로 생김' };
 const GROUP_LABEL: Record<DictGroup['kind'], string> = { word: '미등록 단어', domain: '도메인 불일치', variant: '비표준 표기', term: '미등록 용어', not_in_erd: 'ERD에 없음' };
 
-/** 기준선 대조로 본 위반 하나의 상태. 위반 종류 중 하나라도 새로 생겼으면 새로 생김, 아니면 가장 손볼 일이 많은 쪽 */
-function findingStatus(b: DictBaseline | null, f: DictFinding): BaselineStatus | 'new' | null {
-  if (!b) return null;
-  const ss = f.issues.map((i): BaselineStatus | 'new' => b.status[`${f.name}|${i}`] ?? 'new');
-  return ss.includes('new') ? 'new' : ss.includes('todo') ? 'todo' : ss.includes('hold') ? 'hold' : 'accepted';
-}
+/** 기준선 대조로 본 위반 하나의 상태(서버가 채운다). 위반 종류 중 하나라도 새로 생겼으면 새로 생김 */
+const findingStatus = (b: DictBaseline | null, f: DictFinding): BaselineStatus | 'new' | null => (b ? f.baseline : null);
+const baselineNote = (b: DictBaseline | null, f: DictFinding) => f.issues.map((i) => b?.notes[`${f.table ?? ''}|${f.name}|${i}`]).filter(Boolean).join(' · ');
+const SOURCE_LABEL: Record<DictSourceKind, string> = { ddl: 'DDL', liquibase: 'Liquibase', mapper: '매퍼', sql: 'SQL 파일', jpa: 'JPA' };
+const splitList = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
 function CheckTab({ session, onRegister, onOpenErd, onShowInManage }: {
   session: Session; onRegister: (r: Resolution) => void; onOpenErd: (table?: string) => void; onShowInManage: (kind: ManageView, q: string) => void;
@@ -111,9 +110,21 @@ function CheckTab({ session, onRegister, onOpenErd, onShowInManage }: {
   const [showSingles, setShowSingles] = useState(false);
   const [excludes, setExcludes] = useState<string[] | null>(null);
   const [editExcludes, setEditExcludes] = useState<string | null>(null);
-  const run = useCallback(async (sc: 'changed' | 'all') => {
+  // 이번 검사에만 거는 범위(워크스페이스 제외 경로와 따로)
+  const [tables, setTables] = useState('');
+  const [skipPaths, setSkipPaths] = useState('');
+  const [kinds, setKinds] = useState<Set<DictSourceKind>>(new Set(['ddl', 'liquibase', 'mapper', 'sql', 'jpa']));
+  const [occOpen, setOccOpen] = useState<Set<string>>(new Set());
+  // 범위 칸은 검사할 때만 읽는다(칸을 고칠 때마다 다시 검사하지 않게)
+  const scopeRef = useRef({ tables, skipPaths, kinds });
+  scopeRef.current = { tables, skipPaths, kinds };
+  const run = useCallback(async (sc: 'changed' | 'all', refresh = false) => {
     setBusy(true); setError(null);
-    try { setReport(await api.dictCheck(session.id, sc)); } catch (e) { setError((e as Error).message); }
+    try {
+      const f = scopeRef.current;
+      if (!f.kinds.size) throw new Error('출처를 하나 이상 고르세요.');
+      setReport(await api.dictCheck(session.id, sc, { tables: splitList(f.tables), exclude_paths: splitList(f.skipPaths), kinds: f.kinds.size === 5 ? undefined : [...f.kinds], refresh }));
+    } catch (e) { setError((e as Error).message); }
     setBusy(false);
   }, [session.id]);
   useEffect(() => { run('changed'); }, [run]);
@@ -127,12 +138,15 @@ function CheckTab({ session, onRegister, onOpenErd, onShowInManage }: {
     try { await fn(); } catch (e) { setError((e as Error).message); setBusy(false); return; }
     await run(scope);
   };
-  const ignore = async (names: string[]) => {
-    const reason = prompt(names.length === 1 ? `${names[0]}을(를) 이 워크스페이스의 용어 검사에서 뺄까요? 이유를 적어 주세요.` : `이름 ${names.length}개를 이 워크스페이스의 용어 검사에서 뺄까요? 이유를 적어 주세요.`, '');
+  /** 위반을 예외로. 테이블을 아는 위반은 그 테이블에만 건다 */
+  const ignore = async (fs: DictFinding[]) => {
+    const label = fs.length === 1 ? fs[0].key : `위반 ${fs.length}개`;
+    const reason = prompt(`${label}을(를) 이 워크스페이스의 용어 검사에서 뺄까요? 테이블을 아는 위반은 그 테이블에만 겁니다. 이유를 적어 주세요.`, '');
     if (reason === null) return;
-    await act(async () => { for (const n of names) await api.setDictIgnore(session.id, n, reason); });
+    if (!reason.trim()) { setError('예외 사유가 필요합니다.'); return; }
+    await act(async () => { for (const f of fs) await api.setDictIgnore(session.id, f.name, reason, f.table ?? ''); });
   };
-  const setState = async (keys: { name: string; issue: string }[], st: BaselineStatus) => {
+  const setState = async (keys: { table: string | null; name: string; issue: string }[], st: BaselineStatus) => {
     const note = st === 'todo' ? '' : prompt(`${keys.length}건을 ${STATUS_LABEL[st]}(으)로 둡니다. 이유를 적어 주세요.`, '');
     if (note === null || (st !== 'todo' && !note.trim())) return;
     await act(() => api.setBaselineStatus(session.id, keys, st, note));
@@ -156,38 +170,53 @@ function CheckTab({ session, onRegister, onOpenErd, onShowInManage }: {
     const st = findingStatus(baseline, f);
     return status === 'todo' ? st === 'todo' || st === 'new' : st === status;
   });
-  const byName = new Map(shown.map((f) => [f.name, f]));
+  const byKey = new Map(shown.map((f) => [f.key, f]));
   const groups = (report?.groups ?? [])
-    .map((g) => ({ ...g, names: g.names.filter((n) => byName.has(n)) }))
+    .map((g) => ({ ...g, names: g.names.filter((n) => byKey.has(n)) }))
     .filter((g) => g.names.length > 0);
-  const groupFindings = (g: DictGroup) => g.names.map((n) => byName.get(n)!);
+  const groupFindings = (g: DictGroup) => g.names.map((n) => byKey.get(n)!);
   const prompt30 = (fs: DictFinding[]) => insertIntoPrompt(findingPrompt(fs.slice(0, 30)) + (fs.length > 30 ? `\n(외 ${fs.length - 30}개는 위를 고친 뒤 다시 검사해서 볼게)` : ''));
   const toggleOpen = (k: string) => setOpen((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
 
   const item = (f: DictFinding) => (
-    <li key={`${f.project_name}:${f.name}`} className={f.blocking ? 'blocking' : ''}>
+    <li key={`${f.project_name}:${f.key}`} className={f.blocking ? 'blocking' : ''}>
       <div className="row">
+        {f.table ? <span className="mono small">{f.table}.</span> : <span className="muted small" title="resultMap이나 테이블이 여럿인 SQL처럼 테이블을 모르는 위치">(테이블 모름)</span>}
         <code className="dict-name">{f.name}</code>
         {f.issues.map((i) => <span key={i} className={`pill ${ISSUE[i].tone}`}>{ISSUE[i].label}</span>)}
         {f.blocking && <span className="pill err">PR 막힘</span>}
-        {(() => { const st = findingStatus(baseline, f); return st && st !== 'todo' ? <span className={`pill ${st === 'new' ? 'err' : st === 'hold' ? 'warn' : ''}`} title={f.issues.map((i) => baseline?.notes[`${f.name}|${i}`]).filter(Boolean).join(' · ')}>{STATUS_LABEL[st]}</span> : null; })()}
+        {(() => { const st = findingStatus(baseline, f); return st && st !== 'todo' ? <span className={`pill ${st === 'new' ? 'err' : st === 'hold' ? 'warn' : ''}`} title={baselineNote(baseline, f)}>{st === 'new' ? '기준선에 없음' : STATUS_LABEL[st]}</span> : null; })()}
         <span className="spacer" />
         <button className="small-btn" onClick={() => insertIntoPrompt(findingPrompt([f]))}>프롬프트에 넣기</button>
         {(f.resolution.draft || f.resolution.missing.length > 0) && (
           <button className="small-btn" onClick={() => onRegister(f.resolution)}>{f.resolution.draft ? '용어 등록' : '단어 등록'}</button>
         )}
-        <button className="small-btn" onClick={() => ignore([f.name])}>무시</button>
+        <button className="small-btn" onClick={() => ignore([f])}>예외</button>
       </div>
       <p className="small">{hint(f.resolution)}{f.domain && <> · 도메인 <code>{f.domain.expected}</code>인데 <code>{f.domain.actual.join(', ')}</code></>}</p>
+      {f.domain && (
+        <div className="table-wrap"><table className="dict-table">
+          <thead><tr><th>테이블.컬럼</th><th>실제 타입</th><th>위치</th></tr></thead>
+          <tbody>{f.domain.bad.map((b, i) => (
+            <tr key={i}><td className="mono">{b.table ?? '?'}.{f.name}</td><td className="mono">{b.type}</td>
+              <td className="mono small">{f.project_name}/{b.file}:{b.line}{b.added && <span className="pill accent">추가</span>}</td></tr>
+          ))}</tbody>
+        </table></div>
+      )}
       <ul className="dict-occ">
-        {f.occurrences.slice(0, 5).map((o, i) => (
+        {(occOpen.has(f.key) ? f.occurrences : f.occurrences.slice(0, 5)).map((o, i) => (
           <li key={i} className="small">
             <span className="mono">{f.project_name}/{o.file}:{o.line}</span>{o.added && <span className="pill accent">추가</span>}
             {o.type && <span className="muted"> {o.type}</span>}
             <span className="muted mono"> {o.text}</span>
           </li>
         ))}
-        {f.occurrence_count > 5 && <li className="muted small">외 {f.occurrence_count - 5}곳</li>}
+        {f.occurrences.length > 5 && (
+          <li><button className="small-btn" onClick={() => setOccOpen((s) => { const n = new Set(s); if (n.has(f.key)) n.delete(f.key); else n.add(f.key); return n; })}>
+            {occOpen.has(f.key) ? '접기' : `위치 ${f.occurrence_count}곳 전체 보기`}
+          </button></li>
+        )}
+        {occOpen.has(f.key) && f.occurrence_count > f.occurrences.length && <li className="muted small">외 {f.occurrence_count - f.occurrences.length}곳은 결과에 담지 않았습니다</li>}
       </ul>
     </li>
   );
@@ -202,12 +231,25 @@ function CheckTab({ session, onRegister, onOpenErd, onShowInManage }: {
           </div>
           <button disabled={busy} onClick={() => run(scope)}>{busy ? <><span className="spinner" aria-hidden="true" /> 검사 중</> : '다시 검사'}</button>
           <button onClick={() => setEditExcludes('')}>제외 경로{excludes && excludes.length > 0 ? ` ${excludes.length}` : ''}</button>
+          <button disabled={busy} title="erd-vibe에서 사전과 ERD를 다시 받고 검사합니다" onClick={() => run(scope, true)}>사전 다시 읽고 검사</button>
           <span className="spacer" />
           {blocking.length > 0 && <button className="primary" onClick={() => insertIntoPrompt(findingPrompt(blocking))}>새 위반 {blocking.length}건 Claude에게 고치게 하기</button>}
         </div>
+        <div className="row">
+          <label className="field-inline"><span className="muted small">테이블</span>
+            <input className="mono" size={14} placeholder="REGO_*" value={tables} onChange={(e) => setTables(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') run(scope); }} /></label>
+          <label className="field-inline"><span className="muted small">이번만 뺄 경로</span>
+            <input className="mono" size={16} placeholder="document/**" value={skipPaths} onChange={(e) => setSkipPaths(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') run(scope); }} /></label>
+          <span className="muted small">출처</span>
+          {(Object.keys(SOURCE_LABEL) as DictSourceKind[]).map((k) => (
+            <button key={k} className={`chip-btn${kinds.has(k) ? ' on' : ''}`} aria-pressed={kinds.has(k)}
+              onClick={() => setKinds((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; })}>{SOURCE_LABEL[k]}</button>
+          ))}
+          {report?.filter && <span className="pill accent">범위 적용</span>}
+        </div>
         <p className="muted small">
-          MyBatis 매퍼의 SQL·resultMap, .sql DDL, Liquibase, JPA @Column의 컬럼 이름을 용어사전과 연결한 ERD에 맞대어 봅니다.
-          이번 변경에서 추가한 줄의 위반(ERD에 없음 제외)은 PR 전 검사에서 막힙니다.
+          MyBatis 매퍼의 SQL·resultMap, .sql DDL, Liquibase, JPA @Column의 컬럼 이름을 (테이블, 컬럼) 단위로 용어사전과 연결한 ERD에 맞대어 봅니다.
+          테이블·경로는 쉼표로 여러 개, 바꾼 뒤 다시 검사를 누르세요. 이번 변경에서 추가한 줄의 위반(ERD에 없음 제외)은 PR 전 검사에서 막히고, 기준선이 있으면 기준선에 없는 것만 막힙니다.
         </p>
         {report && (
           <div className="row">
@@ -217,7 +259,8 @@ function CheckTab({ session, onRegister, onOpenErd, onShowInManage }: {
             <span className="pill">파일 {report.scanned_files}</span>
             {report.excluded_files > 0 && <span className="pill">제외 파일 {report.excluded_files}</span>}
             <span className="pill accent">{report.erd_project ? `ERD ${report.erd_project.name} · ${report.dbms}` : `ERD 연결 없음 · ${report.dbms}`}</span>
-            {report.ignored > 0 && <span className="muted small">무시 {report.ignored}곳</span>}
+            {report.suppressed > 0 && <span className="pill warn" title="기준선에서 보류·허용으로 둔 위반. 새 위반·막힘에 세지 않습니다">보류·허용 {report.suppressed}</span>}
+            {report.ignored > 0 && <span className="muted small">예외 {report.ignored}곳</span>}
           </div>
         )}
       </div>
@@ -241,6 +284,8 @@ function CheckTab({ session, onRegister, onOpenErd, onShowInManage }: {
               <span className="pill ok">해결 {baseline.resolved}</span>
               <span className="pill">남음 {baseline.remaining}</span>
               {baseline.new_count > 0 && <span className="pill err">새로 생김 {baseline.new_count}</span>}
+              {baseline.increased > 0 && <span className="pill warn">늘어남 {baseline.increased} (+{baseline.occ_added}곳)</span>}
+              {baseline.decreased > 0 && <span className="pill ok">줄어듦 {baseline.decreased} (−{baseline.occ_removed}곳)</span>}
               {baseline.hold > 0 && <span className="pill warn">보류 {baseline.hold}</span>}
               {baseline.accepted > 0 && <span className="pill">허용 {baseline.accepted}</span>}
               {baseline.remaining === 0 && <span className="pill ok">기준선 정리 완료</span>}
@@ -249,7 +294,7 @@ function CheckTab({ session, onRegister, onOpenErd, onShowInManage }: {
               <button className="small-btn" disabled={busy} onClick={clearBaseline}>지우기</button>
             </div>
           )}
-          <p className="muted small">해결은 다시 검사했을 때 안 나온 것(고침·무시·제외 경로 포함)입니다. 기준선은 정리용이고 PR 막힘에는 영향이 없습니다.</p>
+          <p className="muted small">해결은 다시 검사했을 때 안 나온 것(고침·예외·제외 경로 포함)입니다. 기준선이 있으면 기준선에 없는 (테이블, 컬럼, 위반 종류)만 PR을 막고, 보류·허용은 위반 집계에서 뺍니다.</p>
         </section>
       )}
 
@@ -297,7 +342,7 @@ function CheckTab({ session, onRegister, onOpenErd, onShowInManage }: {
               {groups.filter((g) => showSingles || g.names.length > 1 || g.kind === 'term' || g.kind === 'not_in_erd').map((g) => {
                 const fs = groupFindings(g);
                 const occ = fs.reduce((n, f) => n + f.occurrence_count, 0);
-                const keys = g.names.map((name) => ({ name, issue: g.issue }));
+                const keys = fs.map((f) => ({ table: f.table, name: f.name, issue: g.issue }));
                 const isOpen = open.has(g.key);
                 return (
                   <li key={g.key} className={fs.some((f) => f.blocking) ? 'blocking' : ''}>
@@ -315,7 +360,7 @@ function CheckTab({ session, onRegister, onOpenErd, onShowInManage }: {
                           {(['todo', 'hold', 'accepted'] as BaselineStatus[]).map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
                         </select>
                       )}
-                      <button className="small-btn" onClick={() => ignore(g.names)}>묶음 무시</button>
+                      <button className="small-btn" onClick={() => ignore(fs)}>묶음 예외</button>
                       <button className="small-btn" onClick={() => prompt30(fs)}>Claude에게</button>
                       <button className="small-btn" aria-expanded={isOpen} onClick={() => toggleOpen(g.key)}>{isOpen ? '접기' : '펼치기'}</button>
                     </div>
@@ -751,6 +796,9 @@ function DictEditor({ session, editing, domains, onClose }: { session: Session; 
 export function requestLabel(r: DictRequest): string {
   if (r.kind === 'term') return `용어 ${r.payload.logical_name || '(빈 용어)'}`;
   if (r.kind === 'word') return `단어 ${r.payload.name || r.payload.english_name}`;
+  if (r.kind === 'exception') return `${r.payload.mode === 'hold' ? '보류' : '예외'} ${r.payload.table ? `${r.payload.table}.` : ''}${r.payload.name}${r.payload.issue ? `(${ISSUE[r.payload.issue].label})` : ''}`;
+  if (r.kind === 'baseline') return '기준선 저장';
+  if (r.kind === 'dict_edit') return `${ENTITY_LABEL[r.payload.entity]} ${r.payload.action === 'create' ? '추가' : '수정'} ${r.payload.target || r.payload.values.name || r.payload.values.logical_name || ''}`;
   const p = r.payload;
   if (p.action === 'add_table') return `ERD 테이블 추가 ${p.table.physical_name}`;
   if (p.action === 'add_column') return `ERD 컬럼 추가 ${p.table}.${p.column.physical_name}`;
@@ -759,6 +807,13 @@ export function requestLabel(r: DictRequest): string {
 }
 
 type TermLite = { standard: string; physical_name: string; logical_name: string };
+const ENTITY_LABEL: Record<DictKind, string> = { term: '용어', word: '단어', domain: '도메인' };
+/** 사전 수정 요청 카드에 보일 칸 이름 */
+const FIELD_LABEL: Record<string, string> = {
+  logical_name: '논리명', physical_name: '물리명', physical_abbr_name: '약어명', domain_name: '도메인', description: '설명',
+  name: '이름', english_name: '영문명', abbreviation: '약어', definition: '정의',
+  data_type_default: '기본 타입', data_type_oracle: 'Oracle', data_type_mysql: 'MySQL', data_type_postgresql: 'PostgreSQL',
+};
 const ERD_ACTION: Record<ErdPayload['action'], string> = { add_table: '테이블 추가', add_column: '컬럼 추가', update_column: '컬럼 변경', drop_column: '컬럼 삭제' };
 
 function RequestsTab({ session, domains, onOpenErd }: { session: Session; domains: DictDomain[]; onOpenErd: (table?: string) => void }) {
@@ -802,7 +857,7 @@ function RequestsTab({ session, domains, onOpenErd }: { session: Session; domain
   return (
     <>
       <div className="card">
-        <p className="muted small">Claude가 만든 용어·단어 등록, ERD 변경 초안입니다. 고쳐서 승인하면 erd-vibe에 들어가 팀 모두가 씁니다. 승인하기 전에는 아무것도 바뀌지 않습니다.</p>
+        <p className="muted small">Claude가 만든 용어·단어 등록·수정, ERD 변경, 검사 예외·기준선 저장 요청입니다. 고쳐서 승인하면 erd-vibe에 들어가 팀 모두가 씁니다. 승인하기 전에는 아무것도 바뀌지 않습니다.</p>
         <div className="row">
           <div className="seg" role="group" aria-label="보기">
             <button className={`chip-btn${view === 'pending' ? ' on' : ''}`} onClick={() => setView('pending')}>대기 {list.filter(open).length}</button>
@@ -844,15 +899,23 @@ function RequestCard({ r, domains, terms, onDone, onOpenErd }: { r: DictRequest;
       const p = draft as Extract<ErdPayload, { action: 'drop_column' }>;
       if (!confirm(`ERD에서 ${p.table}.${p.column} 컬럼을 지웁니다. 이 컬럼에 걸린 관계도 함께 지워집니다. 계속할까요?`)) return;
     }
-    act(() => api.approveDictRequest(r.id, draft as TermPayload | WordPayload | ErdPayload));
+    act(() => api.approveDictRequest(r.id, draft));
   };
-  const title = r.kind === 'term' ? '용어 등록 요청' : r.kind === 'word' ? '단어 등록 요청' : `ERD 변경 요청 · ${ERD_ACTION[(r.payload as ErdPayload).action]}`;
+  const title = r.kind === 'term' ? '용어 등록 요청' : r.kind === 'word' ? '단어 등록 요청'
+    : r.kind === 'exception' ? ((r.payload as ExceptionPayload).mode === 'hold' ? '보류 요청' : '예외 등록 요청')
+      : r.kind === 'baseline' ? '기준선 저장 요청'
+        : r.kind === 'dict_edit' ? `${ENTITY_LABEL[(r.payload as DictEditPayload).entity]} ${(r.payload as DictEditPayload).action === 'create' ? '추가' : '수정'} 요청`
+          : `ERD 변경 요청 · ${ERD_ACTION[(r.payload as ErdPayload).action]}`;
+  const toErd = r.kind === 'erd';
+  const doneLabel = r.kind === 'term' || r.kind === 'word' ? '등록함' : '반영함';
+  const approveLabel = r.kind === 'erd' ? '승인하고 ERD에 반영' : r.kind === 'exception' ? ((draft as ExceptionPayload).mode === 'hold' ? '승인하고 보류로' : '승인하고 예외 등록')
+    : r.kind === 'baseline' ? '승인하고 기준선 저장' : r.kind === 'dict_edit' ? '승인하고 erd-vibe에 반영' : '승인하고 erd-vibe에 등록';
   return (
     <section className="card">
       <div className="block-head">
         <h2>{title} #{r.id}</h2>
         <span className={`pill ${r.status === 'done' ? 'ok' : r.status === 'failed' ? 'err' : r.status === 'pending' ? 'warn' : ''}`}>
-          {{ pending: '승인 대기', done: r.kind === 'erd' ? '반영함' : '등록함', rejected: '거절', failed: r.kind === 'erd' ? '반영 실패' : '등록 실패' }[r.status]}
+          {{ pending: '승인 대기', done: doneLabel, rejected: '거절', failed: doneLabel === '등록함' ? '등록 실패' : '반영 실패' }[r.status]}
         </span>
       </div>
       <p className="muted small">{r.source === 'claude' ? 'Claude 요청' : '직접'} · {r.reason}</p>
@@ -874,18 +937,66 @@ function RequestCard({ r, domains, terms, onDone, onOpenErd }: { r: DictRequest;
         </div>
       )}
       {r.kind === 'erd' && <ErdRequestTable p={draft as ErdPayload} terms={terms} warn={open} />}
+      {r.kind === 'exception' && (
+        <div className="grid2">
+          {field('table', '테이블 (비우면 모든 테이블)', 'REGO_OLD_HIST')}
+          {field('name', '컬럼', 'HISTORYSEQ')}
+          <label className="field">
+            <span>위반 종류</span>
+            <select disabled={!open} value={(draft as ExceptionPayload).issue} onChange={(e) => setDraft((d) => ({ ...(d as ExceptionPayload), issue: e.target.value as DictIssue | '' }))}>
+              <option value="">전부</option>
+              {(['variant', 'unregistered_term', 'unknown_word', 'domain_mismatch', 'not_in_erd'] as DictIssue[]).map((i) => <option key={i} value={i}>{ISSUE[i].label}</option>)}
+            </select>
+          </label>
+          <label className="field">
+            <span>처리</span>
+            <select disabled={!open} value={(draft as ExceptionPayload).mode} onChange={(e) => setDraft((d) => ({ ...(d as ExceptionPayload), mode: e.target.value as ExceptionPayload['mode'] }))}>
+              <option value="ignore">예외 — 검사에서 뺌</option>
+              <option value="hold">보류 — 기준선에 남기고 집계에서 뺌</option>
+            </select>
+          </label>
+          {field('note', '사유')}
+        </div>
+      )}
+      {r.kind === 'baseline' && (
+        <p className="small">{r.status === 'done' && (r.payload as BaselinePayload).keys !== undefined
+          ? `위반 ${(r.payload as BaselinePayload).findings}건(키 ${(r.payload as BaselinePayload).keys}개)을 기준선에 더했습니다.`
+          : '승인하면 그때 워크트리 전체를 검사해 지금 위반을 기준선에 더합니다. 이미 있는 항목의 상태·메모는 그대로이고, 이후에는 기준선에 없는 위반만 PR을 막습니다.'}</p>
+      )}
+      {r.kind === 'dict_edit' && <DictEditTable p={draft as DictEditPayload} open={open} onChange={(k, v) => setDraft((d) => ({ ...(d as DictEditPayload), values: { ...(d as DictEditPayload).values, [k]: v } }))} />}
       {(error || r.error) && <p className="banner error">{error ?? r.error}</p>}
       {open && (
         <div className="row">
-          {r.kind === 'erd' && <button onClick={() => onOpenErd((r.payload as ErdPayload).action === 'add_table' ? undefined : (r.payload as Exclude<ErdPayload, { action: 'add_table' }>).table)}>ERD 화면에서 보기</button>}
+          {toErd && <button onClick={() => onOpenErd((r.payload as ErdPayload).action === 'add_table' ? undefined : (r.payload as Exclude<ErdPayload, { action: 'add_table' }>).table)}>ERD 화면에서 보기</button>}
           <span className="spacer" />
           <button disabled={busy} onClick={() => act(() => api.rejectDictRequest(r.id))}>거절</button>
           <button className={r.kind === 'erd' && (draft as ErdPayload).action === 'drop_column' ? 'primary danger' : 'primary'} disabled={busy} onClick={approve}>
-            {busy ? '반영 중' : r.kind === 'erd' ? '승인하고 ERD에 반영' : '승인하고 erd-vibe에 등록'}
+            {busy ? '반영 중' : approveLabel}
           </button>
         </div>
       )}
     </section>
+  );
+}
+
+/** 사전 추가·수정 초안. 수정이면 지금 값과 바꿀 값을 나란히 두고, 바뀐 칸을 표시한다. */
+function DictEditTable({ p, open, onChange }: { p: DictEditPayload; open: boolean; onChange: (k: string, v: string) => void }) {
+  const keys = Object.keys(p.values);
+  return (
+    <div className="table-wrap"><table className="dict-table">
+      <thead><tr><th>칸</th>{p.action === 'update' && <th>지금</th>}<th>{p.action === 'update' ? '바꿀 값' : '값'}</th></tr></thead>
+      <tbody>{keys.map((k) => {
+        const before = p.before?.[k] ?? null;
+        const changed = p.action === 'update' && (before ?? '') !== (p.values[k] ?? '');
+        return (
+          <tr key={k} className={changed ? 'changed' : ''}>
+            <td>{FIELD_LABEL[k] ?? k}</td>
+            {p.action === 'update' && <td className={UPPER.has(k) ? 'mono' : ''}>{before ?? <span className="muted">(빈 값)</span>}</td>}
+            <td><input className={UPPER.has(k) ? 'mono' : ''} disabled={!open} value={p.values[k] ?? ''} onChange={(e) => onChange(k, UPPER.has(k) ? e.target.value.toUpperCase() : e.target.value)} />{changed && <span className="pill warn">바뀜</span>}</td>
+          </tr>
+        );
+      })}</tbody>
+    </table>{p.action === 'update' && p.id && <p className="muted small mono">id {p.id}</p>}</div>
   );
 }
 
