@@ -814,12 +814,17 @@ const FIELD_LABEL: Record<string, string> = {
   name: '이름', english_name: '영문명', abbreviation: '약어', definition: '정의',
   data_type_default: '기본 타입', data_type_oracle: 'Oracle', data_type_mysql: 'MySQL', data_type_postgresql: 'PostgreSQL',
 };
+/** 요청 탭 종류 필터. 예외 요청은 보류(mode hold)와 예외를 나눠 센다. */
+type RequestCategory = 'term' | 'word' | 'dict_edit' | 'erd' | 'exception' | 'hold' | 'baseline';
+const CATEGORY_LABEL: Record<RequestCategory, string> = { term: '용어 등록', word: '단어 등록', dict_edit: '사전 수정', erd: 'ERD 변경', exception: '예외', hold: '보류', baseline: '기준선' };
+const requestCategory = (r: DictRequest): RequestCategory => (r.kind === 'exception' && r.payload.mode === 'hold' ? 'hold' : r.kind);
 const ERD_ACTION: Record<ErdPayload['action'], string> = { add_table: '테이블 추가', add_column: '컬럼 추가', update_column: '컬럼 변경', drop_column: '컬럼 삭제' };
 
 function RequestsTab({ session, domains, onOpenErd }: { session: Session; domains: DictDomain[]; onOpenErd: (table?: string) => void }) {
   const [list, setList] = useState<DictRequest[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<'pending' | 'all'>('pending');
+  const [category, setCategory] = useState<RequestCategory | ''>('');
   const [terms, setTerms] = useState<TermLite[]>([]);
   const reload = useCallback(() => { api.dictRequests(session.id).then(setList).catch((e) => setError(e.message)); }, [session.id]);
   const reloadTerms = useCallback(() => { api.dictSearch(session.id, '', 2000).then((r) => setTerms(r.terms)).catch(() => {}); }, [session.id]);
@@ -832,7 +837,10 @@ function RequestsTab({ session, domains, onOpenErd }: { session: Session; domain
   const [bulk, setBulk] = useState<string | null>(null);
   if (!list) return error ? <p className="banner error">{error}</p> : <p className="muted">불러오는 중</p>;
   const open = (r: DictRequest) => r.status === 'pending' || r.status === 'failed';
-  const shown = (view === 'pending' ? list.filter(open) : list).sort((a, b) => Number(open(b)) - Number(open(a)) || b.id - a.id);
+  const inView = view === 'pending' ? list.filter(open) : list;
+  const counts = new Map<RequestCategory, number>();
+  for (const r of inView) counts.set(requestCategory(r), (counts.get(requestCategory(r)) ?? 0) + 1);
+  const shown = (category ? inView.filter((r) => requestCategory(r) === category) : inView).sort((a, b) => Number(open(b)) - Number(open(a)) || b.id - a.id);
   // 일괄 승인은 승인 대기 중인 ERD 요청만. 테이블 추가 뒤에 그 테이블의 컬럼 요청이 오도록 먼저 만든 요청부터 반영한다.
   const erdPending = list.filter((r) => r.kind === 'erd' && r.status === 'pending').sort((a, b) => a.id - b.id);
   const approveAllErd = async () => {
@@ -863,6 +871,12 @@ function RequestsTab({ session, domains, onOpenErd }: { session: Session; domain
             <button className={`chip-btn${view === 'pending' ? ' on' : ''}`} onClick={() => setView('pending')}>대기 {list.filter(open).length}</button>
             <button className={`chip-btn${view === 'all' ? ' on' : ''}`} onClick={() => setView('all')}>전체 {list.length}</button>
           </div>
+          <div className="seg" role="group" aria-label="종류">
+            <button className={`chip-btn${category === '' ? ' on' : ''}`} onClick={() => setCategory('')}>모든 종류 {inView.length}</button>
+            {(Object.keys(CATEGORY_LABEL) as RequestCategory[]).filter((c) => counts.has(c) || c === category).map((c) => (
+              <button key={c} className={`chip-btn${category === c ? ' on' : ''}`} onClick={() => setCategory(c)}>{CATEGORY_LABEL[c]} {counts.get(c) ?? 0}</button>
+            ))}
+          </div>
           <span className="spacer" />
           {erdPending.length > 0 && (
             <button className="primary" disabled={bulk !== null} onClick={approveAllErd}>
@@ -872,7 +886,7 @@ function RequestsTab({ session, domains, onOpenErd }: { session: Session; domain
         </div>
       </div>
       {error && <p className="banner error" role="alert" style={{ whiteSpace: 'pre-line' }}>{error}</p>}
-      {shown.length === 0 && <p className="muted">{view === 'pending' ? '승인을 기다리는 요청이 없습니다.' : '요청이 없습니다.'}</p>}
+      {shown.length === 0 && <p className="muted">{category ? `${CATEGORY_LABEL[category]} 요청이 없습니다.` : view === 'pending' ? '승인을 기다리는 요청이 없습니다.' : '요청이 없습니다.'}</p>}
       {shown.map((r) => <RequestCard key={r.id} r={r} domains={domains} terms={terms} onDone={reload} onOpenErd={onOpenErd} />)}
     </>
   );
@@ -913,7 +927,7 @@ function RequestCard({ r, domains, terms, onDone, onOpenErd }: { r: DictRequest;
   return (
     <section className="card">
       <div className="block-head">
-        <h2>{title} #{r.id}</h2>
+        <h2><span className="pill accent req-kind">{CATEGORY_LABEL[requestCategory(r)]}</span>{title} #{r.id}</h2>
         <span className={`pill ${r.status === 'done' ? 'ok' : r.status === 'failed' ? 'err' : r.status === 'pending' ? 'warn' : ''}`}>
           {{ pending: '승인 대기', done: doneLabel, rejected: '거절', failed: doneLabel === '등록함' ? '등록 실패' : '반영 실패' }[r.status]}
         </span>
