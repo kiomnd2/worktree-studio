@@ -6,13 +6,13 @@ import { walk } from './mapperindex.js';
 import { getSession, type SessionView } from './sessions.js';
 import { dictionary, erdProject } from './erdvibe.js';
 import { buildIndex, normalizeIdent, resolve, typeMatches, type DictIndex, type TermRef } from './dict/judge.js';
-import { diffSchema, erdFindingsOf, scanText, SCAN_EXTS, type SchemaDiff, type DictReport, type Finding, type Issue, type MixedGroup, type Occurrence, type Raw } from './dict/extract.js';
+import { diffSchema, erdFindingsOf, findingKey, scanText, sourceKind, SCAN_EXTS, type CheckFilter, type DomainMiss, type IgnoreMatch, type SchemaDiff, type DictReport, type Finding, type Issue, type MixedGroup, type Occurrence, type Raw } from './dict/extract.js';
 import type { ErdProject } from './dict/types.js';
 import { globToRegExp, groupFindings, hotFiles } from './dict/triage.js';
-import { compareBaseline } from './dictbaseline.js';
+import { compareBaseline, hasBaseline } from './dictbaseline.js';
 import { finalSchemaRaws, repoSchema } from './schemasync.js';
 
-export { findingLine, issueLabel, erdFindingsOf, type DictReport } from './dict/extract.js';
+export { findingLine, issueLabel, erdFindingsOf, type CheckFilter, type DictReport } from './dict/extract.js';
 
 /**
  * 워크트리 소스에서 컬럼 이름을 뽑아 용어사전·ERD와 맞댄다. 판정·추출 규칙은 dict/(순수 함수)에 있고,
@@ -65,13 +65,43 @@ export async function addedLines(w: SessionView['repos'][number]): Promise<Map<s
   return out;
 }
 
-export function ignoresOf(workspaceId: number): { name: string; reason: string; created_at: string }[] {
-  return db.prepare(`SELECT name, reason, created_at FROM dict_ignores WHERE workspace_id = ? ORDER BY name`).all(workspaceId) as { name: string; reason: string; created_at: string }[];
+/**
+ * 예외(무시) 목록. 컬럼 이름에 테이블·위반 종류를 좁혀 걸 수 있다(빈 값 = 전부).
+ * 예전 표(dict_ignores, 이름만)는 처음 한 번 옮긴다.
+ */
+const freshIgnores = !db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'dict_ignores2'`).get();
+db.exec(`
+CREATE TABLE IF NOT EXISTS dict_ignores2 (
+  workspace_id INTEGER NOT NULL,
+  tbl TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  issue TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (workspace_id, tbl, name, issue)
+);
+`);
+if (freshIgnores) db.exec(`INSERT OR IGNORE INTO dict_ignores2 (workspace_id, name, reason, created_at) SELECT workspace_id, name, reason, created_at FROM dict_ignores`);
+
+export type IgnoreRule = { table: string; name: string; issue: string; reason: string; created_at: string };
+export function ignoresOf(workspaceId: number): IgnoreRule[] {
+  return db.prepare(`SELECT tbl AS "table", name, issue, reason, created_at FROM dict_ignores2 WHERE workspace_id = ? ORDER BY name, tbl, issue`).all(workspaceId) as IgnoreRule[];
 }
-export function setIgnore(workspaceId: number, name: string, reason: string | null) {
+/** reason이 null이면 지운다. table·issue를 비우면 그 이름 전부 */
+export function setIgnore(workspaceId: number, name: string, reason: string | null, table = '', issue = '') {
   const n = normalizeIdent(name);
-  if (reason === null) db.prepare(`DELETE FROM dict_ignores WHERE workspace_id = ? AND name = ?`).run(workspaceId, n);
-  else db.prepare(`INSERT INTO dict_ignores (workspace_id, name, reason) VALUES (?, ?, ?) ON CONFLICT(workspace_id, name) DO UPDATE SET reason = excluded.reason`).run(workspaceId, n, reason);
+  const t = table.trim().toUpperCase();
+  if (!n) throw new Error('컬럼 이름이 필요합니다.');
+  if (reason === null) db.prepare(`DELETE FROM dict_ignores2 WHERE workspace_id = ? AND tbl = ? AND name = ? AND issue = ?`).run(workspaceId, t, n, issue);
+  else db.prepare(`INSERT INTO dict_ignores2 (workspace_id, tbl, name, issue, reason) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(workspace_id, tbl, name, issue) DO UPDATE SET reason = excluded.reason`).run(workspaceId, t, n, issue, reason);
+}
+export function ignoreMatcher(workspaceId: number): IgnoreMatch {
+  const rules = ignoresOf(workspaceId);
+  const byName = new Map<string, IgnoreRule[]>();
+  for (const r of rules) byName.set(r.name, [...(byName.get(r.name) ?? []), r]);
+  return (table, name, issue) => (byName.get(name) ?? []).some((r) =>
+    (!r.table || r.table === (table ?? '').toUpperCase()) && (issue ? !r.issue || r.issue === issue : !r.issue));
 }
 
 /** 검사에서 뺄 경로(glob). 앱 안의 상대 경로나 "앱이름/상대 경로"에 맞으면 뺀다. */
@@ -111,17 +141,36 @@ export async function sessionIndex(s: SessionView): Promise<{ ix: DictIndex; erd
   return { ix: buildIndex(dict, erd?.dbms_type ?? 'ORACLE'), erd, erdError };
 }
 
-export async function checkSession(sessionId: number, scope: 'changed' | 'all'): Promise<DictReport> {
+export type CheckOptions = CheckFilter & { refresh?: boolean };
+
+/** 판정에서 남길 이슈인지: 이름 단위 판정(variant 등)과 테이블 단위 판정(domain·ERD)을 모두 (테이블, 컬럼)에 건다 */
+const REAL = (i: Issue) => i !== 'not_in_erd';
+
+export async function checkSession(sessionId: number, scope: 'changed' | 'all', opts: CheckOptions = {}): Promise<DictReport> {
   const s = getSession(sessionId);
   if (!s) throw new Error('세션이 없습니다.');
+  if (opts.refresh) await refreshSessionDictionary(s);
   const { ix, erd, erdError } = await sessionIndex(s);
-  const ignored = new Set(ignoresOf(s.workspace_id).map((i) => i.name));
+  const ignored = ignoreMatcher(s.workspace_id);
   const excluded = excludeMatcher(s.workspace_id);
+  const extra = (opts.exclude_paths ?? []).map((p) => p.trim()).filter(Boolean).map(globToRegExp);
+  const excludedNow = (project: string, rel: string) => {
+    if (excluded(project, rel)) return true;
+    const r = rel.split(path.sep).join('/');
+    return extra.some((re) => re.test(r) || re.test(`${project}/${r}`));
+  };
+  const tableRes = (opts.tables ?? []).map((p) => p.trim()).filter(Boolean).map((p) => globToRegExp(p.toUpperCase()));
+  const kinds = opts.kinds?.length ? new Set(opts.kinds) : null;
+  const issueFilter = opts.issues?.length ? new Set(opts.issues) : null;
   let excludedFiles = 0;
-  const erdTables = new Set(erd?.tables.map((t) => t.physical_name.toUpperCase()) ?? []);
-  const erdColNames = new Set((erd?.tables ?? []).flatMap((t) => t.columns.map((c) => c.physical_name.toUpperCase())));
+  const erdTables = new Map((erd?.tables ?? []).map((t) => [t.physical_name.toUpperCase(), new Set(t.columns.map((c) => c.physical_name.toUpperCase()))]));
+  const erdColNames = new Set([...erdTables.values()].flatMap((c) => [...c]));
+  const erdTableNames = new Set(erdTables.keys());
 
-  const byName = new Map<string, { project: string; occ: Occurrence[] }>();
+  // 위치를 먼저 다 모은 뒤 (테이블, 컬럼)으로 묶는다. 소스 DDL·Liquibase·JPA에 나온 테이블과 ERD 테이블만 테이블로 믿는다
+  // (SQL 별칭을 못 푼 이름이나 서브쿼리 별칭이 테이블로 잡히지 않게).
+  const all: { project: string; name: string; occ: Occurrence }[] = [];
+  const knownTables = new Set(erdTables.keys());
   let scanned = 0;
   let skippedIgnored = 0;
   for (const w of s.repos.filter((r) => fs.existsSync(r.path))) {
@@ -146,18 +195,16 @@ export async function checkSession(sessionId: number, scope: 'changed' | 'all'):
       for (const r of raws) {
         const name = normalizeIdent(r.name);
         if (!name) continue;
-        if (ignored.has(name)) { skippedIgnored++; continue; }
+        if (r.table && (r.kind === 'ddl' || r.kind === 'liquibase' || r.kind === 'jpa')) knownTables.add(r.table.toUpperCase());
         const isAdded = lines === 'all' || Boolean(lines?.has(r.line));
-        const entry = byName.get(name) ?? { project: w.project_name, occ: [] };
-        entry.occ.push({ file: r.file, line: r.line, kind: r.kind, table: r.table, type: r.type, text: lineText(r.file, r.line), added: isAdded });
-        byName.set(name, entry);
+        all.push({ project: w.project_name, name, occ: { file: r.file, line: r.line, kind: r.kind, table: r.table?.toUpperCase() ?? null, type: r.type, text: lineText(r.file, r.line), added: isAdded } });
       }
     };
     for (const abs of files) {
       const rel = path.relative(w.path, abs);
-      if (SCAN_EXTS.includes(path.extname(abs).toLowerCase()) && excluded(w.project_name, rel)) { excludedFiles++; continue; }
+      if (SCAN_EXTS.includes(path.extname(abs).toLowerCase()) && excludedNow(w.project_name, rel)) { excludedFiles++; continue; }
       if (final?.files.has(rel)) continue;
-      const raws = scanFile(abs, rel, erdTables);
+      const raws = scanFile(abs, rel, erdTableNames);
       if (!raws.length) continue;
       scanned++;
       take(rel, raws);
@@ -166,61 +213,96 @@ export async function checkSession(sessionId: number, scope: 'changed' | 'all'):
       const byFile = new Map<string, Raw[]>();
       for (const r of final.raws) {
         // 이번 변경 검사는 바뀐 changelog에서 만들거나 바꾼 컬럼만
-        if ((scope === 'changed' && !added.has(r.file)) || excluded(w.project_name, r.file)) continue;
+        if ((scope === 'changed' && !added.has(r.file)) || excludedNow(w.project_name, r.file)) continue;
         byFile.set(r.file, [...(byFile.get(r.file) ?? []), r]);
       }
       for (const [rel, raws] of byFile) { scanned++; take(rel, raws); }
     }
   }
 
+  const byKey = new Map<string, { project: string; name: string; table: string | null; occ: Occurrence[] }>();
+  for (const a of all) {
+    if (a.occ.table && !knownTables.has(a.occ.table)) a.occ.table = null;
+    if (kinds && !kinds.has(sourceKind(a.occ))) continue;
+    if (tableRes.length && !(a.occ.table && tableRes.some((re) => re.test(a.occ.table!)))) continue;
+    if (ignored(a.occ.table, a.name)) { skippedIgnored++; continue; }
+    const key = findingKey(a.occ.table, a.name);
+    const e = byKey.get(key) ?? { project: a.project, name: a.name, table: a.occ.table, occ: [] };
+    e.occ.push(a.occ);
+    byKey.set(key, e);
+  }
+
   const findings: Finding[] = [];
   const byTerm = new Map<string, { term: TermRef; names: Map<string, number> }>();
-  for (const [name, { project, occ }] of byName) {
+  for (const [key, { project, name, table, occ }] of byKey) {
     const res = resolve(ix, name);
-    const issues: Issue[] = [];
+    let issues: Issue[] = [];
     if (res.verdict !== 'standard') issues.push(res.verdict);
     let domain: Finding['domain'] = null;
     const expected = res.term?.domain_type;
     if (expected) {
       // 소스에 타입이 적힌 곳(DDL·Liquibase·columnDefinition)만 본다. ERD 컬럼의 타입은 ERD 위반에서 따로 본다.
-      const bad = [...new Set(occ.map((o) => o.type).filter((t): t is string => Boolean(t)))]
-        .filter((t) => !typeMatches(t, expected));
-      if (bad.length) { issues.push('domain_mismatch'); domain = { expected, actual: bad }; }
+      const bad: DomainMiss[] = occ.filter((o) => o.type && !typeMatches(o.type, expected, ix.dbms))
+        .map((o) => ({ table: o.table, file: o.file, line: o.line, type: o.type!, added: o.added }));
+      if (bad.length) { issues.push('domain_mismatch'); domain = { expected, actual: [...new Set(bad.map((b) => b.type))], bad }; }
     }
-    if (erd && !erdColNames.has(name)) issues.push('not_in_erd');
+    // 테이블을 알고 ERD에 그 테이블이 있으면 그 테이블의 컬럼으로, 아니면 ERD 전체 컬럼 이름으로 본다
+    if (erd && !(table && erdTables.has(table) ? erdTables.get(table)!.has(name) : erdColNames.has(name))) issues.push('not_in_erd');
     if (res.term) {
       const g = byTerm.get(res.term.id) ?? { term: res.term, names: new Map() };
       g.names.set(name, (g.names.get(name) ?? 0) + occ.length);
       byTerm.set(res.term.id, g);
     }
+    issues = issues.filter((i) => !ignored(table, name, i) && (!issueFilter || issueFilter.has(i)));
     if (!issues.length) continue;
-    const isAdded = occ.some((o) => o.added);
     occ.sort((a, b) => Number(b.added) - Number(a.added));
     findings.push({
-      name, project_name: project, resolution: res, issues, added: isAdded,
-      blocking: isAdded && issues.some((i) => i !== 'not_in_erd'),
-      domain, occurrences: occ.slice(0, 30), occurrence_count: occ.length,
+      key, name, table, project_name: project, resolution: res, issues, added: occ.some((o) => o.added),
+      blocking: false, domain, baseline: null, occurrences: occ.slice(0, 500), occurrence_count: occ.length,
     });
   }
+
+  const ws = s.workspace_id;
+  const baseline = compareBaseline(ws, findings, scope);
+  const withBaseline = hasBaseline(ws);
+  let suppressed = 0;
+  for (const f of findings) {
+    // 기준선이 있으면 기준선에 없는 (테이블, 컬럼, 종류)가 있어야 막는다. 보류·허용은 집계에서 뺀다.
+    const fresh = !withBaseline || f.baseline === 'new';
+    f.blocking = f.added && f.issues.some(REAL) && fresh;
+    if (f.baseline === 'hold' || f.baseline === 'accepted') suppressed++;
+  }
   const rank = (f: Finding) => (f.blocking ? 0 : f.added ? 1 : 2) * 10 + (f.issues.includes('variant') ? 0 : f.issues.includes('unknown_word') ? 1 : f.issues.includes('unregistered_term') ? 2 : 3);
-  findings.sort((a, b) => rank(a) - rank(b) || b.occurrence_count - a.occurrence_count || a.name.localeCompare(b.name));
+  findings.sort((a, b) => rank(a) - rank(b) || b.occurrence_count - a.occurrence_count || a.key.localeCompare(b.key));
 
   const mixed: MixedGroup[] = [...byTerm.values()].filter((g) => g.names.size > 1).map((g) => ({
     logical_name: g.term.logical_name, standard: g.term.standard,
     spellings: [...g.names.entries()].map(([n, count]) => ({ name: n, count, standard: n === g.term.standard })).sort((a, b) => b.count - a.count),
   }));
 
-  const erdFindings = erd ? erdFindingsOf(ix, erd, ignored) : [];
+  const erdFindings = (erd ? erdFindingsOf(ix, erd, ignored) : [])
+    .filter((e) => !tableRes.length || tableRes.some((re) => re.test(e.table.toUpperCase())))
+    .filter((e) => !issueFilter || e.issues.some((i) => i === 'no_term_link' || issueFilter.has(i)));
+  const filter: CheckFilter | null = tableRes.length || extra.length || kinds || issueFilter
+    ? { tables: opts.tables, exclude_paths: opts.exclude_paths, kinds: opts.kinds, issues: opts.issues } : null;
 
   return {
     scope, generated_at: Date.now(), dbms: ix.dbms,
     erd_project: erd ? { id: erd.id, name: erd.name, dbms_type: erd.dbms_type } : null,
     scanned_files: scanned, findings, mixed, erd_findings: erdFindings,
-    dictionary_duplicates: ix.duplicates, ignored: skippedIgnored,
+    dictionary_duplicates: ix.duplicates, ignored: skippedIgnored, suppressed, filter,
     groups: groupFindings(findings), hot_files: hotFiles(findings),
-    baseline: compareBaseline(s.workspace_id, findings, scope), excluded_files: excludedFiles,
+    baseline, excluded_files: excludedFiles,
     error: erdError,
   };
+}
+
+/** 사전과 연결한 ERD를 erd-vibe에서 다시 받는다(erd-vibe 화면·REST로 바로 고친 것을 검사에 반영). */
+export async function refreshSessionDictionary(s: SessionView): Promise<{ words: number; terms: number; domains: number; erd_tables: number | null }> {
+  const d = await dictionary(true);
+  const erdId = sessionErdId(s);
+  const erd = erdId ? await erdProject(erdId, true).catch(() => null) : null;
+  return { words: d.words.length, terms: d.terms.length, domains: d.domains.length, erd_tables: erd ? erd.tables.length : null };
 }
 
 

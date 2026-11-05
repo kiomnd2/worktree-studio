@@ -407,16 +407,21 @@ export type DictSearch = {
 };
 export type DictIssue = 'variant' | 'unregistered_term' | 'unknown_word' | 'domain_mismatch' | 'not_in_erd' | 'no_term_link';
 export type DictOccurrence = { file: string; line: number; kind: 'sql' | 'resultmap' | 'ddl' | 'liquibase' | 'jpa'; table: string | null; type: string | null; text: string; added: boolean };
+export type DictDomainMiss = { table: string | null; file: string; line: number; type: string; added: boolean };
+export type DictSourceKind = 'ddl' | 'liquibase' | 'mapper' | 'sql' | 'jpa';
+export type DictCheckFilter = { tables?: string[]; exclude_paths?: string[]; kinds?: DictSourceKind[]; issues?: DictIssue[] };
+/** 테이블.컬럼(테이블을 모르면 컬럼) 단위 위반 */
 export type DictFinding = {
-  name: string; project_name: string; resolution: Resolution; issues: DictIssue[]; added: boolean; blocking: boolean;
-  domain: { expected: string; actual: string[] } | null; occurrences: DictOccurrence[]; occurrence_count: number;
+  key: string; name: string; table: string | null; project_name: string; resolution: Resolution; issues: DictIssue[]; added: boolean; blocking: boolean;
+  domain: { expected: string; actual: string[]; bad: DictDomainMiss[] } | null; baseline: BaselineStatus | 'new' | null;
+  occurrences: DictOccurrence[]; occurrence_count: number;
 };
 export type DictReport = {
   scope: 'changed' | 'all'; generated_at: number; dbms: string; erd_project: { id: string; name: string; dbms_type: string } | null;
   scanned_files: number; findings: DictFinding[];
   mixed: { logical_name: string; standard: string; spellings: { name: string; count: number; standard: boolean }[] }[];
   erd_findings: ErdFinding[];
-  dictionary_duplicates: { logical_name: string; standards: string[] }[]; ignored: number; error: string | null;
+  dictionary_duplicates: { logical_name: string; standards: string[] }[]; ignored: number; suppressed: number; filter: DictCheckFilter | null; error: string | null;
   groups: DictGroup[]; hot_files: { project_name: string; file: string; names: number; occurrences: number }[];
   baseline: DictBaseline | null; excluded_files: number;
 };
@@ -427,7 +432,8 @@ export type DictGroup = {
 export type BaselineStatus = 'todo' | 'hold' | 'accepted';
 export type DictBaseline = {
   created_at: string; total: number; resolved: number; remaining: number; todo: number; hold: number; accepted: number; new_count: number;
-  /** "이름|위반 종류" → 상태. 해결됐거나 기준선에 없으면 빠져 있다 */
+  increased: number; decreased: number; occ_added: number; occ_removed: number;
+  /** "테이블|이름|위반 종류" → 상태(이번 검사 위반만). 기준선에 없으면 빠져 있다 */
   status: Record<string, BaselineStatus>; notes: Record<string, string>;
 };
 export type TermUsage = { source: number; files: number; erd_link: number; erd_name: number };
@@ -448,6 +454,10 @@ export type ErdPayload =
   | { action: 'add_column'; table: string; column: ColumnDraft }
   | { action: 'update_column'; table: string; column: string; patch: Partial<ColumnDraft> }
   | { action: 'drop_column'; table: string; column: string };
-export type RequestInput = { kind: 'term'; payload: TermPayload } | { kind: 'word'; payload: WordPayload } | { kind: 'erd'; payload: ErdPayload };
+export type ExceptionPayload = { mode: 'ignore' | 'hold'; name: string; table: string; issue: DictIssue | ''; note: string };
+export type BaselinePayload = { scope: 'all'; findings?: number; keys?: number };
+export type DictEditPayload = { entity: DictKind; action: 'create' | 'update'; id: string | null; target: string; before: Record<string, string | null> | null; values: Record<string, string | null> };
+export type RequestInput = { kind: 'term'; payload: TermPayload } | { kind: 'word'; payload: WordPayload } | { kind: 'erd'; payload: ErdPayload }
+  | { kind: 'exception'; payload: ExceptionPayload } | { kind: 'baseline'; payload: BaselinePayload } | { kind: 'dict_edit'; payload: DictEditPayload };
 export type DictKind = 'word' | 'term' | 'domain';
 

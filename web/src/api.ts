@@ -6,7 +6,7 @@ import type {
   TaskList,
   Account, Approval, ChangeScope, ArchiveEntry, DocMeta, JiraConfig, JiraIssue, JiraRequiredField, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
   ExplainResult, QueryDetail, QueryList, QuerySort,
-  BaselineStatus, ColumnEdit, DdlPreview, DictKind, DictUsage, DictReport, DictRequest, DictSearch, ErdConfig, ErdPayload, ErdProject, ErdProjectSummary, ErdStatus, ErdView, ParsedDdl, RelationshipType, SchemaDiff, TermPayload, WordPayload,
+  BaselineStatus, ColumnEdit, DdlPreview, DictCheckFilter, DictKind, DictUsage, DictReport, DictRequest, DictSearch, ErdConfig, ErdPayload, ErdProject, ErdProjectSummary, ErdStatus, ErdView, ParsedDdl, RelationshipType, SchemaDiff, TermPayload, WordPayload,
   ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, UsageReport, Workspace,
 } from './types';
 
@@ -159,20 +159,21 @@ export const api = {
   dictCreate: (kind: DictKind, body: Record<string, unknown>) => request<{ id: string }>('POST', `/api/erd-vibe/dict/${kind}`, body),
   dictUpdate: (kind: DictKind, id: string, body: Record<string, unknown>) => request<{ id: string }>('PUT', `/api/erd-vibe/dict/${kind}/${id}`, body),
   dictDelete: (kind: DictKind, ids: string[]) => request('DELETE', `/api/erd-vibe/dict/${kind}`, { ids }),
-  dictCheck: (sessionId: number, scope: 'changed' | 'all') => request<DictReport>('POST', `/api/sessions/${sessionId}/dict/check`, { scope }),
+  dictCheck: (sessionId: number, scope: 'changed' | 'all', filter: DictCheckFilter & { refresh?: boolean } = {}) => request<DictReport>('POST', `/api/sessions/${sessionId}/dict/check`, { scope, ...filter }),
   dictExcludes: (sessionId: number) => request<string[]>('GET', `/api/sessions/${sessionId}/dict/excludes`),
   setDictExcludes: (sessionId: number, patterns: string[]) => request<string[]>('PUT', `/api/sessions/${sessionId}/dict/excludes`, { patterns }),
   dictBaseline: (sessionId: number) => request<DictReport>('POST', `/api/sessions/${sessionId}/dict/baseline`, {}),
   clearDictBaseline: (sessionId: number) => request('DELETE', `/api/sessions/${sessionId}/dict/baseline`),
-  setBaselineStatus: (sessionId: number, keys: { name: string; issue: string }[], status: BaselineStatus, note: string) =>
+  setBaselineStatus: (sessionId: number, keys: { table?: string | null; name: string; issue: string }[], status: BaselineStatus, note: string) =>
     request('PUT', `/api/sessions/${sessionId}/dict/baseline/status`, { keys, status, note }),
   dictUsage: (sessionId: number, refresh = false) => request<DictUsage>('GET', `/api/sessions/${sessionId}/dict/usage?refresh=${refresh ? 1 : 0}`),
-  dictIgnores: (sessionId: number) => request<{ name: string; reason: string; created_at: string }[]>('GET', `/api/sessions/${sessionId}/dict/ignores`),
-  setDictIgnore: (sessionId: number, name: string, reason: string | null) => request('PUT', `/api/sessions/${sessionId}/dict/ignores`, { name, reason }),
+  dictIgnores: (sessionId: number) => request<{ table: string; name: string; issue: string; reason: string; created_at: string }[]>('GET', `/api/sessions/${sessionId}/dict/ignores`),
+  /** table·issue를 비우면 그 이름 전부 */
+  setDictIgnore: (sessionId: number, name: string, reason: string | null, table = '', issue = '') => request('PUT', `/api/sessions/${sessionId}/dict/ignores`, { name, reason, table, issue }),
   dictRequests: (sessionId: number) => request<DictRequest[]>('GET', `/api/sessions/${sessionId}/dict/requests`),
   addDictRequest: (sessionId: number, body: { kind: 'term'; payload: TermPayload; reason?: string } | { kind: 'word'; payload: WordPayload; reason?: string }) =>
     request<DictRequest>('POST', `/api/sessions/${sessionId}/dict/requests`, body),
-  approveDictRequest: (id: number, payload: TermPayload | WordPayload | ErdPayload) => request<DictRequest>('POST', `/api/dict-requests/${id}/approve`, { payload }),
+  approveDictRequest: (id: number, payload: DictRequest['payload']) => request<DictRequest>('POST', `/api/dict-requests/${id}/approve`, { payload }),
   rejectDictRequest: (id: number) => request('POST', `/api/dict-requests/${id}/reject`, {}),
   queries: (worktreeId: number, sort: QuerySort, warningsOnly: boolean) => request<QueryList>('GET', `/api/worktrees/${worktreeId}/queries?sort=${sort}&warnings=${warningsOnly ? 1 : 0}`),
   query: (worktreeId: number, key: string) => request<QueryDetail>('GET', `/api/worktrees/${worktreeId}/queries/${key}`),

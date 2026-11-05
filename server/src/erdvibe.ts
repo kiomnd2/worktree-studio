@@ -16,7 +16,7 @@ export type DictKind = 'word' | 'term' | 'domain';
 
 type State = { base_url?: string; api_key?: string };
 export const DEFAULT_URL = 'https://vibe-erd.60hz.cc';
-const DICT_CACHE_MS = 5 * 60_000;
+const DICT_CACHE_MS = 60_000;
 const ERD_CACHE_MS = 60_000;
 
 function load(): State {
@@ -92,7 +92,7 @@ const enc = encodeURIComponent;
 let dict: Dictionary | null = null;
 let loading: Promise<Dictionary> | null = null;
 
-/** 단어·용어·도메인 사전 전체. 5분 동안 메모리에 두고, force면 다시 받는다. */
+/** 단어·용어·도메인 사전 전체. 1분 동안 메모리에 두고, force면 다시 받는다. */
 export async function dictionary(force = false): Promise<Dictionary> {
   if (!force && dict && Date.now() - dict.loaded_at < DICT_CACHE_MS) return dict;
   if (loading) return loading;
@@ -124,7 +124,7 @@ const DICT_PATH: Record<DictKind, string> = { word: '/word-dictionary', term: '/
 const DICT_LIST: Record<DictKind, 'words' | 'terms' | 'domains'> = { word: 'words', term: 'terms', domain: 'domains' };
 export type DictEntry = Word | Term | Domain;
 
-/** 사전 항목 추가·수정·삭제. 반영한 뒤 캐시도 같게 고쳐 둔다(다음 5분 안의 검사에 바로 쓰이게). */
+/** 사전 항목 추가·수정·삭제. 반영한 뒤 캐시도 같게 고쳐 둔다(다음 검사에 바로 쓰이게). */
 export async function createDictEntry(kind: DictKind, body: Record<string, unknown>): Promise<DictEntry> {
   const created = await call<DictEntry>('POST', DICT_PATH[kind], body);
   if (dict) (dict[DICT_LIST[kind]] as DictEntry[]).push(created);
