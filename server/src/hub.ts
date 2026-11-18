@@ -15,6 +15,8 @@ export type ServerEvent =
   | { type: 'tasks.updated'; sessionId: number }
   /** 용어사전 등록 요청이 생기거나 처리됨 */
   | { type: 'dict.requests'; sessionId: number }
+  /** ERD 요청 일괄 승인 진행(서버에서 돌아서 화면을 떠나도 계속됨) */
+  | { type: 'dict.bulk'; sessionId: number; running: boolean; done: number; total: number; failed: string[] }
   /** studio에서 erd-vibe ERD를 고침(같은 ERD를 연 다른 화면이 다시 받게) */
   | { type: 'erd.updated'; projectId: string }
   /** studio에서 erd-vibe 사전을 고침 */

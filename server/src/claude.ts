@@ -24,7 +24,7 @@ import { requestLabel } from './dictrequests.js';
 import { refreshSessionDictionary } from './dictscan.js';
 import { ISSUES } from './dict/extract.js';
 import { erdConfigured } from './erdvibe.js';
-import type { ErdPayload } from './dictrequests.js';
+import { domainHint, type ErdPayload, type TermPayload } from './dictrequests.js';
 
 // 대화가 이 크기(토큰)를 넘으면 앞부분을 요약해 줄인다. 매 호출이 대화 전체를 다시 읽으므로 길수록 토큰이 커진다.
 export const AUTO_COMPACT_TOKENS = 300_000;
@@ -470,7 +470,8 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'dict_request_term',
-        'erd-vibe 용어사전에 없는 용어(또는 단어)를 등록하자고 사용자에게 요청한다. 사용자가 화면에서 고쳐 승인해야 팀 공유 사전에 들어간다. 기다리지 않고 바로 돌아오므로, 승인 전까지는 그 이름을 확정하지 말고 사용자에게 알린다. 단어가 사전에 없으면 kind "word"로 단어부터 요청한다.',
+        'erd-vibe 용어사전에 없는 용어(또는 단어)를 등록하자고 요청한다. 사용자가 화면에서 승인해야 팀 공유 사전에 들어간다. 기다리지 않고 바로 돌아오므로 요청한 표준 이름으로 개발을 이어 간다. 단어가 사전에 없으면 kind "word"로 단어부터 요청한다. '
+          + '규칙: 용어 논리명은 단어를 이은 것, 물리명은 단어 영문명을 밑줄로 이은 것, 약어명은 단어 약어를 밑줄로 이은 것이고 도메인은 도메인사전에 있어야 한다. 단어 영문명은 대문자·밑줄, 약어는 대문자·숫자이며 다른 단어와 겹치면 안 된다. 어긋나면 이유를 돌려준다.',
         {
           kind: z.enum(['term', 'word']),
           logical_name: z.string().describe('term: 논리명(거래취소일자). word: 단어(취소)'),
@@ -486,7 +487,8 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
             const r = await createDictRequest(sessionId, args.kind === 'term'
               ? { kind: 'term', payload: { logical_name: args.logical_name, physical_name: args.physical_name, physical_abbr_name: args.abbr_name ?? null, domain_name: args.domain_name ?? null, description: args.description } }
               : { kind: 'word', payload: { name: args.logical_name, english_name: args.physical_name, abbreviation: args.abbr_name ?? null, definition: args.description } }, args.reason, 'claude');
-            return text(`등록 요청 #${r.id}을 올렸습니다. 사용자가 용어 검사 화면에서 승인하면 erd-vibe 사전에 들어갑니다. 승인 전에는 확정된 이름이 아닙니다.`);
+            const hint = r.kind === 'term' ? await domainHint(r.payload as TermPayload).catch(() => null) : null;
+            return text(`등록 요청 #${r.id}을 올렸습니다. 사용자가 용어 검사 화면에서 승인하면 erd-vibe 사전에 들어갑니다. 요청한 이름으로 개발을 이어 가고, 마칠 때 올린 요청을 알려 주세요.${hint ? `\n${hint}` : ''}`);
           } catch (err) {
             return fail((err as Error).message);
           }

@@ -120,6 +120,7 @@ export type ServerEvent =
   | { type: 'tests.updated'; sessionId: number }
   | { type: 'queries'; sessionId: number; worktreeId: number }
   | { type: 'dict.requests'; sessionId: number }
+  | ({ type: 'dict.bulk'; sessionId: number } & BulkApprove)
   | { type: 'erd.updated'; projectId: string }
   | { type: 'dict.updated' }
   | { type: 'test.result'; sessionId: number; ticket: string; caseId: number; title: string; status: TestCase['status']; summary: string; index: number; total: number };
@@ -461,3 +462,6 @@ export type RequestInput = { kind: 'term'; payload: TermPayload } | { kind: 'wor
   | { kind: 'exception'; payload: ExceptionPayload } | { kind: 'baseline'; payload: BaselinePayload } | { kind: 'dict_edit'; payload: DictEditPayload };
 export type DictKind = 'word' | 'term' | 'domain';
 
+
+/** ERD 요청 일괄 승인 진행. 서버에서 돌아서 화면을 떠나도 계속된다. */
+export type BulkApprove = { running: boolean; done: number; total: number; failed: string[] };
