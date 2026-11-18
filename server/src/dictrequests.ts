@@ -91,13 +91,22 @@ export async function duplicateOf(kind: 'term' | 'word', p: TermPayload | WordPa
 }
 
 export async function createDictRequest(sessionId: number, input: RequestInput, reason: string, source: 'claude' | 'user'): Promise<DictRequest> {
-  if (input.kind === 'erd') validateErd(input.payload);
-  else if (input.kind === 'exception') validateException(sessionId, input.payload);
+  if (input.kind === 'erd') {
+    validateErd(input.payload);
+    if (source === 'claude') {
+      const bad = await erdTargetViolation(sessionId, input.payload);
+      if (bad) throw new Error(bad);
+    }
+  } else if (input.kind === 'exception') validateException(sessionId, input.payload);
   else if (input.kind === 'baseline') { /* 승인할 때 검사한다 */ }
   else if (input.kind === 'dict_edit') input = { kind: 'dict_edit', payload: await prepareEdit(input.payload) };
   else {
     const dup = await duplicateOf(input.kind, input.payload).catch(() => null);
     if (dup) throw new Error(dup);
+    if (source === 'claude') {
+      const bad = await namingRuleViolation(sessionId, input);
+      if (bad) throw new Error(bad);
+    }
   }
   const same = pendingDictRequests(sessionId).find((r) => r.kind === input.kind && JSON.stringify(r.payload) === JSON.stringify(input.payload));
   if (same) return same;
@@ -105,6 +114,73 @@ export async function createDictRequest(sessionId: number, input: RequestInput, 
     .run(sessionId, input.kind, JSON.stringify(input.payload), reason, source).lastInsertRowid);
   broadcast({ type: 'dict.requests', sessionId });
   return get(id);
+}
+
+const tokenOf = (s: string | null | undefined) => (s ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const squashName = (s: string) => s.replace(/\s+/g, '');
+type WordLite = { name: string; english_name: string; abbreviation: string | null; pending?: true };
+
+/**
+ * Claude가 올리는 단어·용어 등록 요청이 사전의 짓는 규칙에 맞는지 본다. 어긋나면 무엇을 고칠지 돌려준다.
+ *   단어: 영문명은 대문자·숫자·밑줄(REFERENCE_AMOUNT), 약어는 대문자·숫자(밑줄 없이), 다른 단어가 쓰는 약어·영문명과 겹치지 않게.
+ *   용어: 표준 이름(약어명)을 밑줄로 나눈 조각이 모두 단어(등록됐거나 이 세션에서 등록을 요청한 단어)이고,
+ *         논리명은 그 단어들을 이은 것이며, 도메인은 도메인사전에 있어야 한다.
+ * 기존 사전에는 이 규칙을 벗어난 항목도 있어서 사람이 화면에서 올리는 요청에는 걸지 않는다.
+ */
+async function namingRuleViolation(sessionId: number, input: { kind: 'term'; payload: TermPayload } | { kind: 'word'; payload: WordPayload }): Promise<string | null> {
+  const dict = await dictionary();
+  const pendingWords: WordLite[] = pendingDictRequests(sessionId).filter((r) => r.kind === 'word').map((r) => ({ ...(r.payload as WordPayload), pending: true }));
+  const words: WordLite[] = [...dict.words, ...pendingWords];
+  const byToken = new Map<string, WordLite[]>();
+  for (const w of words) for (const k of new Set([tokenOf(w.abbreviation), tokenOf(w.english_name)])) if (k) byToken.set(k, [...(byToken.get(k) ?? []), w]);
+  const label = (w: WordLite) => `${w.name}(${w.abbreviation ?? w.english_name}${w.pending ? ', 승인 대기' : ''})`;
+
+  if (input.kind === 'word') {
+    const w = input.payload;
+    const eng = w.english_name.trim().toUpperCase();
+    const abbr = (w.abbreviation ?? '').trim().toUpperCase();
+    if (!/^[A-Z0-9]+(_[A-Z0-9]+)*$/.test(eng)) return `단어 영문명 "${w.english_name}"은 영문 대문자·숫자를 밑줄로 이어 씁니다(예: REFERENCE_AMOUNT).`;
+    if (!abbr) return '단어 약어(abbr_name)가 필요합니다. 기존 단어처럼 영문명을 줄인 대문자로 짓습니다(예: CANCEL → CNCL). dict_lookup으로 비슷한 단어의 약어를 보고 맞춥니다.';
+    if (!/^[A-Z0-9]+$/.test(abbr)) return `단어 약어 "${abbr}"는 영문 대문자·숫자로만 짓습니다(밑줄 없이). 용어 표준 이름은 단어 약어를 밑줄로 이어 만듭니다.`;
+    const twin = pendingWords.find((x) => x.name === w.name.trim());
+    if (twin) return `단어 "${w.name}"은 이미 등록을 요청했습니다(${label(twin)}). 고칠 게 있으면 사용자가 화면에서 고칩니다.`;
+    for (const k of [abbr, tokenOf(eng)]) {
+      const clash = (byToken.get(k) ?? []).filter((x) => x.name !== w.name.trim());
+      if (clash.length) return `"${k}"는 이미 단어 ${clash.map(label).join(', ')}가 약어나 영문명으로 씁니다. 같은 뜻이면 그 단어를 쓰고, 다른 뜻이면 겹치지 않는 약어를 고릅니다.`;
+    }
+    return null;
+  }
+
+  const t = input.payload;
+  const std = (t.physical_abbr_name ?? '').trim().toUpperCase();
+  if (!std) return '용어 약어명(abbr_name, 표준 이름)이 필요합니다. 단어 약어를 밑줄로 이어 만듭니다(예: 거래+취소+일자 → TR_CNCL_DT).';
+  if (!/^[A-Z0-9]+(_[A-Z0-9]+)*$/.test(std)) return `용어 약어명 "${std}"는 단어 약어(대문자·숫자)를 밑줄로 이어 씁니다.`;
+  const toks = std.split('_');
+  const cands = toks.map((k) => byToken.get(k) ?? []);
+  const missing = toks.filter((_, i) => !cands[i].length);
+  if (missing.length) return `약어명 조각 ${missing.join(', ')}에 해당하는 단어가 사전에 없습니다. dict_request_term(kind "word")로 단어부터 요청한 뒤 이 용어를 다시 요청합니다.`;
+  let combos: WordLite[][] = [[]];
+  for (const c of cands) combos = combos.flatMap((pre) => c.map((w) => [...pre, w])).slice(0, 64);
+  const logical = squashName(t.logical_name);
+  if (!combos.some((ws) => ws.map((w) => squashName(w.name)).join('') === logical)) {
+    const expect = [...new Set(combos.map((ws) => ws.map((w) => w.name).join('')))].slice(0, 3);
+    return `논리명 "${t.logical_name}"이 약어명 ${std}의 단어 조합(${expect.join(' / ')})과 다릅니다. 용어는 단어를 이어 짓습니다. 논리명이나 약어명을 단어에 맞춥니다.`;
+  }
+  if (!t.domain_name?.trim()) return '용어 도메인(domain_name)이 필요합니다. 같은 끝 단어를 쓰는 기존 용어의 도메인을 dict_lookup으로 보고 따릅니다(예: …일자 → 일자).';
+  if (!dict.domains.some((d) => d.name === t.domain_name!.trim())) return `도메인 "${t.domain_name}"이 도메인사전에 없습니다. dict_lookup으로 있는 도메인을 골라 씁니다.`;
+  return null;
+}
+
+/** 같은 끝 조각(…_DT)을 쓰는 기존 용어들이 가장 많이 쓰는 도메인과 다르면 참고로 알려 준다(막지는 않는다). */
+export async function domainHint(t: TermPayload): Promise<string | null> {
+  const last = (t.physical_abbr_name ?? '').trim().toUpperCase().split('_').pop();
+  if (!last || !t.domain_name) return null;
+  const count = new Map<string, number>();
+  for (const x of (await dictionary()).terms) {
+    if (x.domain_name && (x.physical_abbr_name || x.physical_name).toUpperCase().split('_').pop() === last) count.set(x.domain_name, (count.get(x.domain_name) ?? 0) + 1);
+  }
+  const top = [...count.entries()].sort((a, b) => b[1] - a[1])[0];
+  return top && top[0] !== t.domain_name.trim() ? `참고: …_${last}로 끝나는 기존 용어는 도메인 "${top[0]}"을 가장 많이(${top[1]}건) 씁니다. 일부러 다르게 고른 게 아니면 맞춥니다.` : null;
 }
 
 function finish(r: DictRequest, status: DictRequest['status'], error: string | null, payload?: unknown) {
@@ -142,6 +218,42 @@ export async function approveDictRequest(id: number, payload: RequestInput['payl
     finish(r, 'failed', (err as Error).message, payload);
   }
   return get(id);
+}
+
+export type BulkApprove = { running: boolean; done: number; total: number; failed: string[] };
+const bulkJobs = new Map<number, BulkApprove>();
+/** 세션의 ERD 일괄 승인 진행 상황(마지막 작업 결과 포함). 한 번도 안 돌렸으면 null. */
+export const bulkApproveStatus = (sessionId: number) => bulkJobs.get(sessionId) ?? null;
+
+/**
+ * 승인 대기 중인 ERD 요청을 저장된 초안 그대로 서버에서 차례로 반영한다. 화면을 떠나도 계속된다.
+ * 테이블 추가 뒤에 그 테이블의 컬럼 요청이 오도록 먼저 만든 요청부터. 진행 중이면 다시 시작하지 않는다.
+ */
+export function startBulkApproveErd(sessionId: number): BulkApprove {
+  if (bulkJobs.get(sessionId)?.running) throw Object.assign(new Error('일괄 승인이 이미 진행 중입니다.'), { statusCode: 409 });
+  const ids = (db.prepare(`SELECT id FROM dict_requests WHERE session_id = ? AND kind = 'erd' AND status = 'pending' ORDER BY id`).all(sessionId) as { id: number }[]).map((r) => r.id);
+  if (!ids.length) throw new Error('승인 대기 중인 ERD 요청이 없습니다.');
+  const job: BulkApprove = { running: true, done: 0, total: ids.length, failed: [] };
+  bulkJobs.set(sessionId, job);
+  const emit = () => broadcast({ type: 'dict.bulk', sessionId, ...job, failed: [...job.failed] });
+  emit();
+  void (async () => {
+    for (const id of ids) {
+      try {
+        const r = get(id);
+        // 그 사이 사람이 거절하거나 처리한 요청은 건너뛴다.
+        if (r.status === 'pending') {
+          const res = await approveDictRequest(id, r.payload as ErdPayload);
+          if (res.status !== 'done') job.failed.push(`#${id} ${res.error ?? ''}`);
+        }
+      } catch (e) { job.failed.push(`#${id} ${(e as Error).message}`); }
+      job.done++;
+      emit();
+    }
+    job.running = false;
+    emit();
+  })();
+  return job;
 }
 
 export function rejectDictRequest(id: number) {
@@ -283,6 +395,9 @@ function validateErd(p: ErdPayload) {
     validateColumn(p.column, '컬럼');
   } else if (p.action === 'update_column' || p.action === 'drop_column') {
     if (!p.table || !p.column) throw new Error('테이블과 컬럼 이름이 필요합니다.');
+    if (p.action === 'update_column' && !Object.values(p.patch ?? {}).some((v) => v !== undefined && v !== null && v !== '')) {
+      throw new Error('바꿀 값이 없습니다. update_column은 columns에 바꿀 값(새 물리명, 논리명, 타입, term 등)을 하나 넣습니다.');
+    }
   } else throw new Error('알 수 없는 ERD 변경입니다.');
 }
 
@@ -309,6 +424,33 @@ function tableOf(erd: ErdProject, name: string) {
 }
 
 /** 승인한 ERD 변경을 연결한 ERD에 반영한다. 순서대로 쓰다 실패하면 거기서 멈추고 오류를 남긴다. */
+/**
+ * Claude가 올리는 ERD 요청이 지금 ERD와 맞는지 미리 본다. 승인할 때 가서야 "컬럼이 없습니다"로 실패하지 않게.
+ * 소스에만 있는 옛 이름을 ERD에서 바꾸자고 하는 경우가 많아서, ERD에 이미 표준 이름이 있으면 소스를 고치라고 알려 준다.
+ */
+async function erdTargetViolation(sessionId: number, p: ErdPayload): Promise<string | null> {
+  const s = getSession(sessionId);
+  const erdId = s ? sessionErdId(s) : null;
+  if (!erdId) return null;
+  let erd: ErdProject;
+  try { erd = await erdProject(erdId, true); } catch { return null; }
+  const find = (name: string) => erd.tables.find((t) => U(t.physical_name) === U(name));
+  if (p.action === 'add_table') return find(p.table.physical_name) ? `ERD에 이미 ${U(p.table.physical_name)} 테이블이 있습니다. 컬럼이 다르면 add_column·update_column으로 요청합니다.` : null;
+  const t = find(p.table);
+  if (!t) return `ERD에 ${U(p.table)} 테이블이 없습니다. 새 테이블이면 add_table로 요청하고, 아니면 erd_table로 실제 테이블 이름을 확인합니다.`;
+  const cols = t.columns.map((c) => c.physical_name);
+  const has = (name: string) => cols.some((c) => U(c) === U(name));
+  if (p.action === 'add_column') return has(p.column.physical_name) ? `${t.physical_name}에 이미 ${U(p.column.physical_name)} 컬럼이 있습니다.` : null;
+  if (!has(p.column)) {
+    return `ERD의 ${t.physical_name}에는 ${U(p.column)} 컬럼이 없습니다(ERD 컬럼: ${cols.join(', ')}). `
+      + '소스에만 있는 이름이면 ERD를 바꾸지 말고 소스(매퍼·Liquibase·엔티티)를 ERD 이름에 맞춰 고칩니다. ERD에 정말 빠진 컬럼이면 add_column으로 요청합니다.';
+  }
+  if (p.action === 'update_column' && p.patch.physical_name && U(p.patch.physical_name) !== U(p.column) && has(p.patch.physical_name)) {
+    return `${t.physical_name}에 이미 ${U(p.patch.physical_name)} 컬럼이 있어 ${U(p.column)}을 그 이름으로 바꿀 수 없습니다.`;
+  }
+  return null;
+}
+
 async function applyErd(sessionId: number, p: ErdPayload) {
   validateErd(p);
   const s = getSession(sessionId);

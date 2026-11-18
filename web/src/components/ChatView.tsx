@@ -348,7 +348,7 @@ function MessageItem({ message, toolResults, now }: { message: StoredMessage; to
           }
           if (b.type === 'tool_use' && b.name === 'mcp__studio__save_doc') {
             const r = toolResults.get(b.id);
-            const kind = b.input?.kind === 'plan' ? '계획서' : b.input?.kind === 'screen' ? '화면설계서' : '문서';
+            const kind = b.input?.kind === 'plan' ? '계획서' : b.input?.kind === 'screen' ? '화면설계서' : b.input?.kind === 'db' ? 'DB 변경 설계서' : '문서';
             return (
               <div key={i} className="doc-card">
                 <div className="doc-card-text">

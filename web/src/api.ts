@@ -6,7 +6,7 @@ import type {
   TaskList,
   Account, Approval, ChangeScope, ArchiveEntry, DocMeta, JiraConfig, JiraIssue, JiraRequiredField, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
   ExplainResult, QueryDetail, QueryList, QuerySort,
-  BaselineStatus, ColumnEdit, DdlPreview, DictCheckFilter, DictKind, DictUsage, DictReport, DictRequest, DictSearch, ErdConfig, ErdPayload, ErdProject, ErdProjectSummary, ErdStatus, ErdView, ParsedDdl, RelationshipType, SchemaDiff, TermPayload, WordPayload,
+  BaselineStatus, BulkApprove, ColumnEdit, DdlPreview, DictCheckFilter, DictKind, DictUsage, DictReport, DictRequest, DictSearch, ErdConfig, ErdPayload, ErdProject, ErdProjectSummary, ErdStatus, ErdView, ParsedDdl, RelationshipType, SchemaDiff, TermPayload, WordPayload,
   ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, UsageReport, Workspace,
 } from './types';
 
@@ -175,6 +175,8 @@ export const api = {
     request<DictRequest>('POST', `/api/sessions/${sessionId}/dict/requests`, body),
   approveDictRequest: (id: number, payload: DictRequest['payload']) => request<DictRequest>('POST', `/api/dict-requests/${id}/approve`, { payload }),
   rejectDictRequest: (id: number) => request('POST', `/api/dict-requests/${id}/reject`, {}),
+  dictBulk: (sessionId: number) => request<{ job: BulkApprove | null }>('GET', `/api/sessions/${sessionId}/dict/requests/bulk`),
+  approveAllErd: (sessionId: number) => request<BulkApprove>('POST', `/api/sessions/${sessionId}/dict/requests/approve-erd`, {}),
   queries: (worktreeId: number, sort: QuerySort, warningsOnly: boolean) => request<QueryList>('GET', `/api/worktrees/${worktreeId}/queries?sort=${sort}&warnings=${warningsOnly ? 1 : 0}`),
   query: (worktreeId: number, key: string) => request<QueryDetail>('GET', `/api/worktrees/${worktreeId}/queries/${key}`),
   resetQueries: (worktreeId: number) => request('POST', `/api/worktrees/${worktreeId}/queries/reset`, {}),
