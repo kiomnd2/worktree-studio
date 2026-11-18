@@ -6,7 +6,11 @@
 ## 문서
 
 - `docs/manual.html` 사용 설명서 (설정, 세션, 계획 먼저, 서버·미리보기, 화면 테스트, 산출물 보관함, PR, 정리, 문제 해결)
-- `docs/plan.html` 개발 계획서 (범위, 아키텍처, 기능 명세, 데이터 모델, 로드맵, 리스크, 결정 사항)
+- `docs/plans/` 플랜 문서 (Markdown 원본). 목록과 작성 규칙은 `docs/plans/README.md`
+  - `worktree-studio.md` 도구 전체 개발 계획서 (범위, 아키텍처, 기능 명세, 데이터 모델, 로드맵, 리스크, 결정 사항)
+  - `query-monitor.md` 쿼리 감시 기능 계획서
+- `docs/plan.html`, `docs/query-monitor-plan.html` 예전 HTML 플랜 (더 이상 갱신하지 않음)
+- `docs/architecture.html` 구조와 하네스 (저장소 구조, 실행 구성, 서버·화면 모듈, Claude 하네스·도구·승인, 데이터)
 - `docs/screens.html` 화면설계서 (화면 7개의 구성 요소, 동작 규칙, 구현 상태)
 
 ## 들어 있는 것

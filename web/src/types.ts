@@ -166,8 +166,8 @@ export type Approval = {
     | { kind: 'dbwrite'; connection_id: number; connection_name: string; target: string; sql: string };
 };
 
-/** 개발 산출물. plan: 계획서, screen: 화면설계서, test: 테스트 결과서, report: 완료 보고서 */
-export type DocKind = 'plan' | 'screen' | 'test' | 'report' | 'other';
+/** 개발 산출물. plan: 계획서, screen: 화면설계서, db: DB 변경 설계서, test: 테스트 결과서, report: 완료 보고서 */
+export type DocKind = 'plan' | 'screen' | 'db' | 'test' | 'report' | 'other';
 export type DocMeta = { name: string; title: string; kind: DocKind; version: number; updated_at: string; path: string };
 export type ArchiveEntry = {
   session_id: number; ticket: string; summary: string; workspace_name: string; closed: boolean; updated_at: string;

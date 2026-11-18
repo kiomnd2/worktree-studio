@@ -12,7 +12,7 @@ import { getSession, listSessions } from './sessions.js';
  * 폴더마다 index.html과 meta.json을 같이 써 둬서 도구 없이 폴더만 열어도 읽을 수 있다.
  * 같은 이름으로 다시 저장하면 새 판이 되고 예전 판은 남는다.
  */
-export type DocKind = 'plan' | 'screen' | 'test' | 'report' | 'other';
+export type DocKind = 'plan' | 'screen' | 'db' | 'test' | 'report' | 'other';
 export type DocMeta = { name: string; title: string; kind: DocKind; version: number; updated_at: string; path: string };
 type Index = Record<string, { title: string; kind: DocKind; version: number; updated_at: string }>;
 
@@ -20,8 +20,8 @@ export const ARCHIVE_DIR = path.join(DATA_DIR, 'artifacts');
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /** Claude가 쓰는 문서 크기 제한. 스크린샷을 넣는 테스트 결과서는 도구가 직접 만들어 따로 정한다. */
 const MAX_BYTES = 2 * 1024 * 1024;
-const KIND_ORDER: Record<DocKind, number> = { plan: 0, screen: 1, test: 2, report: 3, other: 4 };
-const KIND_LABEL: Record<DocKind, string> = { plan: '계획서', screen: '화면설계서', test: '테스트 결과서', report: '완료 보고서', other: '문서' };
+const KIND_ORDER: Record<DocKind, number> = { plan: 0, screen: 1, db: 2, test: 3, report: 4, other: 5 };
+const KIND_LABEL: Record<DocKind, string> = { plan: '계획서', screen: '화면설계서', db: 'DB 변경 설계서', test: '테스트 결과서', report: '완료 보고서', other: '문서' };
 
 // 예전에는 docs/<세션>에 뒀다. 보관함으로 옮긴다.
 {
