@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { insertIntoPrompt, useServerEvents } from '../events';
-import type { BaselinePayload, BaselineStatus, ColumnDraft, DictBaseline, DictDomain, DictEditPayload, DictFinding, DictGroup, DictIssue, DictKind, DictReport, DictSourceKind, DictUsage, TermUsage, DictRequest, DictSearch, ErdPayload, ExceptionPayload, Resolution, Session, TermPayload, WordPayload } from '../types';
+import type { BaselinePayload, BaselineStatus, BulkApprove, ColumnDraft, DictBaseline, DictDomain, DictEditPayload, DictFinding, DictGroup, DictIssue, DictKind, DictReport, DictSourceKind, DictUsage, TermUsage, DictRequest, DictSearch, ErdPayload, ExceptionPayload, Resolution, Session, TermPayload, WordPayload } from '../types';
 
 /**
  * erd-vibe 용어사전 화면. 소스의 컬럼 이름 검사, 사전 관리(단어·용어·도메인 찾기·추가·수정·삭제), Claude 요청 승인을 한 곳에서 한다.
@@ -830,37 +830,35 @@ function RequestsTab({ session, domains, onOpenErd }: { session: Session; domain
   const reloadTerms = useCallback(() => { api.dictSearch(session.id, '', 2000).then((r) => setTerms(r.terms)).catch(() => {}); }, [session.id]);
   useEffect(reload, [reload]);
   useEffect(reloadTerms, [reloadTerms]);
+  // 일괄 승인은 서버에서 돈다. 화면을 떠났다 와도 진행 상황을 다시 받아 버튼을 잠근다.
+  const [bulk, setBulk] = useState<BulkApprove | null>(null);
+  useEffect(() => { api.dictBulk(session.id).then((r) => setBulk(r.job)).catch(() => {}); }, [session.id]);
+  const running = bulk?.running ?? false;
   useServerEvents((e) => {
-    if (e.type === 'dict.requests' && e.sessionId === session.id) reload();
+    // 일괄 승인 중에는 요청마다 오는 알림으로 목록을 매번 다시 받지 않고, 진행 알림에 맞춰 띄엄띄엄 받는다.
+    if (e.type === 'dict.requests' && e.sessionId === session.id && !running) reload();
+    if (e.type === 'dict.bulk' && e.sessionId === session.id) {
+      const { type: _t, sessionId: _s, ...job } = e;
+      setBulk(job);
+      if (!job.running || job.done % 20 === 0) reload();
+    }
     if (e.type === 'dict.updated') reloadTerms();
   });
-  const [bulk, setBulk] = useState<string | null>(null);
   if (!list) return error ? <p className="banner error">{error}</p> : <p className="muted">불러오는 중</p>;
   const open = (r: DictRequest) => r.status === 'pending' || r.status === 'failed';
   const inView = view === 'pending' ? list.filter(open) : list;
   const counts = new Map<RequestCategory, number>();
   for (const r of inView) counts.set(requestCategory(r), (counts.get(requestCategory(r)) ?? 0) + 1);
   const shown = (category ? inView.filter((r) => requestCategory(r) === category) : inView).sort((a, b) => Number(open(b)) - Number(open(a)) || b.id - a.id);
-  // 일괄 승인은 승인 대기 중인 ERD 요청만. 테이블 추가 뒤에 그 테이블의 컬럼 요청이 오도록 먼저 만든 요청부터 반영한다.
-  const erdPending = list.filter((r) => r.kind === 'erd' && r.status === 'pending').sort((a, b) => a.id - b.id);
+  const erdPending = list.filter((r) => r.kind === 'erd' && r.status === 'pending');
   const approveAllErd = async () => {
     const drops = erdPending.filter((r) => (r.payload as ErdPayload).action === 'drop_column').length;
     const msg = `승인 대기 중인 ERD 변경 요청 ${erdPending.length}건을 저장된 초안 그대로 ERD에 반영합니다.`
       + (drops ? `\n컬럼 삭제 ${drops}건이 들어 있습니다. 삭제한 컬럼에 걸린 관계도 함께 지워집니다.` : '')
-      + '\n카드에서 고친 내용은 반영되지 않습니다. 계속할까요?';
+      + '\n카드에서 고친 내용은 반영되지 않습니다. 이 화면을 떠나도 계속 진행됩니다. 계속할까요?';
     if (!confirm(msg)) return;
     setError(null);
-    const failed: string[] = [];
-    for (const [i, r] of erdPending.entries()) {
-      setBulk(`${i + 1}/${erdPending.length}`);
-      try {
-        const res = await api.approveDictRequest(r.id, r.payload as ErdPayload);
-        if (res.status !== 'done') failed.push(`#${r.id} ${res.error ?? ''}`);
-      } catch (e) { failed.push(`#${r.id} ${(e as Error).message}`); }
-    }
-    setBulk(null);
-    if (failed.length) setError(`${erdPending.length}건 중 ${failed.length}건을 반영하지 못했습니다.\n${failed.join('\n')}`);
-    reload();
+    try { setBulk(await api.approveAllErd(session.id)); } catch (e) { setError((e as Error).message); }
   };
   return (
     <>
@@ -878,21 +876,31 @@ function RequestsTab({ session, domains, onOpenErd }: { session: Session; domain
             ))}
           </div>
           <span className="spacer" />
-          {erdPending.length > 0 && (
-            <button className="primary" disabled={bulk !== null} onClick={approveAllErd}>
-              {bulk ? `반영 중 ${bulk}` : `ERD 요청 ${erdPending.length}건 일괄 승인`}
-            </button>
+          {running ? (
+            <button className="primary" disabled>일괄 승인 중 {bulk!.done}/{bulk!.total}</button>
+          ) : erdPending.length > 0 && (
+            <button className="primary" onClick={approveAllErd}>ERD 요청 {erdPending.length}건 일괄 승인</button>
           )}
         </div>
       </div>
       {error && <p className="banner error" role="alert" style={{ whiteSpace: 'pre-line' }}>{error}</p>}
+      {bulk && !bulk.running && bulk.failed.length > 0 && (
+        <div className="banner error" role="alert">
+          <div className="row">
+            <span>일괄 승인 {bulk.total}건 중 {bulk.failed.length}건을 반영하지 못했습니다.</span>
+            <span className="spacer" />
+            <button className="small-btn" onClick={() => setBulk(null)}>닫기</button>
+          </div>
+          <pre style={{ whiteSpace: 'pre-wrap', margin: '6px 0 0' }}>{bulk.failed.join('\n')}</pre>
+        </div>
+      )}
       {shown.length === 0 && <p className="muted">{category ? `${CATEGORY_LABEL[category]} 요청이 없습니다.` : view === 'pending' ? '승인을 기다리는 요청이 없습니다.' : '요청이 없습니다.'}</p>}
-      {shown.map((r) => <RequestCard key={r.id} r={r} domains={domains} terms={terms} onDone={reload} onOpenErd={onOpenErd} />)}
+      {shown.map((r) => <RequestCard key={r.id} r={r} domains={domains} terms={terms} locked={running && r.kind === 'erd'} onDone={reload} onOpenErd={onOpenErd} />)}
     </>
   );
 }
 
-function RequestCard({ r, domains, terms, onDone, onOpenErd }: { r: DictRequest; domains: DictDomain[]; terms: TermLite[]; onDone: () => void; onOpenErd: (table?: string) => void }) {
+function RequestCard({ r, domains, terms, locked, onDone, onOpenErd }: { r: DictRequest; domains: DictDomain[]; terms: TermLite[]; locked: boolean; onDone: () => void; onOpenErd: (table?: string) => void }) {
   const [draft, setDraft] = useState<DictRequest['payload']>(r.payload);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -983,8 +991,8 @@ function RequestCard({ r, domains, terms, onDone, onOpenErd }: { r: DictRequest;
         <div className="row">
           {toErd && <button onClick={() => onOpenErd((r.payload as ErdPayload).action === 'add_table' ? undefined : (r.payload as Exclude<ErdPayload, { action: 'add_table' }>).table)}>ERD 화면에서 보기</button>}
           <span className="spacer" />
-          <button disabled={busy} onClick={() => act(() => api.rejectDictRequest(r.id))}>거절</button>
-          <button className={r.kind === 'erd' && (draft as ErdPayload).action === 'drop_column' ? 'primary danger' : 'primary'} disabled={busy} onClick={approve}>
+          <button disabled={busy || locked} onClick={() => act(() => api.rejectDictRequest(r.id))}>거절</button>
+          <button className={r.kind === 'erd' && (draft as ErdPayload).action === 'drop_column' ? 'primary danger' : 'primary'} disabled={busy || locked} title={locked ? '일괄 승인이 진행 중입니다.' : undefined} onClick={approve}>
             {busy ? '반영 중' : approveLabel}
           </button>
         </div>

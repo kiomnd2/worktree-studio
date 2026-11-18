@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { insertIntoPrompt, useServerEvents } from '../events';
+import SendButton from './SendButton';
 import type { PrDraft, PrJob, PrStep, PullRequest, Session } from '../types';
 
 const STEP_LABEL: Record<PrStep['name'], string> = { commit: '커밋', check: '빌드·테스트', dict: '용어 검사', schema: '스키마 검사', push: '푸시', pr: 'PR 생성' };
@@ -181,14 +182,14 @@ export default function PrDialog({ session, onClose, onOpenCleanup }: Props) {
                       {s.status === 'failed' && s.output && (
                         <div className="step-fail">
                           <pre className="log-box">{s.output}</pre>
-                          <button type="button" onClick={() => {
+                          <SendButton className="" label="로그를 대화로 보내기" onSend={() => {
                             insertIntoPrompt(s.name === 'dict'
                               ? `${r.project_name} 용어 검사에서 용어사전과 맞지 않는 컬럼 이름이 나왔어. dict_lookup으로 표준 이름을 확인해서 고치고, 사전에 없는 용어는 dict_request_term으로 등록을 요청해줘.\n\`\`\`\n${s.output!.split('\n').slice(0, 60).join('\n')}\n\`\`\``
                               : s.name === 'schema'
                               ? `${r.project_name} 스키마 검사에서 Liquibase 최종 스키마에 없는 컬럼이나 rename·drop된 옛 이름을 쓰는 곳이 나왔어. 옛 이름은 지금 이름으로 고치고, 정말 새 컬럼이면 이미 적용된 changeset은 건드리지 말고 새 changeset을 더해줘. 다 고치면 schema_check로 확인해줘.\n\`\`\`\n${s.output!.split('\n').slice(0, 60).join('\n')}\n\`\`\``
                               : `${r.project_name} PR 전 검사(${STEP_LABEL[s.name]})가 실패했어. 원인을 찾아서 고쳐줘.\n\`\`\`\n${s.output!.split('\n').slice(-60).join('\n')}\n\`\`\``);
                             onClose();
-                          }}>로그를 새 대화로 보내기</button>
+                          }} />
                         </div>
                       )}
                     </li>

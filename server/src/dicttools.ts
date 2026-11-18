@@ -13,9 +13,14 @@ import type { SchemaFinding } from './dict/srcrefs.js';
 
 /** Claude에게 주는 용어사전 도구의 글 모양과, 시스템 프롬프트·tool_context에 붙일 줄. */
 
-export const DICT_RULE = '컬럼·DDL·SQL 별칭·resultMap column처럼 DB 이름을 새로 짓거나 바꿀 때는 먼저 mcp__studio__dict_lookup으로 erd-vibe 용어사전의 표준 이름(약어명)과 도메인 타입을 확인하고 그대로 쓴다. '
-  + '같은 용어를 다른 표기(TR_DATE와 TR_DT 등)로 쓰지 않는다. 사전에 없는 이름은 지어내지 말고 mcp__studio__dict_request_term으로 등록을 요청한 뒤 사용자 승인을 기다린다. '
-  + '테이블 정의가 필요하면 mcp__studio__erd_table로 ERD를 본다. 새 테이블·컬럼이 필요하거나 ERD와 소스가 다르면 ERD를 직접 고치지 말고 mcp__studio__erd_request_change로 변경을 요청한다(사용자가 승인하면 반영). 작업을 마치기 전에 mcp__studio__dict_check로 이번 변경의 위반을 확인하고 고친다(PR 전 검사에서도 막힌다). '
+export const DICT_RULE = '개발하면서 DB 이름(테이블 컬럼, DDL, SQL 별칭, resultMap column, @Column 등)을 새로 쓰거나 바꿀 때마다 먼저 mcp__studio__dict_lookup으로 erd-vibe 용어사전을 확인하고, 판정에 따라 처리한다. '
+  + '표준이면 그대로 쓰고, 비표준 표기면 알려 준 표준 이름(약어명)으로 바꿔 쓴다. 같은 용어를 다른 표기(TR_DATE와 TR_DT 등)로 쓰지 않는다. '
+  + '새 용어가 생기면 사용자에게 묻지 말고 기존 규칙대로 바로 등록을 요청한다: '
+  + '(1) 미등록 단어가 있으면 단어마다 dict_lookup으로 비슷한 단어의 약어 짓는 법을 보고 mcp__studio__dict_request_term(kind "word")로 먼저 요청한다. 영문명은 대문자·밑줄(REFERENCE_AMOUNT), 약어는 영문명을 줄인 대문자·숫자(CANCEL → CNCL)이고 다른 단어의 약어와 겹치지 않게 한다. '
+  + '(2) 용어는 단어를 이어 짓는다: 논리명은 단어를 이은 것(거래+취소+일자 → 거래취소일자), 물리명은 단어 영문명을 밑줄로 이은 것, 약어명(표준 이름)은 단어 약어를 밑줄로 이은 것(TR_CNCL_DT). 판정이 등록 초안을 주면 그대로 쓴다. '
+  + '(3) 도메인은 같은 끝 단어를 쓰는 기존 용어의 도메인을 따른다(…일자 → 일자, …여부 → 여부). '
+  + '규칙에 어긋난 요청은 도구가 이유와 함께 돌려주니 고쳐서 다시 요청한다. 요청을 올린 뒤에는 그 표준 이름으로 개발을 계속하고, 작업을 마칠 때 올린 단어·용어 요청을 정리해 알린다(사용자가 용어 검사 화면에서 승인해야 사전에 들어간다). '
+  + '테이블 정의가 필요하면 mcp__studio__erd_table로 ERD를 본다. ERD와 소스가 다르면 먼저 어느 쪽이 표준인지 본다: ERD가 이미 표준 이름이면 ERD는 두고 소스(매퍼·Liquibase·엔티티)를 ERD에 맞춰 고친다. 새 테이블·컬럼이 필요하거나 ERD 자체가 틀렸을 때만 ERD를 직접 고치지 말고 mcp__studio__erd_request_change로 변경을 요청한다(사용자가 승인하면 반영). update_column에는 바꿀 값(새 물리명 등)을 columns에 꼭 넣는다. 작업을 마치기 전에 mcp__studio__dict_check로 이번 변경의 위반을 확인하고 고친다(PR 전 검사에서도 막힌다). '
   + 'Liquibase를 쓰는 앱에서 테이블·컬럼을 바꾸면 이미 적용된 changeset은 고치지 말고 새 changeset을 더하고, mcp__studio__schema_check로 매퍼·JPA가 최종 스키마와 맞는지(옛 이름·없는 컬럼) 확인한다. '
   + '검사 결과가 길면 tables·exclude_paths·kinds로 범위를 줄이고 section·offset·limit·detail·export로 나눠 본다. 사전을 방금 고쳤는데 반영이 안 보이면 refresh나 mcp__studio__dict_reload를 쓴다. '
   + '고치지 않을 기존 위반은 mcp__studio__dict_request_exception(사유 필수)으로, 기존 위반 정리 시작점은 mcp__studio__dict_request_baseline으로, 용어·단어·도메인 수정은 mcp__studio__dict_request_edit로 요청한다(모두 사용자 승인 뒤 반영, erd-vibe REST를 직접 부르지 않는다).';

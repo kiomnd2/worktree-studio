@@ -114,7 +114,7 @@ export default function App() {
     return () => window.removeEventListener('wts:open-doc', onOpen);
   }, [selectedId]);
 
-  // 테스트·변경 파일·문서 화면이나 PR 창에서 "새 대화로 보내기"를 누르면 그 세션의 대화 화면으로 돌아간다.
+  // 테스트·변경 파일·문서 화면이나 PR 창에서 대화로 보내기를 누르면 그 세션의 대화 화면으로 돌아간다.
   useEffect(() => {
     const toChat = () => {
       if (!selectedId) return;

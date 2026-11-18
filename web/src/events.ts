@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ServerEvent } from './types';
 
 type Listener = (e: ServerEvent) => void;
@@ -44,34 +44,58 @@ export function useServerEvents(handler: Listener) {
 }
 
 /**
- * 도구 화면(로그, 변경 파일, 문서, 화면 테스트, 미리보기 캡처 등)에서 넘기는 프롬프트는 메인 대화가 아니라 새 대화 탭에 넣는다.
+ * 도구 화면(로그, 변경 파일, 문서, 화면 테스트, 미리보기 캡처 등)에서 넘기는 프롬프트는 사용자가 고른 곳(메인 대화나 새 대화 탭)에 넣는다.
  * 새 대화 탭이 이미 열려 있으면 거기에 더한다. 보내기는 사용자가 한다.
  */
-export type NewChatItem = { text: string } | { image: { mediaType: string; data: string; name: string } };
+export type SendTarget = 'main' | 'new';
+export type NewChatItem = ({ text: string } | { image: { mediaType: string; data: string; name: string } }) & { target: SendTarget };
 let newChatPending: NewChatItem[] = [];
+
+const SEND_TARGET_KEY = 'wts:send-target';
+let sendTarget: SendTarget = (() => { try { return localStorage.getItem(SEND_TARGET_KEY) === 'main' ? 'main' : 'new'; } catch { return 'new'; } })();
+
+/** 도구 화면에서 넘길 곳. 마지막으로 고른 곳을 기억한다. */
+export const getSendTarget = () => sendTarget;
+
+export function setSendTarget(t: SendTarget) {
+  sendTarget = t;
+  try { localStorage.setItem(SEND_TARGET_KEY, t); } catch { /* 사생활 보호 모드 등 */ }
+  window.dispatchEvent(new CustomEvent('wts:send-target'));
+}
+
+/** 넘길 곳이 바뀌면 다시 그린다(보내기 버튼 이름에 쓴다). */
+export function useSendTarget(): SendTarget {
+  const [t, setT] = useState(sendTarget);
+  useEffect(() => {
+    const on = () => setT(sendTarget);
+    window.addEventListener('wts:send-target', on);
+    return () => window.removeEventListener('wts:send-target', on);
+  }, []);
+  return t;
+}
 
 function toNewChat(item: NewChatItem) {
   newChatPending.push(item);
-  window.dispatchEvent(new CustomEvent('wts:new-chat'));
+  window.dispatchEvent(new CustomEvent('wts:new-chat', { detail: item.target }));
 }
 
-/** 미리보기 캡처 같은 이미지를 새 대화의 첨부에 넣는다. data는 base64. */
-export function attachToPrompt(image: { mediaType: string; data: string; name: string }) {
-  toNewChat({ image });
+/** 미리보기 캡처 같은 이미지를 대화의 첨부에 넣는다. data는 base64. */
+export function attachToPrompt(image: { mediaType: string; data: string; name: string }, target = sendTarget) {
+  toNewChat({ image, target });
 }
 
-/** 로그 줄 같은 텍스트를 새 대화의 입력창에 넣는다. 대화 화면이 없으면 나타날 때 넣는다. */
-export function insertIntoPrompt(text: string) {
-  toNewChat({ text });
+/** 로그 줄 같은 텍스트를 대화의 입력창에 넣는다. 대화 화면이 없으면 나타날 때 넣는다. */
+export function insertIntoPrompt(text: string, target = sendTarget) {
+  toNewChat({ text, target });
 }
 
-/** 새 대화 탭에 넣을 것이 남아 있는지(대화 화면이 나타날 때 새 대화 탭을 열지 정한다) */
-export const hasNewChatPending = () => newChatPending.length > 0;
+/** 넣을 것이 남아 있으면 그 곳(대화 화면이 나타날 때 어느 탭을 열지 정한다) */
+export const pendingTarget = (): SendTarget | null => newChatPending[newChatPending.length - 1]?.target ?? null;
 
-/** 새 대화 입력창이 기다리던 텍스트와 이미지를 가져간다. */
-export function takeNewChatPending(): NewChatItem[] {
-  const out = newChatPending;
-  newChatPending = [];
+/** 입력창이 자기 쪽으로 기다리던 텍스트와 이미지를 가져간다. */
+export function takeNewChatPending(target: SendTarget): NewChatItem[] {
+  const out = newChatPending.filter((i) => i.target === target);
+  newChatPending = newChatPending.filter((i) => i.target !== target);
   return out;
 }
 

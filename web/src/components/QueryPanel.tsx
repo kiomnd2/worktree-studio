@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../api';
 import { insertIntoPrompt, useServerEvents } from '../events';
+import SendButton from './SendButton';
 import { type PlanInsight, planInsight, prettySql } from '../planinsight';
 import type { ExplainResult, QueryDetail, QueryList, QuerySort, QueryStat, QueryWarning } from '../types';
 
@@ -24,7 +25,7 @@ const num = (n: number | null) => (n === null ? '-' : n.toLocaleString());
 
 /**
  * BE 서버 로그에서 센 쿼리 모양별 집계. 초기화 뒤 화면 하나를 열어 그 화면이 낸 쿼리를 본다.
- * 고를 때만 실행 계획을 받고, 고치는 일은 근거를 묶어 새 대화로 넘긴다(보내기와 반영은 사용자가 한다).
+ * 고를 때만 실행 계획을 받고, 고치는 일은 근거를 묶어 대화로 넘긴다(보내기와 반영은 사용자가 한다).
  */
 export default function QueryPanel({ worktreeId, projectName }: { worktreeId: number; projectName: string }) {
   const [sort, setSort] = useState<QuerySort>('calls');
@@ -39,6 +40,12 @@ export default function QueryPanel({ worktreeId, projectName }: { worktreeId: nu
   useEffect(reload, [reload]);
   useEffect(() => setSelected(null), [worktreeId]);
   useServerEvents((e) => { if (e.type === 'queries' && e.worktreeId === worktreeId) reload(); });
+  // 최적화 요청 등으로 대화에 넣으면 상세 창을 닫아 대화 입력창이 보이게 한다.
+  useEffect(() => {
+    const toChat = () => setSelected(null);
+    window.addEventListener('wts:new-chat', toChat);
+    return () => window.removeEventListener('wts:new-chat', toChat);
+  }, []);
 
   async function reset() {
     setError(null);
@@ -258,7 +265,7 @@ function Detail({ worktreeId, projectName, stat, queryKey, connections }: {
         )}
         <button className="small-btn" disabled={busy || !canExplain} title={!connections.length ? '이 앱에 DB 연결이 없습니다' : undefined} onClick={() => explain(false)}>{busy ? '받는 중' : plan ? '실행 계획 다시 받기' : '실행 계획'}</button>
         {engine === 'postgres' && <button className="small-btn" disabled={busy || !canExplain} title="질의를 실제로 돌립니다(읽기 전용 트랜잭션, 롤백)" onClick={() => explain(true)}>ANALYZE로 실행</button>}
-        <button className="small-btn primary" title="근거를 묶어 새 대화 탭의 입력창에 넣습니다. 보내기는 직접 합니다." onClick={() => insertIntoPrompt(optimizePrompt(projectName, d, plan))}>최적화 요청</button>
+        <SendButton className="small-btn primary" label="최적화 요청" title="근거를 묶어 대화 입력창에 넣습니다. 보내기는 직접 합니다." onSend={() => insertIntoPrompt(optimizePrompt(projectName, d, plan))} />
         <span className="spacer" />
         <button className="small-btn" onClick={toggleMute}>{d.muted ? '경고 보이기' : '경고 숨기기'}</button>
       </div>

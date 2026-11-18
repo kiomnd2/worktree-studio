@@ -2,9 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, docUrl } from '../api';
 import { reportPrompt } from './TaskBar';
 import { insertIntoPrompt, useServerEvents } from '../events';
+import SendButton from './SendButton';
 import type { DocKind, DocMeta } from '../types';
 
-export const DOC_KIND: Record<DocKind, string> = { plan: '계획서', screen: '화면설계서', test: '테스트 결과서', report: '완료 보고서', other: '기타 문서' };
+export const DOC_KIND: Record<DocKind, string> = { plan: '계획서', screen: '화면설계서', db: 'DB 변경 설계서', test: '테스트 결과서', report: '완료 보고서', other: '기타 문서' };
 
 function when(iso: string) {
   const d = new Date(iso);
@@ -31,7 +32,7 @@ export default function DocsPage({ sessionId, ticket, live = false, initial, bac
   const current = docs?.find((d) => d.name === pick) ?? docs?.[0] ?? null;
   // 새 판이 저장되면 최신 판을 다시 그린다.
   const shown = version && current && version < current.version ? version : current?.version;
-  const groups = (['plan', 'screen', 'test', 'report', 'other'] as DocKind[]).map((k) => ({ kind: k, list: (docs ?? []).filter((d) => d.kind === k) })).filter((g) => g.list.length);
+  const groups = (['plan', 'screen', 'db', 'test', 'report', 'other'] as DocKind[]).map((k) => ({ kind: k, list: (docs ?? []).filter((d) => d.kind === k) })).filter((g) => g.list.length);
 
   function mention(d: DocMeta) {
     insertIntoPrompt(`${DOC_KIND[d.kind]} "${d.title}"(${d.path})를 참고해서 `);
@@ -111,7 +112,7 @@ export default function DocsPage({ sessionId, ticket, live = false, initial, bac
                         ))}
                       </select>
                     )}
-                    {live && <button className="small-btn primary" onClick={() => mention(current)}>새 대화에서 언급</button>}
+                    {live && <SendButton className="small-btn primary" label="대화에서 언급" onSend={() => mention(current)} />}
                     <a className="small-btn" href={docUrl(sessionId, current.name, shown)} target="_blank" rel="noreferrer">새 창으로</a>
                     <button className="small-btn" onClick={() => remove(current)}>삭제</button>
                   </div>

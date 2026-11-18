@@ -24,7 +24,7 @@ import { requestLabel } from './dictrequests.js';
 import { refreshSessionDictionary } from './dictscan.js';
 import { ISSUES } from './dict/extract.js';
 import { erdConfigured } from './erdvibe.js';
-import type { ErdPayload } from './dictrequests.js';
+import { domainHint, type ErdPayload, type TermPayload } from './dictrequests.js';
 
 // 대화가 이 크기(토큰)를 넘으면 앞부분을 요약해 줄인다. 매 호출이 대화 전체를 다시 읽으므로 길수록 토큰이 커진다.
 export const AUTO_COMPACT_TOKENS = 300_000;
@@ -126,7 +126,7 @@ function buildSystemAppend(repos: RepoView[], side: boolean, db: DbConnection | 
     '느린 화면이나 쿼리를 볼 때는 mcp__studio__server_queries로 BE 서버 로그에서 센 쿼리 집계(호출 수, 행 수, N+1 같은 경고)를 보고, mcp__studio__db_explain으로 실행 계획과 인덱스를 본다. 고칠 때는 근거(집계, 계획, 매퍼 위치)를 함께 적고 매퍼 XML 등 코드 수정을 제안한다. 인덱스 DDL은 mcp__studio__db_query로 보내 사용자 승인을 받는다.',
     ...(erdConfigured() ? [DICT_RULE] : []),
     '작업 중에 사용자가 정해야 할 것(요구사항이 애매함, 방법이 여럿임, 데이터를 바꿔도 되는지 등)이 생기면 추측하지 말고 AskUserQuestion으로 바로 묻는다. 답을 받으면 이어서 작업한다.',
-    '계획서, 화면설계서처럼 사람이 읽을 산출물은 mcp__studio__save_doc으로 HTML 문서로 저장한다. 저장소에 문서 파일을 만들지 않는다.',
+    '계획서, 화면설계서, DB 변경 설계서처럼 사람이 읽을 산출물은 mcp__studio__save_doc으로 HTML 문서로 저장한다. 저장소에 문서 파일을 만들지 않는다.',
     '저장한 문서 목록은 메시지의 <tool_context>에 나온다. 사용자가 문서를 언급하면 그 경로의 파일을 Read로 읽어 따른다.',
     '개발을 마치고 완료 보고서를 요청받으면 아래 순서를 따른다.',
     REPORT_INSTRUCTIONS,
@@ -165,17 +165,18 @@ function runtimeContext(sessionId: number, chatId: number, dbs: (DbConnection & 
   return `<tool_context>\n${lines.join('\n')}\n</tool_context>`;
 }
 
-const KIND_LABEL = { plan: '계획서', screen: '화면설계서', test: '테스트 결과서', report: '완료 보고서', other: '문서' } as const;
+const KIND_LABEL = { plan: '계획서', screen: '화면설계서', db: 'DB 변경 설계서', test: '테스트 결과서', report: '완료 보고서', other: '문서' } as const;
 
 /** 개발을 마친 뒤 완료 보고서를 쓰는 순서. 계획·작업 목록·실제 변경·검증 결과를 맞대어 사실만 적는다. */
 const REPORT_INSTRUCTIONS = [
-  '1. <tool_context>의 산출물(계획서·화면설계서·테스트 결과서)과 작업 목록을 Read로 읽는다. 없는 문서는 없다고 적는다.',
+  '1. <tool_context>의 산출물(계획서·화면설계서·DB 변경 설계서·테스트 결과서)과 작업 목록을 Read로 읽는다. 없는 문서는 없다고 적는다.',
   '2. 저장소마다 분기한 브랜치와 비교해 실제로 바뀐 것을 확인한다: git diff --stat <분기 브랜치>...HEAD, git status --short. 내용은 필요한 파일만 읽는다.',
   '3. 보고서에 담을 것:',
   '   - 요약: 무엇을 왜 했고 결과가 어떤지 두세 문장.',
   '   - 계획 대비 결과: 계획서 단계와 작업 목록 항목마다 완료·안 함·계획과 달라짐을 표로 적고, 달라졌으면 이유와 근거 파일을 붙인다. 맨 위에 반영한 항목 수/전체를 적는다.',
   '   - 바뀐 내용: 저장소별로 바뀐 파일과 이유. 데이터·API·설정·환경값 변경은 따로 묶는다.',
   '   - 화면: 화면이 바뀌었으면 화면설계서와 다른 점.',
+  '   - DB: DB를 바꿨으면 DB 변경 설계서와 다른 점, 용어사전과 맞춘 결과(dict_check로 다시 확인한 위반 수)와 아직 승인 안 된 단어·용어·ERD 요청.',
   '   - 검증: 실제로 실행한 빌드·테스트·화면 확인과 그 결과, 테스트 결과서 요약. 실행하지 않았거나 확인하지 못한 것은 그렇다고 적는다.',
   '   - 남은 일과 알려진 문제, 리뷰어가 꼭 볼 곳, 배포·실행할 때 주의할 점(마이그레이션, 새 환경값 등).',
   '4. 확인한 사실만 쓴다. 실행하지 않은 테스트를 통과했다고 쓰지 않고, 추측은 추측이라고 적는다.',
@@ -195,9 +196,12 @@ const PLAN_INSTRUCTIONS = [
   '3. 화면이 새로 생기거나 바뀌면 화면마다 화면설계서를 mcp__studio__save_doc(kind "screen", name "screen-<영문 화면 이름>")으로 저장한다.',
   '   화면설계서는 실제 화면과 같은 배치의 와이어프레임(HTML/CSS로 그린 것)에 번호 표시를 달고, 옆이나 아래에 번호별 설명 표(항목, 동작, 검증 규칙, 데이터 출처)를 둔다.',
   '   바뀌는 화면이면 지금 화면과 달라지는 부분을 표시한다. 상태(빈 목록, 오류, 로딩, 권한별 차이)가 있으면 함께 그린다.',
-  '4. 문서는 한국어로 쓰고, 외부 파일이나 스크립트 없이 CSS를 <style>에 넣은 완결된 HTML로 만든다. 계획서에서 화면설계서를 이름으로 언급한다.',
-  '5. 계획의 실행 단계를 mcp__studio__set_tasks로 작업 목록에 올린다(모두 todo). 한 항목은 확인할 수 있는 한 가지 일로, 보통 3~10개. 사용자가 승인 뒤에도 이 목록으로 진행을 본다. 목록에 없는 준비 작업(확인, 조사)도 해야 하면 그것도 항목으로 넣는다.',
-  '6. 다 저장했으면 ExitPlanMode로 계획 요약을 보낸다. 사용자가 문서를 보고 승인해야 실행한다. 고쳐 달라는 의견이 오면 문서를 같은 name으로 다시 저장하고 다시 ExitPlanMode를 부른다.',
+  '4. 테이블·컬럼·인덱스·제약·공통코드를 추가·변경·삭제하거나 기존 데이터를 옮기거나 고쳐야 하면, 계획서와 별도로 DB 변경 설계서를 mcp__studio__save_doc(kind "db", name "db")으로 저장한다. 계획서에는 바뀌는 테이블과 요약만 적고 문서 이름으로 언급한다. 조회만 바뀌면 만들지 않는다.',
+  '   담을 것: 테이블별 변경 표(구분 추가·변경·삭제, 논리명, 컬럼 물리명, 타입·길이, NULL, 기본값, 설명), 인덱스·제약, DDL 또는 Liquibase changeset 초안(이미 적용된 changeset은 고치지 않고 새로 더함), 기존 데이터 이관·채우기 SQL, 되돌리는 방법, 영향받는 매퍼·엔티티·API·화면.',
+  '   용어 확인: 새로 쓰거나 바꾸는 테이블·컬럼 이름마다 erd-vibe 용어사전과 맞춘 결과를 표로 보여 준다(논리명, 쓸 이름, 판정: 표준 / 표준으로 고침(원래 이름) / 등록 요청함, 도메인). mcp__studio__dict_lookup으로 실제 확인한 결과만 적는다. 미등록 단어·용어는 규칙대로 등록을 요청하고, ERD 변경이 필요하면 mcp__studio__erd_request_change로 요청한 뒤 두 요청을 표 아래에 모아 "사용자 승인 필요"로 표시한다. 문서 맨 위 요약에 "용어사전 확인: 컬럼 N개 중 표준 N, 고침 N, 등록 요청 N"을 적는다. 용어사전이 연결되지 않았으면 "용어사전 미연결로 확인하지 못함"이라고 적는다.',
+  '5. 문서는 한국어로 쓰고, 외부 파일이나 스크립트 없이 CSS를 <style>에 넣은 완결된 HTML로 만든다. 계획서에서 화면설계서와 DB 변경 설계서를 이름으로 언급한다.',
+  '6. 계획의 실행 단계를 mcp__studio__set_tasks로 작업 목록에 올린다(모두 todo). 한 항목은 확인할 수 있는 한 가지 일로, 보통 3~10개. 사용자가 승인 뒤에도 이 목록으로 진행을 본다. 목록에 없는 준비 작업(확인, 조사)도 해야 하면 그것도 항목으로 넣는다.',
+  '7. 다 저장했으면 ExitPlanMode로 계획 요약을 보낸다. 사용자가 문서를 보고 승인해야 실행한다. 고쳐 달라는 의견이 오면 문서를 같은 name으로 다시 저장하고 다시 ExitPlanMode를 부른다.',
 ].join('\n');
 
 /**
@@ -305,9 +309,9 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
         '계획서, 화면설계서, 완료 보고서 같은 산출물을 HTML 문서로 저장한다. 사용자는 화면에서 바로 보고, 다음 프롬프트에서 다시 참조한다. '
           + '같은 name으로 저장하면 새 판이 되고 예전 판은 남는다. 저장소에는 아무것도 쓰지 않는다.',
         {
-          name: z.string().describe('영문 소문자·숫자·하이픈. 계획서는 "plan", 화면설계서는 "screen-<화면>" (예: screen-member-list), 완료 보고서는 "report"'),
+          name: z.string().describe('영문 소문자·숫자·하이픈. 계획서는 "plan", 화면설계서는 "screen-<화면>" (예: screen-member-list), DB 변경 설계서는 "db", 완료 보고서는 "report"'),
           title: z.string().describe('사람이 읽을 제목. 예: "회원 목록 화면설계서"'),
-          kind: z.enum(['plan', 'screen', 'report', 'other']).describe('plan: 계획서, screen: 화면설계서, report: 개발 완료 보고서, other: 그 밖의 문서'),
+          kind: z.enum(['plan', 'screen', 'db', 'report', 'other']).describe('plan: 계획서, screen: 화면설계서, db: DB 변경 설계서, report: 개발 완료 보고서, other: 그 밖의 문서'),
           html: z.string().describe('<html>로 시작하는 완결된 HTML. CSS는 <style>에 넣고 외부 파일·스크립트·이미지 링크는 쓰지 않는다.'),
         },
         async (args) => {
@@ -470,7 +474,8 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'dict_request_term',
-        'erd-vibe 용어사전에 없는 용어(또는 단어)를 등록하자고 사용자에게 요청한다. 사용자가 화면에서 고쳐 승인해야 팀 공유 사전에 들어간다. 기다리지 않고 바로 돌아오므로, 승인 전까지는 그 이름을 확정하지 말고 사용자에게 알린다. 단어가 사전에 없으면 kind "word"로 단어부터 요청한다.',
+        'erd-vibe 용어사전에 없는 용어(또는 단어)를 등록하자고 요청한다. 사용자가 화면에서 승인해야 팀 공유 사전에 들어간다. 기다리지 않고 바로 돌아오므로 요청한 표준 이름으로 개발을 이어 간다. 단어가 사전에 없으면 kind "word"로 단어부터 요청한다. '
+          + '규칙: 용어 논리명은 단어를 이은 것, 물리명은 단어 영문명을 밑줄로 이은 것, 약어명은 단어 약어를 밑줄로 이은 것이고 도메인은 도메인사전에 있어야 한다. 단어 영문명은 대문자·밑줄, 약어는 대문자·숫자이며 다른 단어와 겹치면 안 된다. 어긋나면 이유를 돌려준다.',
         {
           kind: z.enum(['term', 'word']),
           logical_name: z.string().describe('term: 논리명(거래취소일자). word: 단어(취소)'),
@@ -486,7 +491,8 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
             const r = await createDictRequest(sessionId, args.kind === 'term'
               ? { kind: 'term', payload: { logical_name: args.logical_name, physical_name: args.physical_name, physical_abbr_name: args.abbr_name ?? null, domain_name: args.domain_name ?? null, description: args.description } }
               : { kind: 'word', payload: { name: args.logical_name, english_name: args.physical_name, abbreviation: args.abbr_name ?? null, definition: args.description } }, args.reason, 'claude');
-            return text(`등록 요청 #${r.id}을 올렸습니다. 사용자가 용어 검사 화면에서 승인하면 erd-vibe 사전에 들어갑니다. 승인 전에는 확정된 이름이 아닙니다.`);
+            const hint = r.kind === 'term' ? await domainHint(r.payload as TermPayload).catch(() => null) : null;
+            return text(`등록 요청 #${r.id}을 올렸습니다. 사용자가 용어 검사 화면에서 승인하면 erd-vibe 사전에 들어갑니다. 요청한 이름으로 개발을 이어 가고, 마칠 때 올린 요청을 알려 주세요.${hint ? `\n${hint}` : ''}`);
           } catch (err) {
             return fail((err as Error).message);
           }

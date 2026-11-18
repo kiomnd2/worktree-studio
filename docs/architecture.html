@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>구조와 하네스</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F5F6F8; --sheet:#FFFFFF; --ink:#1B2230; --muted:#5A6576; --rule:#D8DDE4;
+  --accent:#3446C4; --accent-soft:#E7EAFB; --branch:#0D7A68; --branch-soft:#E0F2EE; --warn:#A5531A; --warn-soft:#FBEDE2;
+  --sans:"IBM Plex Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#12161D; --sheet:#1A1F28; --ink:#E6E9EE; --muted:#9AA4B3; --rule:#2E3542;
+    --accent:#8F9BFF; --accent-soft:#252B4A; --branch:#4FC7AF; --branch-soft:#173530; --warn:#F0A46B; --warn-soft:#3A2618;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#12161D; --sheet:#1A1F28; --ink:#E6E9EE; --muted:#9AA4B3; --rule:#2E3542;
+  --accent:#8F9BFF; --accent-soft:#252B4A; --branch:#4FC7AF; --branch-soft:#173530; --warn:#F0A46B; --warn-soft:#3A2618;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:56px 24px 96px;display:grid;grid-template-columns:200px minmax(0,1fr);gap:56px}
+nav{position:sticky;top:calc(env(safe-area-inset-top,0px) + 32px);align-self:start;font-size:14px}
+nav a{display:block;color:var(--muted);text-decoration:none;padding:5px 0 5px 12px;border-left:2px solid var(--rule)}
+nav a:hover,nav a:focus-visible{color:var(--ink);border-left-color:var(--accent);outline:none}
+main{min-width:0}
+header{padding-bottom:40px;border-bottom:1px solid var(--rule);margin-bottom:48px}
+.doc-meta{font-size:14px;color:var(--muted);margin:0 0 20px;display:flex;flex-wrap:wrap;gap:6px 20px}
+.doc-meta span strong{color:var(--ink);font-weight:500}
+h1{font-size:clamp(30px,4.2vw,44px);line-height:1.25;font-weight:600;letter-spacing:-0.02em;margin:0 0 20px;max-width:18em}
+.lede{font-size:18px;color:var(--muted);max-width:38em;margin:0}
+section{margin-bottom:64px}
+h2{font-size:24px;font-weight:600;letter-spacing:-0.01em;margin:0 0 20px;line-height:1.4}
+h3{font-size:17px;font-weight:600;margin:28px 0 8px}
+p{margin:0 0 14px;max-width:42em}
+code{font-family:var(--mono);font-size:0.88em;background:var(--accent-soft);color:var(--ink);padding:1px 6px;border-radius:4px}
+pre{font-family:var(--mono);font-size:13.5px;line-height:1.65;background:var(--sheet);border:1px solid var(--rule);border-radius:6px;padding:16px 18px;overflow-x:auto;margin:12px 0 18px}
+pre code{background:none;padding:0}
+ul{padding-left:20px;margin:0 0 14px;max-width:42em}
+li{margin-bottom:6px}
+.scroll{overflow-x:auto;margin:8px 0 20px}
+table{border-collapse:collapse;width:100%;min-width:620px;font-size:14.5px;line-height:1.6;background:var(--sheet)}
+th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--rule)}
+th{font-weight:500;color:var(--muted);font-size:13.5px;border-bottom:1px solid var(--ink)}
+td:first-child{white-space:nowrap;font-weight:500}
+.tag{display:inline-block;font-size:12.5px;padding:1px 8px;border-radius:999px;font-weight:500;white-space:nowrap}
+.tag.mvp{background:var(--branch-soft);color:var(--branch)}
+.tag.later{background:var(--accent-soft);color:var(--accent)}
+.tag.risk{background:var(--warn-soft);color:var(--warn)}
+.scope{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.scope > div{border-top:3px solid var(--branch);padding-top:14px}
+.scope > div.out{border-top-color:var(--rule)}
+.scope h3{margin-top:0}
+figure{margin:12px 0 24px;background:var(--sheet);border:1px solid var(--rule);border-radius:6px;padding:20px;overflow-x:auto}
+figure svg{display:block;width:100%;min-width:560px;height:auto}
+figcaption{font-size:13.5px;color:var(--muted);margin-top:12px}
+.node rect{fill:var(--sheet);stroke:var(--rule)}
+.node.top rect{fill:var(--accent-soft);stroke:var(--accent)}
+.node.mod rect{fill:var(--branch-soft);stroke:var(--branch)}
+.node text{fill:var(--ink);font-family:var(--sans)}
+.node text.sub{fill:var(--muted)}
+.edge{stroke:var(--muted);stroke-width:1.2;fill:none}
+
+/* roadmap as a git graph */
+.graph{position:relative;margin:24px 0 0;padding-left:44px}
+.graph::before{content:"";position:absolute;left:15px;top:8px;bottom:8px;width:3px;background:var(--branch);border-radius:2px}
+.commit{position:relative;padding:0 0 36px}
+.commit:last-child{padding-bottom:0}
+.commit::before{content:"";position:absolute;left:-37px;top:6px;width:17px;height:17px;border-radius:50%;background:var(--sheet);border:3px solid var(--branch)}
+.commit.head::before{background:var(--branch)}
+.commit .ref{font-family:var(--mono);font-size:13px;color:var(--branch);margin:0 0 2px}
+.commit h3{margin:0 0 6px;font-size:19px}
+.commit .done{font-size:14.5px;color:var(--muted);margin:10px 0 0;padding:10px 14px;background:var(--sheet);border:1px solid var(--rule);border-radius:6px;max-width:42em}
+.commit .done strong{color:var(--ink);font-weight:500}
+
+.flow{counter-reset:step;list-style:none;padding:0;max-width:44em}
+.flow li{counter-increment:step;position:relative;padding:0 0 14px 44px;margin:0}
+.flow li::before{content:counter(step);position:absolute;left:0;top:1px;width:28px;height:28px;border-radius:50%;border:1px solid var(--rule);background:var(--sheet);font-size:13px;font-weight:500;display:grid;place-items:center;color:var(--muted)}
+.flow li strong{font-weight:500}
+.q{border-left:3px solid var(--accent);padding:2px 0 2px 16px;margin:0 0 16px;max-width:42em}
+.q p{margin:0}
+.q .why{color:var(--muted);font-size:14.5px}
+
+@media (max-width:820px){
+  .wrap{grid-template-columns:1fr;gap:0;padding-top:32px}
+  nav{display:none}
+  .scope{grid-template-columns:1fr}
+}
+@media print{nav{display:none}.wrap{grid-template-columns:1fr}body{background:#fff}}
+.node.ext rect{fill:var(--paper);stroke:var(--muted);stroke-dasharray:4 3}
+.edge-label{fill:var(--muted);font-family:var(--sans);font-size:12px}
+.tag.ok{background:var(--branch-soft);color:var(--branch)}
+.tag.ask{background:var(--warn-soft);color:var(--warn)}
+.tag.no{background:var(--accent-soft);color:var(--accent)}
+.layers{list-style:none;padding:0;margin:8px 0 20px;max-width:46em}
+.layers li{background:var(--sheet);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:6px;padding:10px 14px;margin-bottom:8px}
+.layers li strong{font-weight:500}
+.layers li span{display:block;font-size:14px;color:var(--muted)}
+.note{font-size:14.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav aria-label="목차">
+  <a href="#overview">한눈에</a>
+  <a href="#tree">저장소 구조</a>
+  <a href="#runtime">실행 구성</a>
+  <a href="#server">서버 모듈</a>
+  <a href="#web">웹 화면</a>
+  <a href="#harness">Claude 하네스</a>
+  <a href="#prompt">프롬프트 층</a>
+  <a href="#perm">권한과 승인</a>
+  <a href="#tools">studio 도구</a>
+  <a href="#helpers">보조 호출</a>
+  <a href="#data">저장소와 이벤트</a>
+  <a href="#devharness">개발 하네스</a>
+  <a href="#notes">알아 둘 점</a>
+</nav>
+<main>
+<header>
+  <p class="doc-meta"><span><strong>문서</strong> 구조와 하네스 정리</span><span><strong>기준</strong> v0.2.4 · main <code>0b12007</code></span><span><strong>작성일</strong> 2026-11-19</span></p>
+  <h1>Worktree Studio 구조와 Claude 하네스</h1>
+  <p class="lede">저장소가 어떻게 나뉘어 있는지, 실행하면 어떤 프로세스가 뜨는지, 그리고 Claude를 어떤 설정과 도구, 승인 흐름으로 감싸 쓰는지 정리한다.</p>
+</header>
+
+<section id="overview">
+<h2>한눈에</h2>
+<ul>
+  <li>npm 워크스페이스 모노레포. <code>server</code>(Node + Fastify, 약 12,000줄)와 <code>web</code>(React + Vite, 약 9,800줄), 그리고 워크스페이스 밖의 <code>desktop</code>(Electron 패키징)으로 나뉜다.</li>
+  <li>서버 하나가 HTTP API(라우트 약 160개)와 WebSocket(<code>/ws</code>)을 열고, git·gh·개발 서버 프로세스·Claude Code를 직접 다룬다.</li>
+  <li>Claude는 <code>@anthropic-ai/claude-agent-sdk</code>의 <code>query()</code>로 부른다. 쓰임은 두 가지다. 사용자와 대화하는 <strong>대화 하네스</strong>(메인·추가·DB 대화)와, 화면 뒤에서 구조화된 결과만 받는 <strong>보조 호출</strong> 9종.</li>
+  <li>모든 상태는 <code>~/.worktree-studio/studio.db</code>(SQLite) 하나에 있다. 첨부, 스크린샷, 테스트 결과, 산출물 문서는 같은 폴더 아래에 파일로 둔다.</li>
+</ul>
+</section>
+
+<section id="tree">
+<h2>저장소 구조</h2>
+<pre><code>worktree-studio/
+├── package.json          워크스페이스 루트 (dev · build · typecheck · package:mac)
+├── server/               @worktree-studio/server  Node 20+, TypeScript, tsx watch
+│   └── src/
+│       ├── index.ts      HTTP API · WebSocket · 빌드된 화면 서빙 (진입점)
+│       ├── claude.ts     대화 하네스: query() 옵션, 시스템 프롬프트, studio MCP 도구
+│       ├── approvals.ts  승인 카드 (환경값·계획·질문·DB 쓰기·테스트 데이터)
+│       ├── …             모듈 지도는 아래 표
+│       └── dict/         용어 검사 엔진 (추출·판정·DDL 파싱·Liquibase)
+├── web/                  @worktree-studio/web  React 19, Vite
+│   └── src/
+│       ├── App.tsx · api.ts · events.ts · types.ts
+│       └── components/   화면 컴포넌트 (erd/ 하위에 ERD 편집기)
+├── desktop/              macOS 앱 (Electron 44, electron-builder). 워크스페이스 밖
+│   ├── main.cjs          4317에 서버가 있으면 창만 붙이고, 없으면 내장 서버를 띄움
+│   └── scripts/package.mjs
+├── docs/
+│   ├── plans/            플랜 문서 (Markdown 원본)
+│   ├── manual.html       사용 설명서
+│   ├── screens.html      화면설계서
+│   └── architecture.html 이 문서
+└── .bkit/                bkit 플러그인 상태 (커밋 대상 아님)</code></pre>
+</section>
+
+<section id="runtime">
+<h2>실행 구성</h2>
+<p>브라우저(또는 Electron 창)는 서버와 HTTP·WebSocket으로만 이야기한다. 서버 아래 모듈은 서로 직접 부르기도 하지만, 화면으로 가는 상태 변화는 모두 <code>hub.ts</code>의 <code>broadcast</code>를 거친다.</p>
+<figure>
+<svg viewBox="0 0 900 520" role="img" aria-label="실행 구성도">
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor" style="color:var(--muted)"/></marker></defs>
+  <g class="node top"><rect x="330" y="10" width="240" height="56" rx="6"/><text x="450" y="34" text-anchor="middle" font-size="14" font-weight="600">웹 UI (React)</text><text class="sub" x="450" y="54" text-anchor="middle" font-size="12">브라우저 또는 Electron 창</text></g>
+  <path class="edge" d="M450 66 V108" marker-end="url(#ar)"/>
+  <text class="edge-label" x="460" y="92">HTTP /api · WebSocket /ws</text>
+
+  <g class="node ext"><rect x="14" y="112" width="200" height="60" rx="6"/><text x="114" y="137" text-anchor="middle" font-size="14" font-weight="600">SQLite</text><text class="sub" x="114" y="157" text-anchor="middle" font-size="12">~/.worktree-studio/studio.db</text></g>
+  <g class="node top"><rect x="250" y="110" width="400" height="64" rx="6"/><text x="450" y="137" text-anchor="middle" font-size="14" font-weight="600">서버 (Fastify + ws) · 기본 127.0.0.1:4317</text><text class="sub" x="450" y="157" text-anchor="middle" font-size="12">index.ts 라우트 · hub.ts 브로드캐스트 · db.ts 스키마</text></g>
+  <g class="node ext"><rect x="686" y="112" width="200" height="60" rx="6"/><text x="786" y="137" text-anchor="middle" font-size="14" font-weight="600">개발 DB</text><text class="sub" x="786" y="157" text-anchor="middle" font-size="12">Oracle · PG · MySQL · MSSQL</text></g>
+  <path class="edge" d="M250 142 H214"/><path class="edge" d="M650 142 H686"/>
+
+  <path class="edge" d="M450 174 V196 H94 V220 M450 196 H782 V220 M266 196 V220 M438 196 V220 M610 196 V220"/>
+  <g class="node mod"><rect x="14" y="220" width="160" height="64" rx="6"/><text x="94" y="246" text-anchor="middle" font-size="14" font-weight="600">세션·워크트리</text><text class="sub" x="94" y="266" text-anchor="middle" font-size="12">sessions.ts · git.ts</text></g>
+  <g class="node mod"><rect x="186" y="220" width="160" height="64" rx="6"/><text x="266" y="246" text-anchor="middle" font-size="14" font-weight="600">서버 러너</text><text class="sub" x="266" y="266" text-anchor="middle" font-size="12">runner.ts · querylog.ts</text></g>
+  <g class="node mod"><rect x="358" y="220" width="160" height="64" rx="6"/><text x="438" y="246" text-anchor="middle" font-size="14" font-weight="600">Claude 하네스</text><text class="sub" x="438" y="266" text-anchor="middle" font-size="12">claude.ts · approvals.ts</text></g>
+  <g class="node mod"><rect x="530" y="220" width="160" height="64" rx="6"/><text x="610" y="246" text-anchor="middle" font-size="14" font-weight="600">PR·정리</text><text class="sub" x="610" y="266" text-anchor="middle" font-size="12">pr.ts · cleanup.ts</text></g>
+  <g class="node mod"><rect x="702" y="220" width="160" height="64" rx="6"/><text x="782" y="246" text-anchor="middle" font-size="14" font-weight="600">사전·ERD</text><text class="sub" x="782" y="266" text-anchor="middle" font-size="12">dict*.ts · erdvibe.ts</text></g>
+
+  <path class="edge" d="M94 284 V336" marker-end="url(#ar)"/><path class="edge" d="M266 284 V336" marker-end="url(#ar)"/><path class="edge" d="M438 284 V336" marker-end="url(#ar)"/><path class="edge" d="M610 284 V336" marker-end="url(#ar)"/><path class="edge" d="M782 284 V336" marker-end="url(#ar)"/>
+  <g class="node ext"><rect x="14" y="340" width="160" height="64" rx="6"/><text x="94" y="366" text-anchor="middle" font-size="14" font-weight="600">git CLI</text><text class="sub" x="94" y="386" text-anchor="middle" font-size="12">../{repo}-{티켓} 워크트리</text></g>
+  <g class="node ext"><rect x="186" y="340" width="160" height="64" rx="6"/><text x="266" y="366" text-anchor="middle" font-size="14" font-weight="600">개발 서버 프로세스</text><text class="sub" x="266" y="386" text-anchor="middle" font-size="12">BE 8081~ · FE 3401~</text></g>
+  <g class="node ext"><rect x="358" y="340" width="160" height="64" rx="6"/><text x="438" y="366" text-anchor="middle" font-size="14" font-weight="600">Claude Code CLI</text><text class="sub" x="438" y="386" text-anchor="middle" font-size="12">Agent SDK가 띄움</text></g>
+  <g class="node ext"><rect x="530" y="340" width="160" height="64" rx="6"/><text x="610" y="366" text-anchor="middle" font-size="14" font-weight="600">gh CLI</text><text class="sub" x="610" y="386" text-anchor="middle" font-size="12">푸시 · PR · 상태 확인</text></g>
+  <g class="node ext"><rect x="702" y="340" width="160" height="64" rx="6"/><text x="782" y="366" text-anchor="middle" font-size="14" font-weight="600">외부 REST</text><text class="sub" x="782" y="386" text-anchor="middle" font-size="12">erd-vibe · Jira</text></g>
+
+  <path class="edge" d="M438 404 V446" marker-end="url(#ar)"/>
+  <g class="node mod"><rect x="250" y="450" width="376" height="60" rx="6"/><text x="438" y="475" text-anchor="middle" font-size="14" font-weight="600">MCP 서버</text><text class="sub" x="438" y="495" text-anchor="middle" font-size="12">studio (서버 프로세스 안, 도구 17개) · browser (Playwright MCP, stdio)</text></g>
+</svg>
+<figcaption>실선 상자는 이 저장소의 코드, 점선 상자는 바깥 프로세스나 외부 서비스다. 개발 DB는 <code>dbquery.ts</code>를 통해 studio 도구와 쿼리 감시가 쓴다.</figcaption>
+</figure>
+</section>
+
+<section id="server">
+<h2>서버 모듈</h2>
+<div class="scroll"><table>
+<thead><tr><th>영역</th><th>파일</th><th>하는 일</th></tr></thead>
+<tbody>
+<tr><td>진입·공용</td><td><code>index.ts</code> <code>hub.ts</code> <code>db.ts</code> <code>config.ts</code> <code>settings.ts</code> <code>models.ts</code></td><td>Fastify 라우트, WebSocket 브로드캐스트, SQLite 스키마·마이그레이션, 포트·데이터 폴더, 앱 설정(권한 모드, 알림, 정리, 모델)</td></tr>
+<tr><td>프로젝트·세션</td><td><code>projects.ts</code> <code>detect.ts</code> <code>projectanalyze.ts</code> <code>sessions.ts</code> <code>git.ts</code> <code>conflicts.ts</code> <code>jira.ts</code> <code>ticketdraft.ts</code></td><td>클론 폴더 등록과 BE/FE 감지, 워크트리 생성·삭제, 대화·메시지·대기열 저장, 머지 충돌 확인·해결, Jira 티켓 조회와 초안</td></tr>
+<tr><td>Claude</td><td><code>claude.ts</code> <code>approvals.ts</code> <code>tasks.ts</code> <code>docs.ts</code> <code>usage.ts</code> <code>notify.ts</code></td><td>대화 하네스, 승인 카드, 작업 목록, 산출물 문서(HTML), 사용량 기록, OS 알림</td></tr>
+<tr><td>환경값·실행</td><td><code>envscan.ts</code> <code>envsuggest.ts</code> <code>envstore.ts</code> <code>envapi.ts</code> <code>portvars.ts</code> <code>localenv.ts</code> <code>runner.ts</code> <code>ports.ts</code> <code>accounts.ts</code> <code>secret.ts</code></td><td>환경변수 분석(정적 + AI), 프로필 저장, 포트 배정, 로컬 실행 환경(DB·도커), 서버 실행·헬스체크·로그 버퍼, 테스트 계정 풀, 암호화·마스킹</td></tr>
+<tr><td>DB·쿼리</td><td><code>dbconn.ts</code> <code>dbquery.ts</code> <code>querylog.ts</code> <code>querydb.ts</code> <code>mapperindex.ts</code></td><td>DB 연결 관리, 엔진별 질의·실행 계획, 서버 로그 SQL 집계, 매퍼 위치 찾기</td></tr>
+<tr><td>확인·PR·정리</td><td><code>screens.ts</code> <code>tests.ts</code> <code>changes.ts</code> <code>pr.ts</code> <code>github.ts</code> <code>cleanup.ts</code></td><td>영향 화면 찾기, 화면 테스트 생성·실행, 변경 내역, PR 문안·검사·푸시, gh 상태, 리소스 정리</td></tr>
+<tr><td>사전·ERD</td><td><code>erdvibe.ts</code> <code>dictscan.ts</code> <code>dictsearch.ts</code> <code>dictrequests.ts</code> <code>dicttools.ts</code> <code>dictbaseline.ts</code> <code>dictusage.ts</code> <code>schemasync.ts</code> <code>dict/</code></td><td>erd-vibe 사전·ERD 연동, 소스 용어 검사, 등록·예외·기준선 요청, Liquibase 최종 스키마 대조</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="web">
+<h2>웹 화면</h2>
+<p><code>App.tsx</code>가 사이드바와 화면 전환을 맡고, <code>api.ts</code>는 REST 호출, <code>events.ts</code>는 WebSocket 이벤트를 받아 상태를 갱신한다. 타입은 <code>types.ts</code>에 모은다.</p>
+<div class="scroll"><table>
+<thead><tr><th>구역</th><th>컴포넌트</th></tr></thead>
+<tbody>
+<tr><td>대화</td><td><code>ChatView</code> <code>PromptInput</code> <code>SendButton</code> <code>ApprovalCards</code> <code>AnnotateDialog</code> <code>TaskBar</code></td></tr>
+<tr><td>오른쪽 패널</td><td><code>RightPanel</code>(서버·미리보기·로그·영향 화면) <code>QueryPanel</code> <code>TestsPage</code> <code>DocsPage</code> <code>ChangesPage</code></td></tr>
+<tr><td>세션·실행</td><td><code>Sidebar</code> <code>NewSessionDialog</code> <code>JiraTicketPicker</code> <code>StartServersDialog</code> <code>EnvPage</code> <code>LocalSetupPanel</code></td></tr>
+<tr><td>PR·정리</td><td><code>PrDialog</code> <code>ConflictDialog</code> <code>CleanupPage</code> <code>ArchivePage</code></td></tr>
+<tr><td>사전·ERD</td><td><code>DictPage</code> <code>ErdPage</code> <code>erd/</code>(TableList · Inspector · DdlDialog 등)</td></tr>
+<tr><td>설정·기타</td><td><code>SettingsPage</code> <code>UsagePage</code> <code>Toasts</code></td></tr>
+</tbody></table></div>
+</section>
+
+<section id="harness">
+<h2>Claude 하네스</h2>
+<p>모든 Claude 호출은 Agent SDK의 <code>query()</code>를 쓰고, 끝나면 <code>recordUsage</code>로 사용량을 남긴다. 실행 파일은 <code>WTS_CLAUDE_PATH</code>가 있으면 그것, 없으면 SDK 기본값이다.</p>
+<div class="scroll"><table>
+<thead><tr><th>하네스</th><th>언제</th><th>작업 폴더</th><th>도구</th><th>권한 모드</th><th>세션 유지</th></tr></thead>
+<tbody>
+<tr><td>메인 대화</td><td>세션의 기본 대화 (chatId 0)</td><td>첫 워크트리, 나머지 워크트리와 산출물 폴더는 추가 디렉터리</td><td>Claude Code 기본 도구 + studio + browser</td><td>설정값(기본 <code>auto</code>), 계획 요청이면 <code>plan</code></td><td><code>resume</code>으로 이어감</td></tr>
+<tr><td>추가 대화</td><td>같은 세션에서 다른 일을 동시에</td><td>같음</td><td>같음, 단 <code>set_tasks</code> 금지</td><td>같음</td><td>대화마다 따로</td></tr>
+<tr><td>DB 대화</td><td>DB 연결 하나에 질의만</td><td>같음 (읽기만)</td><td>studio 일부. <code>Edit</code> <code>Write</code> <code>NotebookEdit</code> <code>Bash</code>와 요청형 도구 금지, browser 없음</td><td>같음</td><td>대화마다 따로</td></tr>
+<tr><td>보조 호출 9종</td><td>PR 문안, 화면 찾기, 테스트 등</td><td>호출마다 다름</td><td><code>Read</code> <code>Grep</code> <code>Glob</code>만, 또는 없음, 또는 browser만</td><td><code>dontAsk</code></td><td>저장 안 함 (<code>persistSession: false</code>)</td></tr>
+</tbody></table></div>
+
+<h3>대화 하네스의 주요 옵션 (<code>server/src/claude.ts</code> <code>runPrompt</code>)</h3>
+<pre><code>query({
+  prompt: input(),                          // streaming input: 첨부 블록 + 본문 + &lt;tool_context&gt;
+  options: {
+    cwd: primary.path,
+    additionalDirectories: [...다른 워크트리, docsDir(sessionId)],
+    resume: chat.claude_session_id,
+    model: chatModel(),                     // 설정의 defaultModel, 비면 Claude Code 기본
+    permissionMode: opts.plan ? 'plan' : 설정값,
+    planModeInstructions: PLAN_INSTRUCTIONS,  // 계획 요청일 때만
+    canUseTool,                             // 아래 "권한과 승인"
+    settingSources: ['user', 'project', 'local'],
+    systemPrompt: { type: 'preset', preset: 'claude_code', append: buildSystemAppend(...) },
+    strictMcpConfig: true,                  // 사용자 설정의 MCP·커넥터는 쓰지 않음
+    mcpServers: { studio, browser },
+    settings: { autoCompactWindow: 300_000, enabledPlugins: { 'bkit@bkit-marketplace': false } },
+    allowedTools: [studio 도구 17개, 'mcp__browser'],
+    disallowedTools: 대화 종류별,
+  },
+})</code></pre>
+</section>
+
+<section id="prompt">
+<h2>프롬프트 층</h2>
+<p>Claude가 받는 지시는 네 층으로 쌓인다. 시스템 프롬프트는 세션 처음에 고정되므로, 바뀌는 정보는 매 메시지에 붙인다.</p>
+<ol class="layers">
+  <li><strong>1. Claude Code 프리셋</strong><span><code>preset: 'claude_code'</code>. 사용자·프로젝트·로컬 설정을 읽으므로 워크트리의 CLAUDE.md와 사용자 스킬도 적용된다.</span></li>
+  <li><strong>2. Studio 규칙 (<code>buildSystemAppend</code>)</strong><span>워크트리 밖 수정 금지, 커밋·푸시·PR은 요청 시에만, 개발 서버는 직접 띄우지 않음, 긴 출력은 <code>tail</code>로, 환경값·계정·DB 쓰기는 도구로 요청, 정할 것은 AskUserQuestion으로, 산출물은 <code>save_doc</code>으로 HTML 저장, 작업 목록 갱신 규칙, 완료 보고서 순서(<code>REPORT_INSTRUCTIONS</code>). erd-vibe가 설정돼 있으면 사전 규칙(<code>DICT_RULE</code>)이 붙는다. 추가 대화와 DB 대화는 앞에 전용 규칙이 더해진다.</span></li>
+  <li><strong>3. 계획 모드 지시 (<code>PLAN_INSTRUCTIONS</code>)</strong><span>계획 요청일 때만. 코드 읽기 → 계획서 HTML 저장(업무 흐름이면 인라인 SVG 플로우) → 화면설계서 → DB를 바꾸면 DB 변경 설계서(<code>kind "db"</code>, 용어사전 확인 표 포함) → <code>set_tasks</code>로 작업 목록 → <code>ExitPlanMode</code>.</span></li>
+  <li><strong>4. 메시지별 <code>&lt;tool_context&gt;</code> (<code>runtimeContext</code>)</strong><span>실행 중인 개발 서버 주소, 작업 목록, 이 세션의 산출물 문서 경로, 질의할 수 있는 DB 연결, 사전 상태, 배정된 테스트 계정. <code>/compact</code> 같은 슬래시 명령에는 붙이지 않는다.</span></li>
+</ol>
+</section>
+
+<section id="perm">
+<h2>권한과 승인</h2>
+<p><code>canUseTool</code>은 권한 모드가 확인을 요구할 때만 불린다. 화면에 승인할 곳이 있는 도구만 통과시킨다.</p>
+<div class="scroll"><table>
+<thead><tr><th>도구</th><th>처리</th></tr></thead>
+<tbody>
+<tr><td><code>mcp__studio__*</code></td><td><span class="tag ok">허용</span> 승인이 필요한 도구는 도구 안에서 따로 승인을 받는다.</td></tr>
+<tr><td><code>AskUserQuestion</code></td><td><span class="tag ask">질문 카드</span> 답을 받아 <code>answers</code>로 넘긴다. 답이 없으면 거절하고 "추측하지 말고 정리해 마치라"고 알린다.</td></tr>
+<tr><td><code>ExitPlanMode</code></td><td><span class="tag ask">계획 승인 카드</span> 이번 실행에서 저장한 문서를 함께 보여 준다. 승인하면 설정의 권한 모드로 바꿔 이어 실행하고, 의견을 주면 문서를 다시 저장하게 한다.</td></tr>
+<tr><td>그 밖</td><td><span class="tag no">거절</span> "승인 화면이 없어 쓸 수 없다"고 돌려준다.</td></tr>
+</tbody></table></div>
+
+<h3>승인 카드 종류 (<code>approvals.ts</code>)</h3>
+<p>Claude 실행은 사용자가 카드를 처리할 때까지 그 자리에서 기다린다. 실행이 끝나거나 중단되면 그 대화의 대기 카드는 취소된다.</p>
+<div class="scroll"><table>
+<thead><tr><th>kind</th><th>누가 올리나</th><th>승인하면</th></tr></thead>
+<tbody>
+<tr><td><code>env</code></td><td><code>request_env_values</code></td><td>사용자가 고친 값이 환경값 프로필에 들어간다.</td></tr>
+<tr><td><code>plan</code></td><td><code>ExitPlanMode</code></td><td>실행 모드로 바뀌고 첫 작업이 시작된다.</td></tr>
+<tr><td><code>question</code></td><td><code>AskUserQuestion</code></td><td>답이 Claude에게 넘어간다.</td></tr>
+<tr><td><code>dbwrite</code></td><td><code>db_query</code>에 쓰기 SQL</td><td>사용자가 확인한 SQL을 실행한다.</td></tr>
+<tr><td><code>testdata</code></td><td>화면 테스트 실행 중 데이터 부족</td><td>데이터를 만들고 케이스를 다시 실행한다.</td></tr>
+</tbody></table></div>
+<p class="note">사전 등록·ERD 변경·예외·기준선 요청은 승인 카드가 아니라 <code>dict_requests</code>에 쌓이고, 용어 화면에서 승인한다. 도구는 기다리지 않고 바로 돌아온다.</p>
+</section>
+
+<section id="tools">
+<h2>studio MCP 도구</h2>
+<p><code>createSdkMcpServer({ name: 'studio' })</code>로 서버 프로세스 안에 만든다. 대화마다 세션 ID와 대화 ID를 묶어 새로 만든다.</p>
+<div class="scroll"><table>
+<thead><tr><th>도구</th><th>하는 일</th><th>사용자 확인</th></tr></thead>
+<tbody>
+<tr><td><code>request_env_values</code></td><td>개발 서버 환경값 추가·변경 요청</td><td><span class="tag ask">승인 카드</span></td></tr>
+<tr><td><code>request_test_account</code></td><td>역할에 맞는 테스트 계정 찾기</td><td><span class="tag ok">바로</span></td></tr>
+<tr><td><code>set_tasks</code></td><td>작업 목록 통째로 바꾸기 (메인 대화만)</td><td><span class="tag ok">바로</span></td></tr>
+<tr><td><code>save_doc</code></td><td>계획서·화면설계서·보고서를 HTML로 저장</td><td><span class="tag ok">바로</span></td></tr>
+<tr><td><code>db_query</code></td><td>SQL 한 문장. 읽기는 롤백 트랜잭션에서 바로</td><td><span class="tag ask">쓰기만 승인</span></td></tr>
+<tr><td><code>server_queries</code></td><td>BE 로그에서 센 쿼리 집계와 경고</td><td><span class="tag ok">바로</span></td></tr>
+<tr><td><code>db_explain</code></td><td>실행 계획과 인덱스·행 수 (롤백)</td><td><span class="tag ok">바로</span></td></tr>
+<tr><td><code>dict_lookup</code></td><td>용어·단어·도메인 찾기, 식별자 판정</td><td><span class="tag ok">바로</span></td></tr>
+<tr><td><code>dict_check</code></td><td>소스 컬럼 이름의 사전·ERD 위반 찾기</td><td><span class="tag ok">바로</span></td></tr>
+<tr><td><code>schema_check</code></td><td>Liquibase 최종 스키마와 매퍼·엔티티 대조</td><td><span class="tag ok">바로</span></td></tr>
+<tr><td><code>erd_table</code></td><td>ERD 테이블 정의 보기</td><td><span class="tag ok">바로</span></td></tr>
+<tr><td><code>dict_reload</code></td><td>사전과 ERD 다시 받기</td><td><span class="tag ok">바로</span></td></tr>
+<tr><td><code>dict_request_term</code></td><td>용어·단어 등록 요청</td><td><span class="tag ask">용어 화면</span></td></tr>
+<tr><td><code>dict_request_edit</code></td><td>사전 항목 추가·수정 요청</td><td><span class="tag ask">용어 화면</span></td></tr>
+<tr><td><code>dict_request_exception</code></td><td>위반을 예외(무시·보류)로 두자는 요청</td><td><span class="tag ask">용어 화면</span></td></tr>
+<tr><td><code>dict_request_baseline</code></td><td>지금 검사 결과를 기준선으로 저장 요청</td><td><span class="tag ask">용어 화면</span></td></tr>
+<tr><td><code>erd_request_change</code></td><td>ERD 테이블·컬럼 추가·변경 요청</td><td><span class="tag ask">용어 화면</span></td></tr>
+</tbody></table></div>
+<h3>browser MCP</h3>
+<p><code>@playwright/mcp</code>를 stdio로 띄운다. <code>--headless --browser chrome --isolated --ignore-https-errors --viewport-size 1440,900</code>. 스크린샷은 워크트리가 아니라 <code>~/.worktree-studio/screens/{세션}/chat</code>에 남겨 커밋에 섞이지 않게 한다. DB 대화에는 띄우지 않는다.</p>
+</section>
+
+<section id="helpers">
+<h2>보조 호출</h2>
+<p>화면 뒤에서 한 번 돌고 끝나는 호출이다. 공통 설정은 <code>permissionMode: 'dontAsk'</code>, <code>settingSources: []</code>(사용자 플러그인·훅을 불러오지 않음), <code>persistSession: false</code>, <code>outputFormat: json_schema</code>로 구조화된 결과만 받는다. 모델은 설정의 <code>helperModels[용도]</code> → <code>defaultModel</code> → Claude Code 기본 순서로 고른다(<code>models.ts</code>).</p>
+<div class="scroll"><table>
+<thead><tr><th>용도 키</th><th>파일</th><th>하는 일</th><th>도구</th><th>최대 턴</th></tr></thead>
+<tbody>
+<tr><td><code>pr_draft</code></td><td><code>pr.ts</code></td><td>PR 템플릿대로 제목·본문·커밋 메시지</td><td>없음</td><td>4</td></tr>
+<tr><td><code>ticket_draft</code></td><td><code>ticketdraft.ts</code></td><td>Jira 티켓 초안</td><td>Read·Grep·Glob (폴더 있을 때)</td><td>25</td></tr>
+<tr><td><code>screens</code></td><td><code>screens.ts</code></td><td>바뀐 파일에서 영향 화면 경로 찾기</td><td>Read·Grep·Glob</td><td>40</td></tr>
+<tr><td><code>test_cases</code></td><td><code>tests.ts</code></td><td>화면 테스트 케이스 만들기 (최대 8개)</td><td>Read·Grep·Glob</td><td>30</td></tr>
+<tr><td><code>test_run</code></td><td><code>tests.ts</code></td><td>케이스를 브라우저로 실행하고 판정</td><td>browser MCP만</td><td>60</td></tr>
+<tr><td><code>env_scan</code></td><td><code>envscan.ts</code></td><td>필요한 환경변수와 필수 여부 판단</td><td>Read·Grep·Glob</td><td>40</td></tr>
+<tr><td><code>env_suggest</code></td><td><code>envsuggest.ts</code></td><td>포트에 맞는 설정값 제안</td><td>Read·Grep·Glob</td><td>30</td></tr>
+<tr><td><code>project_analyze</code></td><td><code>projectanalyze.ts</code></td><td>실행·설치·검사 명령 분석</td><td>Read·Grep·Glob</td><td>40</td></tr>
+<tr><td><code>conflict</code></td><td><code>conflicts.ts</code></td><td>머지 충돌 해결안</td><td>Read·Grep·Glob</td><td>40</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="data">
+<h2>저장소와 이벤트</h2>
+<h3>데이터 폴더 (<code>WTS_DATA_DIR</code>, 기본 <code>~/.worktree-studio</code>)</h3>
+<ul>
+  <li><code>studio.db</code> SQLite (WAL). <code>secret.key</code> 환경값·비밀번호 암호화 키.</li>
+  <li><code>uploads/</code> 대화 첨부, <code>screens/</code> 미리보기·대화 스크린샷, <code>tests/</code> 화면 테스트 결과, <code>artifacts/</code> 산출물 문서, <code>logs/</code> 데스크톱 서버 로그, <code>docker/</code> <code>sandbox/</code> 로컬 실행 환경.</li>
+</ul>
+<h3>테이블</h3>
+<div class="scroll"><table>
+<thead><tr><th>묶음</th><th>테이블</th><th>정의 위치</th></tr></thead>
+<tbody>
+<tr><td>프로젝트</td><td><code>projects</code> <code>workspaces</code> <code>workspace_projects</code> <code>db_connections</code></td><td><code>db.ts</code></td></tr>
+<tr><td>세션·대화</td><td><code>sessions</code> <code>worktrees</code> <code>chats</code> <code>messages</code> <code>prompt_queue</code> <code>session_tasks</code></td><td><code>db.ts</code> <code>tasks.ts</code></td></tr>
+<tr><td>실행</td><td><code>servers</code> <code>env_profiles</code> <code>env_vars</code> <code>session_env</code> <code>test_accounts</code></td><td><code>db.ts</code></td></tr>
+<tr><td>확인·PR</td><td><code>screen_checks</code> <code>test_cases</code> <code>pull_requests</code></td><td><code>db.ts</code> <code>tests.ts</code></td></tr>
+<tr><td>쿼리·사전</td><td><code>query_stats</code> <code>dict_requests</code> <code>dict_ignores</code> <code>dict_excludes</code> <code>dict_baseline</code> <code>schema_ignores</code></td><td>각 모듈이 직접 생성</td></tr>
+<tr><td>기타</td><td><code>settings</code> <code>usage_log</code></td><td><code>db.ts</code></td></tr>
+</tbody></table></div>
+<h3>WebSocket 이벤트 (<code>hub.ts</code> <code>ServerEvent</code>)</h3>
+<p><code>session.updated</code> <code>sessions.changed</code> <code>message</code> <code>server.updated</code> <code>log</code> <code>pr.updated</code> <code>screens.updated</code> <code>cleanup.changed</code> <code>approvals.updated</code> <code>docs.updated</code> <code>tests.updated</code> <code>tasks.updated</code> <code>dict.requests</code> <code>dict.bulk</code> <code>dict.updated</code> <code>erd.updated</code> <code>queries</code> <code>test.result</code>. 화면은 대부분 이벤트를 받으면 해당 API를 다시 불러 갱신한다.</p>
+</section>
+
+<section id="devharness">
+<h2>개발 하네스</h2>
+<div class="scroll"><table>
+<thead><tr><th>명령</th><th>하는 일</th></tr></thead>
+<tbody>
+<tr><td><code>npm run dev</code></td><td><code>tsx watch</code> 서버(4317)와 Vite 화면(5317)을 함께. 서버 파일을 고치면 서버가 다시 뜨면서 이 도구가 띄운 세션 서버도 꺼진다.</td></tr>
+<tr><td><code>npm run typecheck</code></td><td>server, web 순서로 <code>tsc --noEmit</code>. 자동 테스트는 아직 없어서 이것이 기본 검증이다.</td></tr>
+<tr><td><code>npm run build</code> / <code>npm start</code></td><td>화면 빌드 후 서버 하나로 4317에서 실행.</td></tr>
+<tr><td><code>npm run package:mac</code></td><td><code>desktop/release/</code>에 dmg·zip (arm64, ad-hoc 서명).</td></tr>
+</tbody></table></div>
+<p>포트 관련 환경변수: <code>WTS_PORT</code>, <code>WTS_API_PORT</code>, <code>PORT</code>(세션 개발 서버로 떴을 때 +1), <code>WTS_WEB_ONLY</code>, <code>WTS_HOST</code>. 자세한 표는 루트 <code>README.md</code>.</p>
+</section>
+
+<section id="notes">
+<h2>알아 둘 점</h2>
+<ul>
+  <li><strong>대화에서는 bkit 플러그인을 끈다.</strong> Bash 호출마다 훅 문구를 넣고 매 답변에 보고 표를 요구해서 대화가 길어진다. 보조 호출은 <code>settingSources: []</code>라 원래 불러오지 않는다(훅이 작업 폴더에 상태 파일을 만들면 커밋에 섞이기 때문).</li>
+  <li><strong><code>strictMcpConfig: true</code></strong>로 사용자 설정의 MCP·커넥터를 막는다. 도구 목록이 바뀔 때마다 대화에 목록이 다시 들어가 토큰이 늘기 때문이다.</li>
+  <li><strong>자동 요약은 300,000토큰</strong>에서. <code>compact_boundary</code> 메시지를 받으면 대화에 "요약됨" 이벤트로 남긴다.</li>
+  <li><strong>대기열</strong>: 대화마다 한 번에 하나만 돈다. 실행 중에 보낸 프롬프트는 <code>prompt_queue</code>에 쌓이고, 중단하거나 오류로 끝나면 대기열이 멈춰 사용자가 보고 이어 간다.</li>
+  <li><strong>워크트리 제한은 프롬프트 수준</strong>이다. auto 모드에서 Claude가 워크트리 밖을 건드리는 것을 강제로 막지는 않으므로 도구 카드로 확인한다.</li>
+  <li><strong>원본 폴더 세션</strong>(<code>in_place</code>)은 다른 작업과 폴더를 같이 쓰므로, 브랜치를 바꾸거나 되돌리는 git 명령은 사용자에게 묻도록 지시한다.</li>
+  <li>산출물 문서는 Studio 안에서는 HTML(<code>save_doc</code>)이고, 이 저장소 자체의 플랜은 <code>docs/plans/*.md</code>다. 둘은 다른 것이다.</li>
+</ul>
+</section>
+</main>
+</div>
+</body>
+</html>

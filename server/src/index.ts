@@ -54,7 +54,7 @@ import { schemaCheck, schemaIgnoresOf, setSchemaIgnore } from './schemasync.js';
 import { checkFilterShape } from './dicttools.js';
 import { ISSUES } from './dict/extract.js';
 import { searchDictionary } from './dictsearch.js';
-import { approveDictRequest, createDictRequest, duplicateOf, listDictRequests, rejectDictRequest } from './dictrequests.js';
+import { approveDictRequest, bulkApproveStatus, createDictRequest, duplicateOf, listDictRequests, rejectDictRequest, startBulkApproveErd } from './dictrequests.js';
 import { buildIndex, resolve as judgeName, typeMatches } from './dict/judge.js';
 import { columnType } from './dict/types.js';
 import { parseDDL } from './dict/ddlparse.js';
@@ -678,6 +678,8 @@ app.put('/api/sessions/:id/schema/ignores', async (req) => {
 const termPayload = z.object({ logical_name: z.string(), physical_name: z.string(), physical_abbr_name: z.string().nullable(), domain_name: z.string().nullable(), description: z.string() });
 const wordPayload = z.object({ name: z.string(), english_name: z.string(), abbreviation: z.string().nullable(), definition: z.string() });
 app.get('/api/sessions/:id/dict/requests', async (req) => listDictRequests(idParam.parse(req.params).id));
+app.get('/api/sessions/:id/dict/requests/bulk', async (req) => ({ job: bulkApproveStatus(idParam.parse(req.params).id) }));
+app.post('/api/sessions/:id/dict/requests/approve-erd', async (req) => startBulkApproveErd(idParam.parse(req.params).id));
 app.post('/api/sessions/:id/dict/requests', async (req) => {
   const b = z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('term'), payload: termPayload, reason: z.string().default('') }),

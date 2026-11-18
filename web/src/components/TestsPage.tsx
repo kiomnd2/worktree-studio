@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { attachToPrompt, insertIntoPrompt, useServerEvents } from '../events';
+import SendButton from './SendButton';
 import ApprovalCards from './ApprovalCards';
 import { type Session, type TestCase, type TestState } from '../types';
 
@@ -150,7 +151,7 @@ export default function TestsPage({ session, onBack }: { session: Session; onBac
               )}
               {['fail', 'blocked', 'error'].includes(c.status) && (
                 <div className="row">
-                  <button className="small-btn" onClick={() => sendToPrompt(c)}>새 대화로 보내기</button>
+                  <SendButton onSend={() => sendToPrompt(c)} />
                 </div>
               )}
             </article>

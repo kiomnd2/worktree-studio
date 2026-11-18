@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { insertIntoPrompt, useServerEvents } from '../events';
+import SendButton from './SendButton';
 import { parsePatch, toSplit, type DiffLine } from '../diff';
 import type { ChangedFile, ChangeScope, Session, WorktreeChanges } from '../types';
 
@@ -146,7 +147,7 @@ function FileDiff({ session, wt, file, scope }: { session: Session; wt: Worktree
           </div>
           <label className="start-check small"><input type="checkbox" checked={ws} onChange={(e) => setWs(e.target.checked)} /> 공백 무시</label>
           <label className="start-check small"><input type="checkbox" checked={full} onChange={(e) => setFull(e.target.checked)} /> 파일 전체</label>
-          <button className="small-btn" onClick={() => insertIntoPrompt(`${wt.project_name}의 ${file.path} 변경 내용을 봐줘.`)}>새 대화로 보내기</button>
+          <SendButton onSend={() => insertIntoPrompt(`${wt.project_name}의 ${file.path} 변경 내용을 봐줘.`)} />
         </div>
       </div>
       {error && <p className="banner error" role="alert">{error}</p>}
