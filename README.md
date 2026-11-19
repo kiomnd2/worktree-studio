@@ -63,14 +63,15 @@
   - 시작할 때 `git worktree prune`, 닫힌 세션에 묶인 계정 반납
 
 **erd-vibe 용어·도메인 사전 연동**
-- 설정 › erd-vibe 용어사전: 주소와 API 키(암호화 저장)를 넣으면 단어·용어·도메인 사전을 받아 5분간 메모리에 둠. 워크스페이스마다 ERD 프로젝트를 연결(DBMS는 ERD의 것을 씀)
+- 설정 › erd-vibe 용어사전: erd-vibe가 쓰는 Supabase 주소와 API 키(publishable/anon, 암호화 저장)를 넣으면 단어·용어·도메인 사전과 ERD를 Supabase에서 직접 읽고 씀(erd-vibe 서버·SSO를 거치지 않음). 사전은 1분간 메모리에 둠. 워크스페이스마다 ERD 프로젝트를 연결(DBMS는 ERD의 것을 씀)
 - 표준 이름은 용어의 약어명(`physical_abbr_name`, 없으면 물리명). 컬럼 이름을 `_`·camelCase로 나눠 단어사전의 약어·영문명으로 풀고 용어와 맞댐
   - 비표준 표기(TR_DATE·TRADE_DATE → TR_DT), 미등록 용어(단어는 다 있음 → 등록 초안), 미등록 단어(TR_DD), 도메인 불일치(DDL·Liquibase 타입 vs 도메인), ERD에 없음, 같은 용어 혼용, ERD 컬럼 위반, 사전의 논리명 중복
   - 대상: MyBatis 매퍼 SQL·resultMap, `.sql` DDL·DML, Liquibase `<column>`, JPA `@Column`/`@JoinColumn`. SQL은 밑줄 있는 이름과 `별칭.컬럼`만 봄. 워크스페이스별 무시 목록
 - 오른쪽 패널 "용어" → 용어 화면: 소스 검사(이번 변경/전체), 사전 찾기, ERD 테이블·컬럼 보기, 등록 요청 승인
 - Claude 도구 `dict_lookup`, `dict_check`, `dict_request_term`, `erd_table`과 "DB 이름은 사전의 표준 이름으로" 규칙. 등록은 사용자가 승인해야 erd-vibe에 들어감
 - PR 만들기에 "용어 검사" 단계: 이번 변경에서 추가한 줄의 위반이 있으면 멈춤(검사 실패 무시하고 진행 가능, 무시하면 PR 본문에 남김)
-- erd-vibe가 SSO를 쓰면 API 키(`Authorization: Bearer`)를 받아 주는 기능이 erd-vibe 쪽에 있어야 함. 인증을 끈 로컬 erd-vibe는 키 없이 됨
+- erd-vibe 서버 로직(필수값·중복 확인, 기본값, 테이블 동기화, 자동 정렬)은 `server/src/erdvibe.ts`에 같게 옮겨 둠. erd-vibe 테이블 구조나 로직이 바뀌면 같이 맞춰야 함. erd-vibe 주소는 화면의 "ERD 열기" 링크에만 씀
+- Supabase 테이블의 RLS가 "모두 허용"이라 publishable 키로 읽고 쓸 수 있음. erd-vibe가 RLS를 막으면 이 연동도 막힘
 
 ## 지원하는 프로젝트
 
@@ -164,7 +165,7 @@ server/src
   accounts.ts   테스트 계정 풀
   secret.ts     환경값·비밀번호 암호화, 로그 마스킹
   github.ts     gh 로그인 상태
-  erdvibe.ts    erd-vibe REST 클라이언트, 사전 캐시, ERD 조회, 용어·단어 등록
+  erdvibe.ts    erd-vibe 데이터(Supabase PostgREST) 클라이언트, 사전 캐시, ERD 조회·편집, 용어·단어 등록, 테이블 동기화·자동 정렬
   dictcheck.ts  이름 풀이·판정 (식별자 → 단어 → 논리명 → 용어)
   dictscan.ts   소스 컬럼 추출, 추가 줄 판별, 용어 검사 보고서, 무시 목록
   dictsearch.ts 사전 통합 검색

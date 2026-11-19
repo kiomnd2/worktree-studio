@@ -197,7 +197,7 @@ figcaption{font-size:13.5px;color:var(--muted);margin-top:12px}
   <g class="node ext"><rect x="186" y="340" width="160" height="64" rx="6"/><text x="266" y="366" text-anchor="middle" font-size="14" font-weight="600">개발 서버 프로세스</text><text class="sub" x="266" y="386" text-anchor="middle" font-size="12">BE 8081~ · FE 3401~</text></g>
   <g class="node ext"><rect x="358" y="340" width="160" height="64" rx="6"/><text x="438" y="366" text-anchor="middle" font-size="14" font-weight="600">Claude Code CLI</text><text class="sub" x="438" y="386" text-anchor="middle" font-size="12">Agent SDK가 띄움</text></g>
   <g class="node ext"><rect x="530" y="340" width="160" height="64" rx="6"/><text x="610" y="366" text-anchor="middle" font-size="14" font-weight="600">gh CLI</text><text class="sub" x="610" y="386" text-anchor="middle" font-size="12">푸시 · PR · 상태 확인</text></g>
-  <g class="node ext"><rect x="702" y="340" width="160" height="64" rx="6"/><text x="782" y="366" text-anchor="middle" font-size="14" font-weight="600">외부 REST</text><text class="sub" x="782" y="386" text-anchor="middle" font-size="12">erd-vibe · Jira</text></g>
+  <g class="node ext"><rect x="702" y="340" width="160" height="64" rx="6"/><text x="782" y="366" text-anchor="middle" font-size="14" font-weight="600">외부 REST</text><text class="sub" x="782" y="386" text-anchor="middle" font-size="12">erd-vibe Supabase · Jira</text></g>
 
   <path class="edge" d="M438 404 V446" marker-end="url(#ar)"/>
   <g class="node mod"><rect x="250" y="450" width="376" height="60" rx="6"/><text x="438" y="475" text-anchor="middle" font-size="14" font-weight="600">MCP 서버</text><text class="sub" x="438" y="495" text-anchor="middle" font-size="12">studio (서버 프로세스 안, 도구 17개) · browser (Playwright MCP, stdio)</text></g>
@@ -217,7 +217,7 @@ figcaption{font-size:13.5px;color:var(--muted);margin-top:12px}
 <tr><td>환경값·실행</td><td><code>envscan.ts</code> <code>envsuggest.ts</code> <code>envstore.ts</code> <code>envapi.ts</code> <code>portvars.ts</code> <code>localenv.ts</code> <code>runner.ts</code> <code>ports.ts</code> <code>accounts.ts</code> <code>secret.ts</code></td><td>환경변수 분석(정적 + AI), 프로필 저장, 포트 배정, 로컬 실행 환경(DB·도커), 서버 실행·헬스체크·로그 버퍼, 테스트 계정 풀, 암호화·마스킹</td></tr>
 <tr><td>DB·쿼리</td><td><code>dbconn.ts</code> <code>dbquery.ts</code> <code>querylog.ts</code> <code>querydb.ts</code> <code>mapperindex.ts</code></td><td>DB 연결 관리, 엔진별 질의·실행 계획, 서버 로그 SQL 집계, 매퍼 위치 찾기</td></tr>
 <tr><td>확인·PR·정리</td><td><code>screens.ts</code> <code>tests.ts</code> <code>changes.ts</code> <code>pr.ts</code> <code>github.ts</code> <code>cleanup.ts</code></td><td>영향 화면 찾기, 화면 테스트 생성·실행, 변경 내역, PR 문안·검사·푸시, gh 상태, 리소스 정리</td></tr>
-<tr><td>사전·ERD</td><td><code>erdvibe.ts</code> <code>dictscan.ts</code> <code>dictsearch.ts</code> <code>dictrequests.ts</code> <code>dicttools.ts</code> <code>dictbaseline.ts</code> <code>dictusage.ts</code> <code>schemasync.ts</code> <code>dict/</code></td><td>erd-vibe 사전·ERD 연동, 소스 용어 검사, 등록·예외·기준선 요청, Liquibase 최종 스키마 대조</td></tr>
+<tr><td>사전·ERD</td><td><code>erdvibe.ts</code> <code>dictscan.ts</code> <code>dictsearch.ts</code> <code>dictrequests.ts</code> <code>dicttools.ts</code> <code>dictbaseline.ts</code> <code>dictusage.ts</code> <code>schemasync.ts</code> <code>dict/</code></td><td>erd-vibe 사전·ERD 연동(Supabase PostgREST 직접), 소스 용어 검사, 등록·예외·기준선 요청, Liquibase 최종 스키마 대조</td></tr>
 </tbody></table></div>
 </section>
 

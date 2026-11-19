@@ -488,12 +488,14 @@ function ErdWorkspaceLinks({ workspaces, run }: { workspaces: Workspace[]; run: 
 
 /**
  * erd-vibe 연결: 팀이 같이 쓰는 단어·용어·도메인 사전과 ERD를 읽어 소스의 컬럼 이름을 검사한다.
- * erd-vibe가 SSO를 쓰면 API 키가 있어야 한다(erd-vibe 쪽에서 발급). 키는 암호화해 저장한다.
+ * 데이터는 erd-vibe가 쓰는 Supabase에 직접 읽고 쓴다(erd-vibe 서버·SSO를 거치지 않는다). 키는 암호화해 저장한다.
+ * erd-vibe 주소는 화면 링크(ERD 열기)에만 쓴다.
  */
 function ErdVibeSection({ run }: { run: Run }) {
   const [cfg, setCfg] = useState<ErdConfig | null>(null);
   const [status, setStatus] = useState<ErdStatus | null>(null);
   const [url, setUrl] = useState('');
+  const [sbUrl, setSbUrl] = useState('');
   const [key, setKey] = useState('');
   const [checking, setChecking] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -503,11 +505,11 @@ function ErdVibeSection({ run }: { run: Run }) {
     setChecking(false);
   }, []);
   useEffect(() => {
-    api.erdConfig().then((c) => { setCfg(c); setUrl(c.base_url); if (c.configured) check(); }).catch((e) => setLoadError((e as Error).message));
+    api.erdConfig().then((c) => { setCfg(c); setUrl(c.base_url); setSbUrl(c.supabase_url); if (c.configured) check(); }).catch((e) => setLoadError((e as Error).message));
   }, [check]);
   if (!cfg) return loadError ? <section className="card"><p className="error-text">erd-vibe 설정을 불러오지 못했습니다: {loadError}</p></section> : null;
   const save = run(async () => {
-    const c = await api.saveErdConfig({ base_url: url, ...(key ? { api_key: key } : {}) });
+    const c = await api.saveErdConfig({ base_url: url, supabase_url: sbUrl, ...(key ? { supabase_key: key } : {}) });
     setCfg(c); setKey('');
     loadErdProjects(true);
     await check();
@@ -519,7 +521,7 @@ function ErdVibeSection({ run }: { run: Run }) {
           <h2>erd-vibe 용어사전</h2>
           <p className="muted small">
             erd-vibe의 단어·용어·도메인 사전과 ERD를 읽어, Claude가 표준 용어로 이름을 짓게 하고 소스의 컬럼 이름이 사전·ERD와 다르면 찾아 PR 전에 막습니다.
-            표준 이름은 용어의 약어명입니다. 아래 워크스페이스별 ERD에서 워크스페이스마다 ERD 프로젝트를 고르세요.
+            표준 이름은 용어의 약어명입니다. 데이터는 erd-vibe가 쓰는 Supabase에 직접 붙습니다. 아래 워크스페이스별 ERD에서 워크스페이스마다 ERD 프로젝트를 고르세요.
           </p>
         </div>
         {cfg.configured && (
@@ -531,16 +533,20 @@ function ErdVibeSection({ run }: { run: Run }) {
       </div>
       <div className="grid2">
         <label className="field">
-          <span>주소</span>
-          <input className="mono" value={url} placeholder="https://vibe-erd.60hz.cc" onChange={(e) => setUrl(e.target.value)} />
+          <span>Supabase 주소</span>
+          <input className="mono" value={sbUrl} placeholder="https://<프로젝트>.supabase.co" onChange={(e) => setSbUrl(e.target.value)} />
         </label>
         <label className="field">
-          <span>API 키 {cfg.has_key ? '(저장됨, 바꿀 때만 입력)' : ''}</span>
-          <input className="mono" type="password" autoComplete="off" value={key} placeholder={cfg.has_key ? '••••••••' : 'erd-vibe에서 발급한 키 (인증을 끈 로컬이면 비워도 됨)'} onChange={(e) => setKey(e.target.value)} />
+          <span>Supabase API 키 {cfg.has_key ? '(저장됨, 바꿀 때만 입력)' : ''}</span>
+          <input className="mono" type="password" autoComplete="off" value={key} placeholder={cfg.has_key ? '••••••••' : 'sb_publishable_… 또는 anon 키'} onChange={(e) => setKey(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>erd-vibe 주소 (ERD 열기 링크용)</span>
+          <input className="mono" value={url} placeholder="https://erd-vibe.dev.60hz.co" onChange={(e) => setUrl(e.target.value)} />
         </label>
       </div>
       <div className="row">
-        {cfg.has_key && <button type="button" onClick={run(async () => { setCfg(await api.saveErdConfig({ api_key: '' })); await check(); }, 'API 키를 지웠습니다.')}>키 지우기</button>}
+        {cfg.has_key && <button type="button" onClick={run(async () => { setCfg(await api.saveErdConfig({ supabase_key: '' })); await check(); }, 'Supabase 키를 지웠습니다.')}>키 지우기</button>}
         <span className="spacer" />
         {cfg.configured && <button type="button" disabled={checking} onClick={run(async () => { await api.refreshDictionary(); await check(); }, '사전을 새로 받았습니다.')}>사전 새로 받기</button>}
         <button type="button" className="primary" onClick={save}>저장하고 연결 확인</button>
