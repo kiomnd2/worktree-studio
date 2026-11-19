@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import LocalSetupPanel from './LocalSetupPanel';
-import type { Account, AnalyzeField, ErdConfig, ErdProjectSummary, ErdStatus, JiraConfig, JiraStatus, PermissionMode, Project, ProjectAnalysis, ProjectKind, Settings, Workspace } from '../types';
+import type { Account, AnalyzeField, ErdConfig, ErdProjectSummary, ErdStatus, JiraConfig, JiraStatus, PermissionMode, Project, ProjectAnalysis, ProjectKind, Settings, StudioDiff, Workspace } from '../types';
 
 const KINDS: { value: ProjectKind; label: string }[] = [
   { value: 'be', label: 'BE' }, { value: 'fe', label: 'FE' }, { value: 'full', label: '통합' }, { value: 'unknown', label: '미정' },
@@ -75,7 +75,7 @@ export default function SettingsPage() {
       {notice && <p className="banner ok" role="status">{notice}</p>}
       {tab === 'projects' && <WorkspaceArea projects={projects} workspaces={workspaces} run={run} />}
       {tab === 'jira' && <JiraSection run={run} />}
-      {tab === 'erd' && <><ErdVibeSection run={run} /><ErdWorkspaceLinks workspaces={workspaces} run={run} /></>}
+      {tab === 'erd' && <><ErdVibeSection run={run} /><ErdWorkspaceLinks workspaces={workspaces} run={run} /><StudioErdSync run={run} /></>}
       {tab === 'accounts' && <AccountsSection accounts={accounts} workspaces={workspaces} run={run} />}
       {tab === 'prefs' && settings && <PreferencesSection settings={settings} setSettings={setSettings} run={run} />}
     </div>
@@ -481,6 +481,114 @@ function ErdWorkspaceLinks({ workspaces, run }: { workspaces: Workspace[]; run: 
             })}
           </tbody>
         </table>
+      )}
+    </section>
+  );
+}
+
+const STUDIO_STATUS: Record<StudioDiff['tables'][number]['status'], { label: string; cls: string }> = {
+  new: { label: '새로', cls: 'ok' }, changed: { label: '바뀜', cls: 'warn' }, same: { label: '같음', cls: '' },
+};
+
+/**
+ * 이 도구 자체의 SQLite 테이블과 테이블 문서(server/src/studioschema.ts)를 erd-vibe ERD에 맞춰 넣는다.
+ * 비교로 미리 보고 반영한다. ERD에만 있는 테이블·컬럼은 보여 주기만 하고 지우지 않는다. erd-vibe를 연결하지 않았으면 숨긴다.
+ */
+function StudioErdSync({ run }: { run: Run }) {
+  const [list, setList] = useState<ErdProjectSummary[] | null>(null);
+  const [pid, setPid] = useState<string | null>(null);
+  const [webUrl, setWebUrl] = useState('');
+  const [diff, setDiff] = useState<StudioDiff | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    loadErdProjects().then(setList);
+    api.studioErd().then((r) => setPid(r.project_id)).catch(() => {});
+    api.erdConfig().then((c) => setWebUrl(c.base_url)).catch(() => {});
+  }, []);
+  if (!list) return null;
+  const work = (fn: () => Promise<unknown>, ok?: string | ((r: unknown) => string)) => run(async () => {
+    setBusy(true); setError(null);
+    try { return await fn(); } catch (e) { setError((e as Error).message); throw e; } finally { setBusy(false); }
+  }, ok);
+  const choose = (id: string | null) => work(async () => { await api.setStudioErd(id); setPid(id); setDiff(null); })();
+  const create = () => {
+    const name = prompt('새 ERD 이름', 'worktree-studio')?.trim();
+    if (!name) return;
+    work(async () => {
+      const p = await api.createErdProject(name, 'worktree studio 자체 DB(studio.db)', 'SQLITE');
+      setList(await loadErdProjects(true));
+      await api.setStudioErd(p.id); setPid(p.id); setDiff(null);
+    }, `${name} ERD를 만들었습니다.`)();
+  };
+  const compare = work(async () => setDiff(await api.studioErdDiff()));
+  const pending = diff ? diff.tables.filter((t) => t.status !== 'same').length + diff.relationships_to_add : 0;
+  const apply = () => {
+    if (!diff || !confirm(`${diff.erd.name} ERD에 테이블 ${diff.tables.filter((t) => t.status !== 'same').length}개·관계 ${diff.relationships_to_add}개를 반영할까요? 지우는 것은 없습니다.`)) return;
+    work(async () => { const r = await api.studioErdApply(); setDiff(r.diff); setList(await loadErdProjects(true)); return r; }, (r) => {
+      const x = r as Awaited<ReturnType<typeof api.studioErdApply>>;
+      const fail = x.relationship_errors.length ? ` · 관계 실패 ${x.relationship_errors.length}` : '';
+      return `테이블 ${x.tables.created + x.tables.updated}·컬럼 ${x.columns.created + x.columns.updated}·관계 ${x.relationships_created} 반영${fail}`;
+    })();
+  };
+  const count = (s: StudioDiff['tables'][number]['status']) => diff?.tables.filter((t) => t.status === s).length ?? 0;
+  const undocumented = diff?.tables.reduce((n, t) => n + t.undocumented_columns.length, 0) ?? 0;
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h2>studio DB ERD 동기화</h2>
+        <p className="muted small">
+          이 도구가 쓰는 SQLite 테이블과 테이블 문서(<code>server/src/studioschema.ts</code>)를 erd-vibe ERD에 맞춰 넣습니다. 이름으로 맞춰 추가·갱신만 하고 지우지 않습니다.
+          다른 ERD와 섞이지 않게 전용 ERD를 쓰세요.
+        </p>
+      </div>
+      <div className="row studio-erd-bar">
+        <select aria-label="동기화할 ERD" value={pid ?? ''} disabled={busy} onChange={(e) => choose(e.target.value || null)}>
+          <option value="">ERD 고르기</option>
+          {pid && !list.some((x) => x.id === pid) && <option value={pid}>(목록에 없음) {pid.slice(0, 8)}</option>}
+          {list.map((x) => <option key={x.id} value={x.id}>{x.name} · {x.dbms_type}</option>)}
+        </select>
+        <button type="button" disabled={busy} onClick={create}>새 ERD 만들기</button>
+        <span className="spacer" />
+        <button type="button" disabled={busy || !pid} onClick={compare}>{busy && !diff ? '비교 중…' : '비교'}</button>
+        <button type="button" className="primary" disabled={busy || !diff || pending === 0} onClick={apply}>반영</button>
+        {webUrl && <a className="btn-link" href={webUrl} target="_blank" rel="noreferrer">erd-vibe 열기</a>}
+      </div>
+      {error && <p className="error-text studio-erd-pad">{error}</p>}
+      {!diff ? <p className="muted small studio-erd-pad">{pid ? '비교를 누르면 지금 DB와 ERD의 차이를 보여 줍니다.' : 'ERD를 고르거나 새로 만드세요.'}</p> : (
+        <>
+          <p className="small studio-erd-pad">
+            테이블 {diff.tables.length} · 새로 {count('new')} · 바뀜 {count('changed')} · 같음 {count('same')} · 관계 추가 {diff.relationships_to_add}
+            {undocumented > 0 && <> · <span className="pill warn">문서 없는 컬럼 {undocumented}</span></>}
+          </p>
+          <table className="dict-table erd-links">
+            <thead><tr><th>테이블</th><th>논리명</th><th>상태</th><th>컬럼 추가/변경</th><th>문서 없음</th></tr></thead>
+            <tbody>
+              {diff.tables.map((t) => (
+                <tr key={t.physical_name}>
+                  <td className="mono nowrap">{t.physical_name}</td>
+                  <td>{t.logical_name}</td>
+                  <td>
+                    <span className={`pill ${STUDIO_STATUS[t.status].cls}`}>{STUDIO_STATUS[t.status].label}</span>
+                    {t.table_changes.length > 0 && <span className="muted small"> {t.table_changes.join(', ')}</span>}
+                  </td>
+                  <td title={[...t.added_columns.map((c) => `+ ${c}`), ...t.changed_columns.map((c) => `~ ${c}`)].join('\n')}>{t.added_columns.length} / {t.changed_columns.length}</td>
+                  <td className="mono small">{t.undocumented_columns.join(', ')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {diff.skipped_tables.length > 0 && (
+            <p className="small studio-erd-pad">
+              <b>문서 없어 제외</b> <span className="muted">(studioschema.ts에 적으면 동기화)</span>: <span className="mono">{diff.skipped_tables.join(', ')}</span>
+            </p>
+          )}
+          {(diff.erd_only_tables.length > 0 || diff.erd_only_columns.length > 0) && (
+            <p className="small studio-erd-pad">
+              <b>ERD에만 있음</b> <span className="muted">(지우지 않음)</span>: <span className="mono">{[...diff.erd_only_tables, ...diff.erd_only_columns].join(', ')}</span>
+            </p>
+          )}
+        </>
       )}
     </section>
   );

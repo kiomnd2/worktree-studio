@@ -354,6 +354,21 @@ export type ProjectAnalysis = {
 export type ErdConfig = { base_url: string; supabase_url: string; has_key: boolean; configured: boolean };
 export type ErdStatus = { ok: boolean; error: string | null; counts: { words: number; terms: number; domains: number } | null; loaded_at: number | null };
 export type ErdProjectSummary = { id: string; name: string; description: string | null; dbms_type: string; updated_at: string | null };
+/** 설정 › studio DB ERD 동기화: studio.db와 ERD를 맞댄 결과(server/src/studioschema.ts) */
+export type StudioDiffTable = {
+  physical_name: string; logical_name: string; status: 'new' | 'changed' | 'same';
+  table_changes: string[]; added_columns: string[]; changed_columns: string[]; undocumented_columns: string[];
+};
+export type StudioDiff = {
+  erd: { id: string; name: string; dbms_type: string };
+  tables: StudioDiffTable[]; relationships_to_add: number; erd_only_tables: string[]; erd_only_columns: string[];
+  /** DB에는 있지만 테이블 문서(studioschema.ts)에 없어 동기화하지 않는 테이블 */
+  skipped_tables: string[];
+};
+export type StudioApplyResult = {
+  tables: { created: number; updated: number; unchanged: number }; columns: { created: number; updated: number; unchanged: number };
+  relationships_created: number; relationship_errors: string[]; diff: StudioDiff;
+};
 export type ErdColumn = {
   id: string; table_id: string; logical_name: string; physical_name: string; data_type: string | null; data_length: string | number | null;
   is_primary_key: boolean; is_nullable: boolean; is_unique: boolean; default_value: string | null;
