@@ -51,5 +51,5 @@ const MARK: Record<TaskStatus, string> = { todo: '[ ]', doing: '[~]', done: '[x]
 export function tasksForContext(sessionId: number): string | null {
   const l = getTasks(sessionId);
   if (!l || l.tasks.length === 0) return null;
-  return [`작업 목록${l.title ? ` "${l.title}"` : ''} (mcp__studio__set_tasks로 상태를 바꾼다):`, ...l.tasks.map((t, i) => `${i + 1}. ${MARK[t.status]} ${t.title}${t.note ? ` — ${t.note}` : ''}`)].join('\n');
+  return [`Task list${l.title ? ` "${l.title}"` : ''} (update statuses with mcp__studio__set_tasks):`, ...l.tasks.map((t, i) => `${i + 1}. ${MARK[t.status]} ${t.title}${t.note ? ` — ${t.note}` : ''}`)].join('\n');
 }

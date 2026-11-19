@@ -180,29 +180,30 @@ export async function proposeResolution(sessionId: number, worktreeId: number): 
   const base = await baseRef(w.path, w.base_branch);
   const mb = await git(w.path, ['merge-base', 'HEAD', base]).catch(() => '');
   const files = c.files.map((f) => f.path);
-  const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}\n… (생략)` : s);
+  const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}\n… (truncated)` : s);
   const theirsDiff = mb ? cut(await git(w.path, ['diff', mb, base, '--', ...files]), 40_000) : '';
   const oursDiff = mb ? cut(await git(w.path, ['diff', mb, 'HEAD', '--', ...files]), 40_000) : '';
 
   const prompt = [
-    `작업 브랜치 ${w.branch}(이 워크트리 ${w.path})를 ${base}에 머지하면 아래 파일이 충돌한다. 어떻게 풀지 파일별로 제안해 줘. 파일은 고치지 말고 읽기만 한다.`,
+    `Merging the work branch ${w.branch} (this worktree, ${w.path}) into ${base} causes conflicts in the files below. Propose, file by file, how to resolve them. Do not modify files; only read them.`,
     '',
-    `기준 브랜치에 새로 들어온 커밋 중 충돌 파일을 건드린 것:\n${c.base_commits.map((b) => `- ${b.sha} ${b.subject} (${b.author})`).join('\n') || '- (없음)'}`,
+    `New commits on the base branch that touched the conflicting files:\n${c.base_commits.map((b) => `- ${b.sha} ${b.subject} (${b.author})`).join('\n') || '- (none)'}`,
     '',
-    '충돌 부분 (ours = 작업 브랜치, theirs = 기준 브랜치):',
-    ...c.files.map((f) => [`### ${f.path}${f.note ? ` (${f.note})` : ''}`, ...f.hunks.map((h, i) => `#${i + 1} ${h.line}행 근처\n[ours]\n${h.ours}\n[theirs]\n${h.theirs}`)].join('\n')),
+    'Conflicting parts (ours = work branch, theirs = base branch):',
+    ...c.files.map((f) => [`### ${f.path}${f.note ? ` (${f.note})` : ''}`, ...f.hunks.map((h, i) => `#${i + 1} near line ${h.line}\n[ours]\n${h.ours}\n[theirs]\n${h.theirs}`)].join('\n')),
     '',
-    `작업 브랜치가 갈라진 뒤 바꾼 내용 (git diff merge-base HEAD):\n${oursDiff || '(없음)'}`,
+    `Changes on the work branch since it diverged (git diff merge-base HEAD):\n${oursDiff || '(none)'}`,
     '',
-    `기준 브랜치가 갈라진 뒤 바꾼 내용 (git diff merge-base ${base}):\n${theirsDiff || '(없음)'}`,
+    `Changes on the base branch since it diverged (git diff merge-base ${base}):\n${theirsDiff || '(none)'}`,
     '',
-    '규칙:',
-    '- 두 쪽의 의도를 모두 살리는 것을 먼저 생각한다. 한쪽을 버려야 하면 왜인지 적는다.',
-    '- strategy: ours(작업 브랜치 것을 씀), theirs(기준 브랜치 것을 씀), both(두 쪽을 합침), manual(사람이 정해야 함).',
-    '- how: 그 파일을 실제로 어떻게 고칠지 구체적으로(메서드·쿼리·changeSet 이름 등). risk: 잘못 풀면 생기는 문제나 확인할 점, 없으면 빈 문자열.',
-    '- Liquibase changelog처럼 순서가 중요한 파일은 기준 브랜치 항목을 먼저 두고 작업 브랜치 항목을 뒤에 붙이는지, id가 겹치지 않는지 본다.',
-    '- 필요하면 워크트리의 다른 파일을 Read·Grep으로 읽어 호출하는 쪽과 맞는지 확인한다.',
-    '- summary: 충돌 원인과 전체 해결 방향 두세 문장. checks: 해결 뒤 확인할 것(컴파일, 특정 API·화면 등) 몇 개. 모두 한국어로.',
+    'Rules:',
+    '- First consider keeping the intent of both sides. If one side has to be dropped, write why.',
+    '- strategy: ours (use the work branch version), theirs (use the base branch version), both (combine both sides), manual (a person must decide).',
+    '- how: concretely how to actually fix that file (method, query, changeSet names, etc.). risk: problems that arise if it is resolved wrongly, or points to check; empty string if none.',
+    '- For files where order matters, like a Liquibase changelog, check that base branch entries come first with work branch entries appended after, and that ids do not collide.',
+    '- If needed, read other files in the worktree with Read/Grep to confirm the result matches the callers.',
+    '- summary: two or three sentences on the cause of the conflict and the overall resolution direction. checks: a few things to verify after resolving (compilation, specific APIs/screens, etc.).',
+    '- Write every value meant for people (summary, how, risk, checks) in Korean.',
   ].join('\n');
 
   let structured: unknown = null;
