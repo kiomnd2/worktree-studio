@@ -46,7 +46,8 @@ import { getProject as projectById } from './projects.js';
 import { assertNewWork, closePr, continueIgnoringChecks, getPrJob, listPrs, preparePr, startPr } from './pr.js';
 import { addScreen, capturePreview, detectScreens, removeScreen, screenState, setScreenChecked } from './screens.js';
 import { getQuery, getSqlLogInfo, listQueries, muteQuery, resetQueries } from './querylog.js';
-import { createDictEntry, createErdProject, deleteDictEntries, erdApi, erdConfigView, erdProject, erdStatus, erdWebUrl, dictionary, listErdProjects, saveErdConfig, updateDictEntry, type DictKind } from './erdvibe.js';
+import { createDictEntry, createErdProject, createRelationships, deleteDictEntries, erdApi, erdConfigView, erdProject, erdStatus, erdWebUrl, dictionary, listErdProjects, saveErdConfig, setStudioErdId, studioErdId, updateDictEntry, type DictKind } from './erdvibe.js';
+import { applyStudioErd, diffStudioErd } from './studioschema.js';
 import { checkSession, erdDiffSession, erdFindingsOf, excludesOf, ignoreMatcher, ignoresOf, refreshSessionDictionary, sessionIndex, setExcludes, setIgnore, sessionErdId } from './dictscan.js';
 import { clearBaseline, compareBaseline, setBaselineStatus, snapshotBaseline } from './dictbaseline.js';
 import { dictUsage, forgetUsage } from './dictusage.js';
@@ -744,8 +745,30 @@ app.delete('/api/erd-vibe/dict/:kind', async (req) => {
   return { ok: true };
 });
 app.post('/api/erd-vibe/projects', async (req) => {
-  const b = z.object({ name: z.string().trim().min(1, 'ERD 이름이 필요합니다.'), description: z.string().optional() }).parse(req.body);
+  const b = z.object({ name: z.string().trim().min(1, 'ERD 이름이 필요합니다.'), description: z.string().optional(), dbms_type: z.string().optional() }).parse(req.body);
   return createErdProject({ ...b, author: 'worktree-studio' });
+});
+
+// studio 자체 DB(studio.db) 테이블과 테이블 문서(studioschema.ts)를 erd-vibe ERD에 맞춰 넣는다. 지우지는 않는다.
+const studioPid = () => {
+  const pid = studioErdId();
+  if (!pid) throw new Error('동기화할 ERD를 먼저 고르세요.');
+  return pid;
+};
+app.get('/api/erd-vibe/studio-erd', async () => ({ project_id: studioErdId() }));
+app.put('/api/erd-vibe/studio-erd', async (req) => {
+  const { project_id } = z.object({ project_id: z.string().nullable() }).parse(req.body);
+  const want = project_id?.trim() || null;
+  if (want && !(await listErdProjects()).some((p) => p.id === want)) throw new Error('erd-vibe에 없는 ERD 프로젝트입니다.');
+  setStudioErdId(want);
+  return { project_id: want };
+});
+app.get('/api/erd-vibe/studio-erd/diff', async () => diffStudioErd(studioPid()));
+app.post('/api/erd-vibe/studio-erd/apply', async () => {
+  const pid = studioPid();
+  const result = await applyStudioErd(pid);
+  broadcast({ type: 'erd.updated', projectId: pid });
+  return { ...result, diff: await diffStudioErd(pid) };
 });
 
 // ERD 화면: 보기(판정 포함)는 세션 기준, 편집은 ERD 프로젝트 기준. 편집 뒤에는 최신 ERD를 돌려준다.
@@ -931,22 +954,8 @@ app.post('/api/erd/:pid/ddl/apply', async (req) => {
     return term ? { ...c, term_dictionary_id: term.id } : c;
   }) }));
   await erdApi.syncTables(pid, tables);
-  let project = await erdProject(pid, true);
-  let relCreated = 0;
-  const relErrors: string[] = [];
-  const U = (s: string) => s.toUpperCase();
-  for (const r of b.relationships) {
-    const from = project.tables.find((t) => U(t.physical_name) === U(r.from_table_name));
-    const to = project.tables.find((t) => U(t.physical_name) === U(r.to_table_name));
-    const fc = from?.columns.find((c) => U(c.physical_name) === U(r.from_column_name));
-    const tc = to?.columns.find((c) => U(c.physical_name) === U(r.to_column_name));
-    if (!from || !to || !fc || !tc) { relErrors.push(`${r.to_table_name}.${r.to_column_name} → ${r.from_table_name}.${r.from_column_name}: ERD에 테이블이나 컬럼이 없습니다.`); continue; }
-    if (project.relationships.some((x) => x.from_column_id === fc.id && x.to_column_id === tc.id)) continue;
-    try { await erdApi.createRelationship(pid, { from_table_id: from.id, from_column_id: fc.id, to_table_id: to.id, to_column_id: tc.id, relationship_type: r.relationship_type }); relCreated++; }
-    catch (err) { relErrors.push((err as Error).message); }
-  }
-  project = await afterEdit(pid);
-  return { project, relationships_created: relCreated, relationship_errors: relErrors };
+  const rel = await createRelationships(pid, b.relationships);
+  return { project: await afterEdit(pid), relationships_created: rel.created, relationship_errors: rel.errors };
 });
 app.post('/api/erd/:pid/ddl/export', async (req) => {
   const { pid } = pidParam.parse(req.params);

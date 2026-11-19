@@ -6,7 +6,7 @@ import type {
   TaskList,
   Account, Approval, ChangeScope, ArchiveEntry, DocMeta, JiraConfig, JiraIssue, JiraRequiredField, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
   ExplainResult, QueryDetail, QueryList, QuerySort,
-  BaselineStatus, BulkApprove, ColumnEdit, DdlPreview, DictCheckFilter, DictKind, DictUsage, DictReport, DictRequest, DictSearch, ErdConfig, ErdPayload, ErdProject, ErdProjectSummary, ErdStatus, ErdView, ParsedDdl, RelationshipType, SchemaDiff, TermPayload, WordPayload,
+  BaselineStatus, BulkApprove, ColumnEdit, DdlPreview, DictCheckFilter, DictKind, DictUsage, DictReport, DictRequest, DictSearch, ErdConfig, ErdPayload, ErdProject, ErdProjectSummary, ErdStatus, ErdView, ParsedDdl, RelationshipType, SchemaDiff, StudioApplyResult, StudioDiff, TermPayload, WordPayload,
   ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, UsageReport, Workspace,
 } from './types';
 
@@ -136,7 +136,11 @@ export const api = {
   erdView: (sessionId: number, opts: { project?: string; refresh?: boolean } = {}) =>
     request<ErdView>('GET', `/api/sessions/${sessionId}/erd?refresh=${opts.refresh ? 1 : 0}${opts.project ? `&project=${encodeURIComponent(opts.project)}` : ''}`),
   setWorkspaceErd: (id: number, erd_project_id: string | null) => request('PUT', `/api/workspaces/${id}/erd`, { erd_project_id }),
-  createErdProject: (name: string, description?: string) => request<ErdProjectSummary>('POST', '/api/erd-vibe/projects', { name, description }),
+  createErdProject: (name: string, description?: string, dbms_type?: string) => request<ErdProjectSummary>('POST', '/api/erd-vibe/projects', { name, description, dbms_type }),
+  studioErd: () => request<{ project_id: string | null }>('GET', '/api/erd-vibe/studio-erd'),
+  setStudioErd: (project_id: string | null) => request<{ project_id: string | null }>('PUT', '/api/erd-vibe/studio-erd', { project_id }),
+  studioErdDiff: () => request<StudioDiff>('GET', '/api/erd-vibe/studio-erd/diff'),
+  studioErdApply: () => request<StudioApplyResult>('POST', '/api/erd-vibe/studio-erd/apply', {}),
   erdCreateTable: (pid: string, t: { physical_name: string; logical_name: string; position_x?: number; position_y?: number }) =>
     request<{ created_id: string; project: ErdProject }>('POST', `/api/erd/${pid}/tables`, t),
   erdSaveTable: (pid: string, tid: string, body: { table?: { physical_name?: string; logical_name?: string; description?: string; header_color?: string }; columns?: ColumnEdit[]; deleted_columns?: string[]; seen_updated_at?: string | null; force?: boolean }) =>

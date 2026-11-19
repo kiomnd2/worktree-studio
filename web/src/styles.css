@@ -1047,6 +1047,11 @@ button.chip-on { background: var(--ink); border-color: var(--ink); color: #fff; 
 .erd-links tbody tr:last-child td { border-bottom: 0; }
 .erd-links-empty { margin: 0; padding: 14px 20px; }
 
+/* 설정 > erd-vibe: studio DB ERD 동기화 */
+.studio-erd-bar { padding: 0 20px; align-items: center; gap: 8px; }
+.studio-erd-bar select { min-height: 30px; min-width: 240px; font-size: 13px; }
+.studio-erd-pad { margin: 10px 20px; }
+
 /* ERD 인스펙터: 용어를 연결한 컬럼은 물리명 칸 안에 작은 표시만 둔다 */
 .erd-physical { position: relative; }
 .erd-physical.linked input { padding-right: 40px; }
