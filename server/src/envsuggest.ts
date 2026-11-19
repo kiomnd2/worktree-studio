@@ -111,37 +111,38 @@ export async function suggestServerEnv(sessionId: number, ports: Record<number, 
   const hit = cache.get(sessionId);
   if (hit?.key === key && !force) return hit.result;
 
-  const show = (k: string, v: string) => (hidden(k, v) ? '(비밀값, 설정됨)' : v);
+  const show = (k: string, v: string) => (hidden(k, v) ? '(secret, set)' : v);
   const addr = (kind: 'fe' | 'be') => rows.filter((r) => (kind === 'fe') === (r.w.project_kind === 'fe') && r.port).map((r) => projectUrl(r.p, r.port!))[0] ?? null;
   const feUrl = addr('fe'), beUrl = addr('be');
   const sessionPorts = rows.flatMap((r) => (r.port ? [String(r.port)] : []));
   const prompt = [
-    '이 세션의 개발 서버를 아래 포트로 띄우려 한다. FE와 BE가 이 포트로 서로 제대로 연결되고 로그인·인증 흐름이 이 세션 안에서 돌게 하려면 바꿔야 하는 환경값을 찾아 제안해줘.',
-    '코드와 설정 파일은 읽기만 한다. 파일을 고치자는 제안은 하지 않고, 환경값으로 덮어쓸 수 있는 것만 제안한다.',
+    'This session\'s dev servers are about to start on the ports below. Find and suggest the environment values that must change so that the FE and BE connect to each other correctly on these ports and the login/authentication flow stays within this session.',
+    'Only read code and config files. Do not suggest editing files; suggest only things that can be overridden with environment values.',
     '',
-    `이 세션 FE 주소: ${feUrl ?? '(이 세션에 FE 없음)'} · BE 주소: ${beUrl ?? '(이 세션에 BE 없음)'}`,
-    'FE와 BE는 따로 띄울 수도 있지만 항상 위 주소로 뜬다. 지금 꺼져 있는 쪽도 이 주소를 기준으로 맞춘다.',
+    `This session's FE address: ${feUrl ?? '(no FE in this session)'} · BE address: ${beUrl ?? '(no BE in this session)'}`,
+    'The FE and BE may be started separately, but they always start on the addresses above. Align the side that is currently stopped to these addresses as well.',
     '',
     ...rows.flatMap((r) => [
-      `## ${r.p.name} (${r.w.project_kind.toUpperCase()}) 폴더 ${r.w.app_path}`,
-      `- 포트: ${r.port ?? '(정하지 못함)'} · 실행 명령: ${r.p.start_cmd ?? '(없음)'}`,
-      `- 도구가 자동으로 넣는 값(제안하지 말 것): ${Object.entries(r.auto).map(([k, v]) => `${k}=${v}`).join(', ') || '없음'}`,
-      `- 지금 환경값: ${Object.entries(r.env).map(([k, v]) => `${k}=${show(k, v)}`).join(', ') || '없음'}`,
+      `## ${r.p.name} (${r.w.project_kind.toUpperCase()}) folder ${r.w.app_path}`,
+      `- Port: ${r.port ?? '(not determined)'} · Run command: ${r.p.start_cmd ?? '(none)'}`,
+      `- Values the tool sets automatically (do not suggest these): ${Object.entries(r.auto).map(([k, v]) => `${k}=${v}`).join(', ') || 'none'}`,
+      `- Current environment values: ${Object.entries(r.env).map(([k, v]) => `${k}=${show(k, v)}`).join(', ') || 'none'}`,
     ]),
     '',
-    '찾을 것 (실제로 코드·설정에서 읽히는 것만):',
-    '- FE가 부르는 API 주소, 프록시 대상(next.config rewrites, vite proxy 등)이 이 세션 BE 포트를 가리키는지.',
-    '- BE의 CORS 허용 주소, 프론트 주소(리다이렉트·메일·QR 링크에 쓰는 값)가 이 세션 FE 포트를 가리키는지.',
-    '- 로그인·SSO·인증서·OAuth 콜백/리다이렉트 주소가 이 세션 BE·FE 포트로 돌아오는지. mock 인증 서버 주소도.',
-    '- 쿠키 도메인, 웹소켓 주소처럼 포트·호스트가 들어가는 값.',
-    '규칙:',
-    '- 실행 명령과 환경값으로 정해지는 활성 프로필(예: Spring local)의 설정 파일 값을 기준으로 한다. 실제로 쓰이는 값이 FE 쪽을 가리켜야 하는데 위 FE 주소와 다르면(예: localhost:3000) FE 주소로, BE 쪽을 가리켜야 하는데 위 BE 주소와 다르면 BE 주소로 바꾸자고 제안한다. 경로(/auth/callback 등)는 그대로 둔다.',
-    '- 세션에 없는 쪽(주소가 없음)에 대한 값은 제안하지 말고 note에 적는다. 이미 맞으면 제안하지 않는다.',
-    '- 근거 파일을 직접 열어 그 키가 실제로 있고, 지금 값이 이 세션 주소와 다른 것을 확인한 것만 제안한다. 짐작으로 키 이름을 만들지 않는다.',
-    '- Spring 설정 키는 환경변수로 덮어쓸 수 있는 relaxed binding 이름으로 쓴다(예: cert-auth.callback-url → CERT_AUTH_CALLBACK_URL). Next.js 브라우저 값은 NEXT_PUBLIC_ 이름 그대로.',
-    '- 이미 환경값에 같은 뜻의 다른 이름이 있어도 실제로 읽히는 이름을 제안한다. value는 주소(http://…) 또는 포트 숫자만. 비밀번호·토큰 같은 비밀값은 제안하지 않는다.',
-    '- project는 위 프로젝트 이름 그대로. reason은 왜 바꿔야 하는지 한 문장, found_in은 근거 파일 경로와 키(예: src/main/resources/application-local.yml cert-auth.callback-url).',
-    '- 바꿀 것이 없으면 suggestions를 비운다. note에는 확인하지 못한 것이나 재시작이 필요한 것 등을 한두 문장(없으면 빈 문자열). 모두 한국어로.',
+    'What to look for (only things actually read from code/config):',
+    '- Whether the API address the FE calls and proxy targets (next.config rewrites, vite proxy, etc.) point to this session\'s BE port.',
+    '- Whether the BE\'s CORS allowed origins and front-end address (values used for redirects, emails, QR links) point to this session\'s FE port.',
+    '- Whether login/SSO/certificate/OAuth callback/redirect addresses come back to this session\'s BE/FE ports. Mock auth server addresses too.',
+    '- Values that include a port or host, such as cookie domains and websocket addresses.',
+    'Rules:',
+    '- Base this on the config file values of the active profile determined by the run command and environment values (e.g. Spring local). If a value actually in use should point to the FE side but differs from the FE address above (e.g. localhost:3000), suggest changing it to the FE address; if it should point to the BE side but differs from the BE address above, suggest changing it to the BE address. Keep the path (/auth/callback, etc.) as is.',
+    '- Do not suggest values for a side that is not in the session (no address); write it in note instead. If a value is already right, do not suggest it.',
+    '- Suggest only what you confirmed by opening the evidence file yourself: the key actually exists there and its current value differs from this session\'s address. Do not invent key names by guessing.',
+    '- Write Spring config keys as relaxed-binding names that can be overridden by environment variables (e.g. cert-auth.callback-url → CERT_AUTH_CALLBACK_URL). Keep Next.js browser values under their NEXT_PUBLIC_ names as is.',
+    '- Even if the environment values already contain a different name with the same meaning, suggest the name that is actually read. value must be an address (http://…) or a port number only. Do not suggest secrets such as passwords or tokens.',
+    '- project is the project name exactly as written above. reason is one sentence on why it must change; found_in is the evidence file path and key (e.g. src/main/resources/application-local.yml cert-auth.callback-url).',
+    '- If nothing needs to change, leave suggestions empty. note is one or two sentences on things you could not confirm or that need a restart, etc. (empty string if none).',
+    '- Write every value meant for people (reason, note) in Korean.',
   ].join('\n');
 
   // 같은 저장소의 앱은 워크트리가 같으므로 한 번만 연다.

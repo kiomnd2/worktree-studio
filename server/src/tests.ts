@@ -156,23 +156,23 @@ export async function generateCases(sessionId: number): Promise<number> {
     // 이 워크스페이스에서 쓸 수 있는 계정(전용·공용)의 역할 메모만 참고로 준다.
     const roles = [...new Set(listAccounts().filter((a) => a.workspace_id === null || a.workspace_id === session.workspace_id).map((a) => a.note.trim()).filter(Boolean))];
     const prompt = [
-      '이 세션에서 개발한 기능을 사람이 화면에서 확인하듯 검증하는 테스트 케이스를 만들어줘. 브라우저 자동화 에이전트가 이 케이스를 그대로 따라 실행한다.',
+      'Create test cases that verify the feature developed in this session the way a person would check it on screen. A browser automation agent will execute these cases exactly as written.',
       '',
-      '규칙:',
-      '- 이번 변경으로 달라진 동작만 다룬다. 정상 흐름 하나를 먼저, 그다음 꼭 필요한 예외(권한, 빈 값, 경계값)만. 보통 2~5개, 최대 8개.',
-      '- role: 이 화면을 보려면 로그인해야 하는 사용자 역할(예: 관리자, 사업자, 지자체). 로그인 없이 보이는 화면이면 빈 문자열.',
-      roles.length ? `  계정 풀에 메모로 적힌 역할: ${roles.join(', ')}. 맞는 게 있으면 이 표현을 그대로 쓴다.` : '',
-      '- start_path: 시작할 화면 경로("/"로 시작, 호스트 없이). 상세 화면처럼 ID가 필요하면 목록에서 들어가는 단계로 쓴다.',
-      '- steps: 화면에서 할 행동을 한 줄씩. 버튼·메뉴·입력란은 화면에 보이는 글자로 가리킨다(예: "[조회] 버튼을 누른다").',
-      '- expected: 결과로 화면에 보여야 할 것을 확인 가능한 문장으로. 데이터 값은 개발 DB에 따라 달라지니 열 이름·라벨·형식 위주로.',
-      '- 저장·삭제·승인처럼 데이터를 바꾸는 행동은 꼭 필요할 때만, 그 경우 제목에 "(데이터 변경)"을 붙인다.',
-      '- 모두 한국어로.',
+      'Rules:',
+      '- Cover only behavior that changed with this change. First one happy path, then only the exceptions that are truly needed (permissions, empty values, boundary values). Usually 2–5 cases, at most 8.',
+      '- role: the user role that must be logged in to see this screen (e.g. 관리자, 사업자, 지자체). Empty string if the screen is visible without login.',
+      roles.length ? `  Roles written as notes in the account pool: ${roles.join(', ')}. If one matches, use that wording exactly.` : '',
+      '- start_path: the path of the screen to start from (starting with "/", no host). If an ID is needed, as on a detail screen, write it as steps that navigate there from the list.',
+      '- steps: one action on screen per line. Refer to buttons, menus, and input fields by the text shown on screen (e.g. "[조회] 버튼을 누른다").',
+      '- expected: what should appear on screen as a result, as verifiable sentences. Data values vary with the dev DB, so focus on column names, labels, and formats.',
+      '- Include actions that change data, such as save, delete, or approve, only when truly necessary, and in that case append "(데이터 변경)" to the title.',
+      '- Write every value meant for people (title, role, steps, expected) in Korean.',
       '',
-      `## 사용자가 이 세션에서 요청한 작업\n${asked.join('\n') || '(대화 없음)'}`,
+      `## Tasks the user requested in this session\n${asked.join('\n') || '(no conversation)'}`,
       ...repos.map(({ w, files, diff }) => [
         '',
-        `## ${w.project_name} (${w.project_kind}) 바뀐 파일`,
-        files.slice(0, 200).join('\n') || '(없음)',
+        `## ${w.project_name} (${w.project_kind}) changed files`,
+        files.slice(0, 200).join('\n') || '(none)',
         diff ? `### diff\n\`\`\`diff\n${diff}\n\`\`\`` : '',
       ].join('\n')),
     ].join('\n');
@@ -371,43 +371,44 @@ async function runCase(sessionId: number, t: TestCase, appUrl: string, loginPath
   const others = roleAccounts(sessionId);
   const secrets = [...new Set([...(account ? [account.password] : []), ...(prep ? others.map((o) => o.password) : [])])];
   const prompt = [
-    '브라우저 도구(mcp__browser__*)로 아래 테스트 케이스를 실행하고 결과를 판정해줘. 코드는 읽거나 고치지 않는다.',
+    'Run the test case below with the browser tools (mcp__browser__*) and judge the result. Do not read or modify code.',
     '',
-    `앱 주소: ${appUrl}`,
-    `시작 화면: ${new URL(t.start_path, appUrl).toString()}`,
+    `App address: ${appUrl}`,
+    `Start screen: ${new URL(t.start_path, appUrl).toString()}`,
     account
-      ? `로그인 계정: 아이디 ${account.login} / 비밀번호 ${account.password} (역할: ${t.role})${loginPath ? `. 로그인 화면 경로: ${loginPath}` : ''}. 로그인 화면이 나오면 이 계정으로 로그인한다.`
-      : '로그인하지 않는다. 로그인 화면으로 보내지면 status=blocked로 판정한다.',
+      ? `Login account: ID ${account.login} / password ${account.password} (role: ${t.role})${loginPath ? `. Login screen path: ${loginPath}` : ''}. If a login screen appears, log in with this account.`
+      : 'Do not log in. If you are sent to a login screen, judge it as status=blocked.',
     ...(prep ? [
       '',
-      '## 먼저 할 준비 (사용자가 승인함)',
-      `없던 데이터: ${prep.need}`,
-      `만드는 방법: ${prep.plan}`,
-      '케이스 단계를 시작하기 전에 위 방법대로 화면에서 데이터를 만든다. 다른 역할이 필요하면 아래 계정으로 로그인했다가, 다 만들면 로그아웃하고 케이스 계정으로 다시 로그인한다.',
-      ...others.map((o) => `- 역할 ${o.role}: 아이디 ${o.login} / 비밀번호 ${o.password}`),
-      '준비 과정도 steps 앞쪽에 "준비: "로 시작하는 항목으로 적고, 만든 데이터를 알아볼 수 있는 값(번호, 이름)을 note에 남긴다. 준비를 끝내지 못하면 status=blocked.',
+      '## Preparation to do first (approved by the user)',
+      `Missing data: ${prep.need}`,
+      `How to create it: ${prep.plan}`,
+      'Before starting the case steps, create the data on screen as described above. If another role is needed, log in with the account below, and when done, log out and log back in with the case account.',
+      ...others.map((o) => `- Role ${o.role}: ID ${o.login} / password ${o.password}`),
+      'Also record the preparation at the front of steps as items starting with "준비: ", and leave values that identify the created data (number, name) in note. If you cannot finish the preparation, status=blocked.',
     ] : []),
     '',
-    `## 케이스: ${t.title}`,
-    '### 단계',
+    `## Case: ${t.title}`,
+    '### Steps',
     ...t.steps.map((s, i) => `${i + 1}. ${s}`),
-    '### 기대 결과',
+    '### Expected results',
     ...t.expected.map((e) => `- ${e}`),
     '',
-    '규칙:',
-    '- 브라우저는 1440x900 크기다. 단계마다 화면 스냅샷으로 상태를 확인하며 진행한다.',
-    '- 확인이 필요한 화면(각 기대 결과를 볼 수 있는 화면, 실패한 화면)은 mcp__browser__browser_take_screenshot으로 찍는다. filename은 "step-<단계번호>.png" 형식으로 준다.',
-    '- 기대 결과를 모두 화면에서 확인했으면 status=pass, 하나라도 다르면 fail, 로그인 실패·화면을 찾을 수 없음·서버 오류처럼 확인 자체를 못 하면 blocked.',
+    'Rules:',
+    '- The browser is 1440x900. Proceed step by step, checking the state with a page snapshot at each step.',
+    '- Take screenshots of screens that need verification (screens where each expected result can be seen, and screens that failed) with mcp__browser__browser_take_screenshot. Give filename in the form "step-<step number>.png".',
+    '- If every expected result was confirmed on screen, status=pass; if any differs, fail; if verification itself was impossible, such as login failure, screen not found, or server error, blocked.',
     prep
-      ? '- 위 준비와 케이스 단계에 있는 것 말고는 데이터를 바꾸지(저장·삭제·승인) 않는다.'
-      : '- 케이스에 없는 데이터 변경(저장·삭제·승인)은 하지 않는다. 단계에 있으면 한다.',
+      ? '- Do not change data (save, delete, approve) beyond what is in the preparation above and the case steps.'
+      : '- Do not make data changes (save, delete, approve) that are not in the case. Do them if they are in the steps.',
     ...(prep ? [] : [
-      `- 단계를 진행할 데이터가 없어서(예: 대기 중인 주문이 없음) 막히면 데이터를 직접 만들지 말고 status=blocked로 두고 needs_data를 채운다.`,
-      `  need: 무엇이 없는지 한 문장. plan: 화면에서 어떻게 만들 수 있는지(어느 역할로 어느 화면에서 무엇을 넣고 누르는지) 짧은 순서. role: 만들 때 쓸 역할(${others.length ? others.map((o) => o.role).join(', ') : '확인된 역할 없음'} 중 하나, 없으면 빈 문자열).`,
-      '  사용자가 승인하면 그 데이터를 만들고 다시 실행한다. 데이터 문제가 아니면(로그인 실패, 화면 오류, 기대와 다름) needs_data를 넣지 않는다.',
+      `- If you are blocked because there is no data to carry out a step (e.g. no pending orders), do not create the data yourself; set status=blocked and fill in needs_data.`,
+      `  need: one sentence on what is missing. plan: a short sequence of how it can be created on screen (which role, on which screen, what to enter and click). role: the role to use for creating it (one of ${others.length ? others.map((o) => o.role).join(', ') : 'no confirmed roles'}; empty string if none).`,
+      '  If the user approves, that data is created and the case is run again. If it is not a data problem (login failure, screen error, differs from expectation), do not include needs_data.',
     ]),
-    '- steps에는 단계마다 결과를 적고, 찍었으면 screenshot에 파일 이름을, 안 찍었으면 빈 문자열을 넣는다. summary는 판정 이유 한두 문장. 모두 한국어로.',
-    '- 비밀번호는 결과 문장에 적지 않는다.',
+    '- In steps, record the result of each step; put the file name in screenshot if you took one, otherwise an empty string. summary is one or two sentences on the reason for the verdict.',
+    '- Write every value meant for people (step, note, summary, and needs_data need/plan) in Korean.',
+    '- Do not write passwords in the result text.',
   ].join('\n');
 
   let structured: unknown = null;

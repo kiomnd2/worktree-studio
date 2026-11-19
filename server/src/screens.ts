@@ -75,7 +75,7 @@ export async function changedDiff(w: SessionView['worktrees'][number]): Promise<
   const base = (await refExists(w.path, `refs/remotes/origin/${w.base_branch}`)) ? `origin/${w.base_branch}` : w.base_branch;
   const ref = await git(w.path, ['merge-base', base, 'HEAD']).catch(() => base);
   const diff = await git(w.path, ['diff', '-U3', ref, '--', '.', ':(exclude)package-lock.json', ':(exclude)*.lock', ':(exclude)pnpm-lock.yaml']).catch(() => '');
-  return diff.length > 30_000 ? `${diff.slice(0, 30_000)}\n… (이하 생략)` : diff;
+  return diff.length > 30_000 ? `${diff.slice(0, 30_000)}\n… (rest truncated)` : diff;
 }
 
 const DETECT_SCHEMA = {
@@ -114,24 +114,25 @@ export async function detectScreens(sessionId: number) {
     const asked = listMessages(sessionId).filter((m) => m.kind === 'user' && m.payload?.text).slice(-6)
       .map((m) => `- ${String(m.payload.text).replace(/\s+/g, ' ').slice(0, 300)}`);
     const prompt = [
-      '이 작업 때문에 사람이 직접 열어서 확인해야 하는 화면을 골라줘. 목록이 짧고 정확해야 한다. 넓게 잡지 마.',
+      'Pick the screens a person must open and check by hand because of this work. The list must be short and accurate. Do not cast a wide net.',
       '',
-      '규칙:',
-      '- 화면 하나 = 화면을 그리는 페이지 컴포넌트 하나. 같은 페이지 컴포넌트를 여러 라우트(예: /rego/x, /gov/rego/x)가 쓰면 대표 경로 하나를 route에, 나머지는 also_routes에 넣는다.',
-      '- kind=direct: 바뀐 코드 때문에 그 화면에서 보이는 내용·배치·동작이 실제로 달라지는 경우만. 바뀐 diff를 읽고, 그 화면이 바뀐 부분(컴포넌트, 렌더링에 쓰는 필드·라벨, 호출하는 API의 바뀐 응답 필드)을 실제로 쓰는지 확인해.',
-      '- kind=indirect: 바뀐 파일을 import하지만 바뀐 부분을 쓰지 않거나 보이는 변화가 확실하지 않은 경우. 타입 정의만 가져다 쓰는 화면은 대부분 indirect다. indirect는 정말 의심스러운 것만 넣는다.',
-      '- BE만 바뀌었으면 바뀐 API의 응답 필드가 그 화면에 표시되는지 확인한 뒤에만 direct로 넣는다.',
-      '- 사용자가 요청한 작업 범위(아래)를 기준으로 판단해. 그 범위 밖 화면은 확실할 때만 넣는다.',
-      '- 상세 화면처럼 경로에 ID가 들어가면 목 데이터·시드·테스트 코드에서 있을 법한 값을 고르고, 못 찾으면 1을 넣어.',
-      '- route와 also_routes는 "/"로 시작하는 경로만(호스트 없이). reason은 무엇이 어떻게 달라 보이는지 한 문장 한국어로.',
-      '- direct는 보통 1~3개다. 전체 10개를 넘기지 마.',
+      'Rules:',
+      '- One screen = one page component that renders the screen. If several routes use the same page component (e.g. /rego/x, /gov/rego/x), put one representative path in route and the rest in also_routes.',
+      '- kind=direct: only when the changed code actually changes what is shown, the layout, or the behavior on that screen. Read the changed diff and confirm the screen actually uses the changed parts (components, fields/labels used in rendering, changed response fields of APIs it calls).',
+      '- kind=indirect: the screen imports a changed file but does not use the changed parts, or the visible change is uncertain. Screens that only import type definitions are mostly indirect. Include indirect only when genuinely suspicious.',
+      '- If only the BE changed, include a screen as direct only after confirming that the changed API response fields are displayed on that screen.',
+      '- Judge based on the scope of work the user requested (below). Include screens outside that scope only when certain.',
+      '- If the path contains an ID, as on a detail screen, pick a plausible value from mock data, seeds, or test code; if you cannot find one, use 1.',
+      '- route and also_routes must be paths starting with "/" (no host). reason is one sentence on what looks different and how.',
+      '- There are usually 1–3 direct screens. Do not exceed 10 in total.',
+      '- Write every value meant for people (reason) in Korean.',
       '',
-      `## 사용자가 이 세션에서 요청한 작업\n${asked.join('\n') || '(대화 없음)'}`,
+      `## Tasks the user requested in this session\n${asked.join('\n') || '(no conversation)'}`,
       '',
       ...files.map(({ w, files: list, diff }) => [
-        `## ${w.project_name} (${w.project_kind}) 바뀐 파일`,
-        list.slice(0, 200).join('\n') || '(없음)',
-        diff ? `### 바뀐 내용 (diff)\n\`\`\`diff\n${diff}\n\`\`\`` : '',
+        `## ${w.project_name} (${w.project_kind}) changed files`,
+        list.slice(0, 200).join('\n') || '(none)',
+        diff ? `### Changes (diff)\n\`\`\`diff\n${diff}\n\`\`\`` : '',
       ].join('\n')),
     ].join('\n');
     let structured: unknown = null;

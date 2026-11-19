@@ -13,17 +13,17 @@ import type { SchemaFinding } from './dict/srcrefs.js';
 
 /** Claude에게 주는 용어사전 도구의 글 모양과, 시스템 프롬프트·tool_context에 붙일 줄. */
 
-export const DICT_RULE = '개발하면서 DB 이름(테이블 컬럼, DDL, SQL 별칭, resultMap column, @Column 등)을 새로 쓰거나 바꿀 때마다 먼저 mcp__studio__dict_lookup으로 erd-vibe 용어사전을 확인하고, 판정에 따라 처리한다. '
-  + '표준이면 그대로 쓰고, 비표준 표기면 알려 준 표준 이름(약어명)으로 바꿔 쓴다. 같은 용어를 다른 표기(TR_DATE와 TR_DT 등)로 쓰지 않는다. '
-  + '새 용어가 생기면 사용자에게 묻지 말고 기존 규칙대로 바로 등록을 요청한다: '
-  + '(1) 미등록 단어가 있으면 단어마다 dict_lookup으로 비슷한 단어의 약어 짓는 법을 보고 mcp__studio__dict_request_term(kind "word")로 먼저 요청한다. 영문명은 대문자·밑줄(REFERENCE_AMOUNT), 약어는 영문명을 줄인 대문자·숫자(CANCEL → CNCL)이고 다른 단어의 약어와 겹치지 않게 한다. '
-  + '(2) 용어는 단어를 이어 짓는다: 논리명은 단어를 이은 것(거래+취소+일자 → 거래취소일자), 물리명은 단어 영문명을 밑줄로 이은 것, 약어명(표준 이름)은 단어 약어를 밑줄로 이은 것(TR_CNCL_DT). 판정이 등록 초안을 주면 그대로 쓴다. '
-  + '(3) 도메인은 같은 끝 단어를 쓰는 기존 용어의 도메인을 따른다(…일자 → 일자, …여부 → 여부). '
-  + '규칙에 어긋난 요청은 도구가 이유와 함께 돌려주니 고쳐서 다시 요청한다. 요청을 올린 뒤에는 그 표준 이름으로 개발을 계속하고, 작업을 마칠 때 올린 단어·용어 요청을 정리해 알린다(사용자가 용어 검사 화면에서 승인해야 사전에 들어간다). '
-  + '테이블 정의가 필요하면 mcp__studio__erd_table로 ERD를 본다. ERD와 소스가 다르면 먼저 어느 쪽이 표준인지 본다: ERD가 이미 표준 이름이면 ERD는 두고 소스(매퍼·Liquibase·엔티티)를 ERD에 맞춰 고친다. 새 테이블·컬럼이 필요하거나 ERD 자체가 틀렸을 때만 ERD를 직접 고치지 말고 mcp__studio__erd_request_change로 변경을 요청한다(사용자가 승인하면 반영). update_column에는 바꿀 값(새 물리명 등)을 columns에 꼭 넣는다. 작업을 마치기 전에 mcp__studio__dict_check로 이번 변경의 위반을 확인하고 고친다(PR 전 검사에서도 막힌다). '
-  + 'Liquibase를 쓰는 앱에서 테이블·컬럼을 바꾸면 이미 적용된 changeset은 고치지 말고 새 changeset을 더하고, mcp__studio__schema_check로 매퍼·JPA가 최종 스키마와 맞는지(옛 이름·없는 컬럼) 확인한다. '
-  + '검사 결과가 길면 tables·exclude_paths·kinds로 범위를 줄이고 section·offset·limit·detail·export로 나눠 본다. 사전을 방금 고쳤는데 반영이 안 보이면 refresh나 mcp__studio__dict_reload를 쓴다. '
-  + '고치지 않을 기존 위반은 mcp__studio__dict_request_exception(사유 필수)으로, 기존 위반 정리 시작점은 mcp__studio__dict_request_baseline으로, 용어·단어·도메인 수정은 mcp__studio__dict_request_edit로 요청한다(모두 사용자 승인 뒤 반영, erd-vibe REST를 직접 부르지 않는다).';
+export const DICT_RULE = 'Every time you write or change a DB name during development (table columns, DDL, SQL aliases, resultMap column, @Column, etc.), first check the erd-vibe dictionary with mcp__studio__dict_lookup and act on the verdict. '
+  + 'If it is standard, use it as is; if it is a non-standard spelling, switch to the standard name (abbreviated name) it gives. Never write the same term with different spellings (e.g. TR_DATE and TR_DT). '
+  + 'When a new term is needed, do not ask the user; request registration right away following the existing rules: '
+  + '(1) For each unregistered word, look up similar words with dict_lookup to see how their abbreviations are formed, then request the word first with mcp__studio__dict_request_term(kind "word"). The English name is uppercase with underscores (REFERENCE_AMOUNT); the abbreviation is a shortened uppercase form of the English name with letters/digits (CANCEL → CNCL) and must not collide with another word\'s abbreviation. '
+  + '(2) A term is built from words: the logical name joins the words (거래+취소+일자 → 거래취소일자), the physical name joins the words\' English names with underscores, and the abbreviated name (the standard name) joins the words\' abbreviations with underscores (TR_CNCL_DT). If the verdict provides a registration draft, use it as is. '
+  + '(3) The domain follows existing terms that end with the same word (…일자 → 일자, …여부 → 여부). '
+  + 'Requests that break the rules come back with a reason; fix them and request again. After requesting, keep developing with that standard name, and when you finish, report (in Korean) the word/term requests you made (they enter the dictionary only after the user approves them in the dictionary check screen). '
+  + 'When you need a table definition, look at the ERD with mcp__studio__erd_table. If the ERD and the source differ, first decide which one is standard: if the ERD already uses the standard name, leave the ERD and fix the source (mappers, Liquibase, entities) to match it. Only when a new table/column is needed or the ERD itself is wrong, request the change with mcp__studio__erd_request_change instead of editing the ERD (applied after user approval). For update_column, always put the values to change (new physical name, etc.) in columns. Before finishing, check this change for violations with mcp__studio__dict_check and fix them (the pre-PR check blocks them too). '
+  + 'In apps that use Liquibase, when tables/columns change, never edit an applied changeset; add a new changeset, and confirm with mcp__studio__schema_check that mappers/JPA match the final schema (old names, missing columns). '
+  + 'For long check results, narrow the scope with tables/exclude_paths/kinds and page with section/offset/limit/detail/export. If a dictionary edit you just made is not visible, use refresh or mcp__studio__dict_reload. '
+  + 'Request existing violations you will not fix as exceptions with mcp__studio__dict_request_exception (reason required), a starting point for cleaning up existing violations with mcp__studio__dict_request_baseline, and term/word/domain edits with mcp__studio__dict_request_edit (all applied after user approval; never call the erd-vibe REST API directly).';
 
 export function dictContextLines(sessionId: number): string[] {
   if (!erdConfigured()) return [];
@@ -33,8 +33,8 @@ export function dictContextLines(sessionId: number): string[] {
   const erd = erdId ? cachedErdProject(erdId) : null;
   const pending = pendingDictRequests(sessionId);
   return [
-    `용어사전: erd-vibe 연결됨 · ERD 프로젝트 ${erdId ? (erd ? `"${erd.name}" (${erd.dbms_type}, 테이블 ${erd.tables.length}개)` : `연결됨(${erdId})`) : '연결 안 됨(설정 > erd-vibe 용어사전에서 워크스페이스마다 고른다)'}`,
-    ...(pending.length ? [`승인 대기 중인 요청: ${pending.map(requestLabel).join(', ')}`] : []),
+    `Dictionary: erd-vibe connected · ERD project ${erdId ? (erd ? `"${erd.name}" (${erd.dbms_type}, ${erd.tables.length} tables)` : `linked (${erdId})`) : 'not linked (the user picks one per workspace in Settings > erd-vibe dictionary)'}`,
+    ...(pending.length ? [`Requests awaiting user approval: ${pending.map(requestLabel).join(', ')}`] : []),
   ];
 }
 
