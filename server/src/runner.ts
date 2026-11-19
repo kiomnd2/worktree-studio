@@ -367,7 +367,8 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
     const stacks = opts.docker === false ? [] : stacksOf(p);
     const docker = bin && stacks.length ? stacks.map((s) => upCommand(bin, p, s)).join(' && ') : null;
     // 새 워크트리에는 .venv나 node_modules가 없어 처음 한 번은 설치부터 한다. 설치가 실패하면 서버를 띄우지 않는다.
-    const setup = p.setup_cmd && !w.setup_done ? p.setup_cmd : null;
+    // 설치 명령은 서브셸에서 돌려, 안의 cd(하위 폴더 앱의 `cd .. && npm ci` 등)가 실행 명령의 폴더를 바꾸지 않게 한다.
+    const setup = p.setup_cmd && !w.setup_done ? `(${p.setup_cmd})` : null;
     const cmd = [docker, setup, startCmd].filter(Boolean).join(' && ');
     // studio 자신의 포트(WTS_PORT)는 물려주지 않는다. worktree-studio를 세션으로 띄우면 그 서버가 이 포트로 뜨려다 충돌한다.
     const { WTS_PORT: _ownPort, ...inherited } = process.env;
