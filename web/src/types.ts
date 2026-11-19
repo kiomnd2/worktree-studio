@@ -350,7 +350,8 @@ export type ProjectAnalysis = {
 };
 
 // erd-vibe 용어·도메인 사전 (server/src/erdvibe.ts, dictcheck.ts, dictscan.ts, dictrequests.ts와 같은 모양)
-export type ErdConfig = { base_url: string; has_key: boolean; configured: boolean };
+/** erd-vibe 연동. 데이터는 Supabase에 직접 붙고, base_url은 erd-vibe 화면 링크용이다. */
+export type ErdConfig = { base_url: string; supabase_url: string; has_key: boolean; configured: boolean };
 export type ErdStatus = { ok: boolean; error: string | null; counts: { words: number; terms: number; domains: number } | null; loaded_at: number | null };
 export type ErdProjectSummary = { id: string; name: string; description: string | null; dbms_type: string; updated_at: string | null };
 export type ErdColumn = {

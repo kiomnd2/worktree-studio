@@ -595,7 +595,7 @@ app.get('/api/worktrees/:id/logs', async (req) => getLogs(idParam.parse(req.para
 // erd-vibe 용어·도메인 사전: 연결 설정, 사전 검색, ERD, 소스 용어 검사, 등록 요청
 app.get('/api/erd-vibe/config', async () => erdConfigView());
 app.put('/api/erd-vibe/config', async (req) => {
-  saveErdConfig(z.object({ base_url: z.string().optional(), api_key: z.string().optional() }).parse(req.body));
+  saveErdConfig(z.object({ base_url: z.string().optional(), supabase_url: z.string().optional(), supabase_key: z.string().optional() }).parse(req.body));
   return erdConfigView();
 });
 app.get('/api/erd-vibe/status', async () => erdStatus());
