@@ -165,7 +165,7 @@ async function prModeOf(dir: string, pr: BranchPr | null, dirty: number, ahead: 
 function conversationDigest(sessionId: number): string {
   const parts: string[] = [];
   for (const m of listMessages(sessionId)) {
-    if (m.kind === 'user' && m.payload?.text) parts.push(`[요청] ${String(m.payload.text).slice(0, 800)}`);
+    if (m.kind === 'user' && m.payload?.text) parts.push(`[User request] ${String(m.payload.text).slice(0, 800)}`);
     if (m.kind === 'sdk' && m.payload?.type === 'assistant' && !m.payload.parent_tool_use_id) {
       for (const b of m.payload.message?.content ?? []) if (b.type === 'text' && b.text.trim()) parts.push(`[Claude] ${b.text.slice(0, 1200)}`);
     }
@@ -325,8 +325,8 @@ async function collectEach(session: SessionView): Promise<RepoFacts[]> {
     return {
       draft,
       template,
-      diffStat: untracked.length ? `${diffStat}\n새 파일: ${untracked.join(', ')}` : diffStat,
-      diff: diff.length > 40_000 ? `${diff.slice(0, 40_000)}\n… (이하 생략)` : diff,
+      diffStat: untracked.length ? `${diffStat}\nNew files: ${untracked.join(', ')}` : diffStat,
+      diff: diff.length > 40_000 ? `${diff.slice(0, 40_000)}\n… (rest truncated)` : diff,
       log,
       examples,
       commitStyle,
@@ -347,29 +347,30 @@ export async function preparePr(sessionId: number): Promise<{ drafts: PrDraft[];
   const mask = (s: string) => maskSecrets(s, secrets);
   const jiraKey = isJiraKey(session.ticket);
   const prompt = [
-    `${jiraKey ? '티켓' : 'Jira 티켓이 없는 작업'} ${session.ticket}${session.summary ? ` (${session.summary})` : ''}의 PR 제목, 본문, 커밋 메시지를 레포별로 써줘.`,
-    '형식 우선순위: (1) 레포마다 붙인 "최근 머지된 PR" 예시가 있으면 그 형식을 따른다. 제목의 접두어·이모지·티켓 표기 위치, 본문 섹션 구성과 제목, 문체와 길이를 맞춘다. "내 PR"로 표시된 예시를 가장 우선한다.',
-    '  예시의 내용은 다른 작업이니 내용을 베끼지 말고 형식만 따른다. (2) 예시가 없으면 레포의 PR 템플릿 항목을 채운다. (3) 둘 다 없으면 "## 개요", "## 변경", "## 확인"으로 쓴다.',
-    '커밋 메시지: 레포에 "커밋 메시지 템플릿"이 붙어 있으면 그 Format을 그대로 따른다(이모지·type은 템플릿 표에서 고르고, 본문 목록과 Jira 줄까지).',
-    `  ${jiraKey ? `Jira 줄의 이슈 키는 ${session.ticket}을 쓴다.` : '이 작업은 Jira 티켓이 없으니 Jira 줄은 빼고 이슈 키를 지어내지 않는다.'} 템플릿의 주의사항을 지키고, Co-Authored-By 같은 꼬리말은 쓰지 않는다. 템플릿이 없으면 "최근 커밋 제목" 형식의 한 줄로 쓴다.`,
-    '내용은 diff와 대화에서 실제로 바뀐 것만 적고 추측하지 마. 확인하지 못한 것은 확인했다고 쓰지 마.',
-    '레포가 둘 이상이면 도구가 본문 끝에 관련 PR 링크를 붙이니 따로 쓰지 마. 비밀번호, 토큰 같은 값은 절대 넣지 마. 모두 한국어로.',
+    `Write the PR title, body, and commit message for each repo for ${jiraKey ? 'ticket' : 'the work without a Jira ticket'} ${session.ticket}${session.summary ? ` (${session.summary})` : ''}.`,
+    'Format priority: (1) If a repo has "Recently merged PRs" examples attached, follow their format. Match the title prefix, emoji, and where the ticket is written, the body\'s section structure and headings, and the style and length. Give the highest priority to examples marked "my PR".',
+    '  The examples are about other work, so do not copy their content; follow only the format. (2) If there are no examples, fill in the items of the repo\'s PR template. (3) If there is neither, write it with "## 개요", "## 변경", "## 확인".',
+    'Commit message: if the repo has a "Commit message template" attached, follow its Format exactly (pick the emoji and type from the template\'s table, and include the body list and the Jira line).',
+    `  ${jiraKey ? `Use ${session.ticket} as the issue key on the Jira line.` : 'This work has no Jira ticket, so leave out the Jira line and do not invent an issue key.'} Follow the template\'s cautions, and do not write trailers such as Co-Authored-By. If there is no template, write a single line in the format of the "Recent commit subjects".`,
+    'Write only what actually changed according to the diff and the conversation; do not guess. Do not write that something was verified if it was not.',
+    'If there are two or more repos, the tool appends the related PR links to the end of the body, so do not write them yourself. Never include values such as passwords or tokens.',
+    'Write every value meant for people (PR title, PR body, commit message) in Korean.',
     jiraKey
-      ? `티켓 번호 ${session.ticket}은 예시가 티켓을 표기하는 방식대로 제목에 넣는다.`
-      : `Jira 티켓이 없으니 제목에 티켓 번호를 넣지 않고, "${session.ticket}"(작업 이름)도 제목에 넣지 않는다.`,
+      ? `Put the ticket number ${session.ticket} in the title the way the examples write the ticket.`
+      : `There is no Jira ticket, so do not put a ticket number in the title, and do not put "${session.ticket}" (the work name) in the title either.`,
     '',
-    `## 대화 기록 (요약 재료)\n${mask(conversationDigest(sessionId)) || '(없음)'}`,
+    `## Conversation history (material for the summary)\n${mask(conversationDigest(sessionId)) || '(none)'}`,
     ...targets.map((f) => [
       '',
-      `## 레포 worktree_id=${f.draft.worktree_id} ${f.draft.project_name} (${f.draft.project_kind}) ${f.draft.branch} → ${f.draft.base_branch}`,
+      `## Repo worktree_id=${f.draft.worktree_id} ${f.draft.project_name} (${f.draft.project_kind}) ${f.draft.branch} → ${f.draft.base_branch}`,
       f.examples.length
-        ? `### 최근 머지된 PR (형식 예시)\n${f.examples.map((e) => `#### #${e.number}${e.mine ? ' (내 PR)' : ''} 제목: ${e.title}\n${e.body}`).join('\n\n')}`
-        : `### PR 템플릿 (${f.draft.template_path ?? '없음'})\n${f.template ?? '(없음)'}`,
+        ? `### Recently merged PRs (format examples)\n${f.examples.map((e) => `#### #${e.number}${e.mine ? ' (my PR)' : ''} Title: ${e.title}\n${e.body}`).join('\n\n')}`
+        : `### PR template (${f.draft.template_path ?? 'none'})\n${f.template ?? '(none)'}`,
       f.commitTemplate
-        ? `### 커밋 메시지 템플릿 (${f.draft.commit_template!.path}${f.draft.commit_template!.from ? `, ${f.draft.commit_template!.from} 것을 같이 씀` : ''})\n${f.commitTemplate}`
-        : `### 최근 커밋 제목 (커밋 메시지 형식 예시)\n${f.commitStyle || '(없음)'}`,
-      `### 이번 브랜치 커밋\n${f.log || '(아직 커밋 없음)'}`,
-      `### 변경 요약\n${f.diffStat}`,
+        ? `### Commit message template (${f.draft.commit_template!.path}${f.draft.commit_template!.from ? `, shared from ${f.draft.commit_template!.from}` : ''})\n${f.commitTemplate}`
+        : `### Recent commit subjects (commit message format examples)\n${f.commitStyle || '(none)'}`,
+      `### Commits on this branch\n${f.log || '(no commits yet)'}`,
+      `### Change summary\n${f.diffStat}`,
       `### diff\n\`\`\`diff\n${mask(f.diff)}\n\`\`\``,
     ].join('\n')),
   ].join('\n');

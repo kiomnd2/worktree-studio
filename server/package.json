@@ -16,6 +16,8 @@
     "@playwright/mcp": "^0.0.82",
     "better-sqlite3": "^13.0.3",
     "fastify": "^5.12.5",
+    "micromark": "^4.0.3",
+    "micromark-extension-gfm": "^3.0.0",
     "mssql": "^12.7.11",
     "mysql2": "^3.24.6",
     "node-notifier": "^11.0.0",

@@ -168,7 +168,8 @@ export type Approval = {
 
 /** 개발 산출물. plan: 계획서, screen: 화면설계서, db: DB 변경 설계서, test: 테스트 결과서, report: 완료 보고서 */
 export type DocKind = 'plan' | 'screen' | 'db' | 'test' | 'report' | 'other';
-export type DocMeta = { name: string; title: string; kind: DocKind; version: number; updated_at: string; path: string };
+/** format: 원본 형식. md 문서도 화면에서는 도구가 만든 HTML로 본다. path는 원본 파일. */
+export type DocMeta = { name: string; title: string; kind: DocKind; format: 'md' | 'html'; version: number; updated_at: string; path: string };
 export type ArchiveEntry = {
   session_id: number; ticket: string; summary: string; workspace_name: string; closed: boolean; updated_at: string;
   branches: string[]; projects: string[]; prs: { number: number; url: string; title: string; state: string }[]; docs: DocMeta[]; dir: string;

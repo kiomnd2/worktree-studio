@@ -27,21 +27,21 @@ export async function draftTicket(workspaceId: number, input: { prompt: string }
   const dirs = ws.projects.map((p) => getProject(p.id)?.local_path).filter((d): d is string => Boolean(d && fs.existsSync(d)));
   const [types, examples] = await Promise.all([issueTypes(ws.jira_project), recentTicketExamples(ws.jira_project)]);
   const prompt = [
-    `Jira ${ws.jira_project} 프로젝트에 만들 티켓의 제목과 설명을 제안해줘. 사용자가 하려는 일은 아래와 같다.`,
+    `Propose a title and description for a ticket to create in the Jira ${ws.jira_project} project. What the user wants to do is below.`,
     '',
     input.prompt.trim(),
     '',
-    '할 일:',
-    '- 이 워크스페이스 코드(읽기만)에서 관련 화면·API·테이블을 찾아 무엇을 바꿔야 하는지 구체적으로 파악한다. 찾은 화면 이름·경로·메뉴명은 설명에 쓴다.',
-    '- 제목: 한 줄, 무엇을 하는지 바로 알 수 있게. 사용자가 말한 뜻을 바꾸거나 범위를 넓히지 않는다.',
-    `- issue_type: 다음 중 하나. ${types.map((t) => t.name).join(', ')}. 버그 수정이면 버그, 새 기능이면 작업이나 기능.`,
-    '- description: Markdown. 예시 티켓이 있으면 그 섹션 구성과 문체를 따른다. 없으면 "## 배경", "## 작업 내용", "## 완료 조건"으로 쓴다.',
-    '- 예시 티켓은 섹션 구성·문체·길이만 참고한다. 예시에 있는 요청자·담당자 같은 사람 정보나 인사말은 쓰지 않는다.',
-    '- 코드에서 확인하지 못한 것은 단정하지 말고 "확인 필요"로 적는다. 구현 방법을 너무 자세히 정하지 않는다(티켓은 무엇을, 왜가 중심).',
-    '- 모두 한국어로.',
+    'Steps:',
+    '- In this workspace\'s code (read only), find the related screens, APIs, and tables, and work out concretely what needs to change. Use the screen names, paths, and menu names you find in the description.',
+    '- Title: one line that makes it immediately clear what is being done. Do not change what the user meant or widen the scope.',
+    `- issue_type: one of the following. ${types.map((t) => t.name).join(', ')}. For a bug fix use 버그; for a new feature use 작업 or 기능.`,
+    '- description: Markdown. If there are example tickets, follow their section structure and writing style. If not, write it with "## 배경", "## 작업 내용", "## 완료 조건".',
+    '- Use the example tickets only as a reference for section structure, style, and length. Do not include people information from the examples (requester, assignee, etc.) or greetings.',
+    '- Do not state as fact anything you could not confirm in the code; write "확인 필요" for it instead. Do not specify the implementation in too much detail (a ticket is about what and why).',
+    '- Write every value meant for people (title, description) in Korean.',
     '',
     examples.length
-      ? `## ${examples[0].mine ? '내가' : '팀이'} 이 프로젝트에 쓴 최근 티켓 (형식 예시, 내용은 베끼지 말 것. 길이도 이 정도로 맞출 것)\n${examples.map((e) => `### ${e.key} [${e.type}] ${e.summary}\n${e.description}`).join('\n\n')}`
+      ? `## Recent tickets ${examples[0].mine ? 'I' : 'the team'} wrote in this project (format examples; do not copy their content; match roughly this length)\n${examples.map((e) => `### ${e.key} [${e.type}] ${e.summary}\n${e.description}`).join('\n\n')}`
       : '',
   ].filter(Boolean).join('\n');
 

@@ -273,9 +273,10 @@ figcaption{font-size:13.5px;color:var(--muted);margin-top:12px}
 <section id="prompt">
 <h2>프롬프트 층</h2>
 <p>Claude가 받는 지시는 네 층으로 쌓인다. 시스템 프롬프트는 세션 처음에 고정되므로, 바뀌는 정보는 매 메시지에 붙인다.</p>
+<p><strong>언어</strong>: Studio가 Claude에게 보내는 지시문(시스템 규칙, 계획·보고서 지시, 도구 설명, <code>&lt;tool_context&gt;</code>, 보조 호출 프롬프트)은 영어로 쓴다. 시스템 규칙 맨 앞의 <code>LANGUAGE_RULE</code>과 보조 호출마다 넣은 출력 언어 규칙으로, 사람이 읽는 출력(대화 답변, 질문, 문서, 작업 목록, PR·커밋 문구, 테스트 케이스)은 한국어로 받는다. 도구가 Claude에게 돌려주는 결과 문구와 사용자에게 보이는 오류는 한국어 그대로다.</p>
 <ol class="layers">
   <li><strong>1. Claude Code 프리셋</strong><span><code>preset: 'claude_code'</code>. 사용자·프로젝트·로컬 설정을 읽으므로 워크트리의 CLAUDE.md와 사용자 스킬도 적용된다.</span></li>
-  <li><strong>2. Studio 규칙 (<code>buildSystemAppend</code>)</strong><span>워크트리 밖 수정 금지, 커밋·푸시·PR은 요청 시에만, 개발 서버는 직접 띄우지 않음, 긴 출력은 <code>tail</code>로, 환경값·계정·DB 쓰기는 도구로 요청, 정할 것은 AskUserQuestion으로, 산출물은 <code>save_doc</code>으로 HTML 저장, 작업 목록 갱신 규칙, 완료 보고서 순서(<code>REPORT_INSTRUCTIONS</code>). erd-vibe가 설정돼 있으면 사전 규칙(<code>DICT_RULE</code>)이 붙는다. 추가 대화와 DB 대화는 앞에 전용 규칙이 더해진다.</span></li>
+  <li><strong>2. Studio 규칙 (<code>buildSystemAppend</code>)</strong><span>워크트리 밖 수정 금지, 커밋·푸시·PR은 요청 시에만, 개발 서버는 직접 띄우지 않음, 긴 출력은 <code>tail</code>로, 환경값·계정·DB 쓰기는 도구로 요청, 정할 것은 AskUserQuestion으로, 산출물은 <code>save_doc</code>으로 저장(계획서·DB 변경 설계서는 Markdown, 화면설계서는 HTML), 작업 목록 갱신 규칙, 완료 보고서 순서(<code>REPORT_INSTRUCTIONS</code>). erd-vibe가 설정돼 있으면 사전 규칙(<code>DICT_RULE</code>)이 붙는다. 추가 대화와 DB 대화는 앞에 전용 규칙이 더해진다.</span></li>
   <li><strong>3. 계획 모드 지시 (<code>PLAN_INSTRUCTIONS</code>)</strong><span>계획 요청일 때만. 코드 읽기 → 계획서 HTML 저장(업무 흐름이면 인라인 SVG 플로우) → 화면설계서 → DB를 바꾸면 DB 변경 설계서(<code>kind "db"</code>, 용어사전 확인 표 포함) → <code>set_tasks</code>로 작업 목록 → <code>ExitPlanMode</code>.</span></li>
   <li><strong>4. 메시지별 <code>&lt;tool_context&gt;</code> (<code>runtimeContext</code>)</strong><span>실행 중인 개발 서버 주소, 작업 목록, 이 세션의 산출물 문서 경로, 질의할 수 있는 DB 연결, 사전 상태, 배정된 테스트 계정. <code>/compact</code> 같은 슬래시 명령에는 붙이지 않는다.</span></li>
 </ol>
@@ -316,7 +317,7 @@ figcaption{font-size:13.5px;color:var(--muted);margin-top:12px}
 <tr><td><code>request_env_values</code></td><td>개발 서버 환경값 추가·변경 요청</td><td><span class="tag ask">승인 카드</span></td></tr>
 <tr><td><code>request_test_account</code></td><td>역할에 맞는 테스트 계정 찾기</td><td><span class="tag ok">바로</span></td></tr>
 <tr><td><code>set_tasks</code></td><td>작업 목록 통째로 바꾸기 (메인 대화만)</td><td><span class="tag ok">바로</span></td></tr>
-<tr><td><code>save_doc</code></td><td>계획서·화면설계서·보고서를 HTML로 저장</td><td><span class="tag ok">바로</span></td></tr>
+<tr><td><code>save_doc</code></td><td>산출물 저장. 계획서·DB 변경 설계서는 Markdown 원본(<code>.md</code>)과 도구가 만든 화면용 <code>.html</code>, 화면설계서는 HTML</td><td><span class="tag ok">바로</span></td></tr>
 <tr><td><code>db_query</code></td><td>SQL 한 문장. 읽기는 롤백 트랜잭션에서 바로</td><td><span class="tag ask">쓰기만 승인</span></td></tr>
 <tr><td><code>server_queries</code></td><td>BE 로그에서 센 쿼리 집계와 경고</td><td><span class="tag ok">바로</span></td></tr>
 <tr><td><code>db_explain</code></td><td>실행 계획과 인덱스·행 수 (롤백)</td><td><span class="tag ok">바로</span></td></tr>
@@ -397,7 +398,7 @@ figcaption{font-size:13.5px;color:var(--muted);margin-top:12px}
   <li><strong>대기열</strong>: 대화마다 한 번에 하나만 돈다. 실행 중에 보낸 프롬프트는 <code>prompt_queue</code>에 쌓이고, 중단하거나 오류로 끝나면 대기열이 멈춰 사용자가 보고 이어 간다.</li>
   <li><strong>워크트리 제한은 프롬프트 수준</strong>이다. auto 모드에서 Claude가 워크트리 밖을 건드리는 것을 강제로 막지는 않으므로 도구 카드로 확인한다.</li>
   <li><strong>원본 폴더 세션</strong>(<code>in_place</code>)은 다른 작업과 폴더를 같이 쓰므로, 브랜치를 바꾸거나 되돌리는 git 명령은 사용자에게 묻도록 지시한다.</li>
-  <li>산출물 문서는 Studio 안에서는 HTML(<code>save_doc</code>)이고, 이 저장소 자체의 플랜은 <code>docs/plans/*.md</code>다. 둘은 다른 것이다.</li>
+  <li>Studio 세션의 계획서·DB 변경 설계서는 Markdown이 원본이다. Claude는 <code>&lt;tool_context&gt;</code>에 적힌 <code>.md</code>를 읽고, 사람은 <code>micromark</code>로 만든 <code>.html</code>을 본다(<code>docs.ts</code> <code>renderMarkdown</code>). 화면설계서는 배치를 그려야 해서 HTML이 원본이다. 이 저장소 자체의 플랜(<code>docs/plans/*.md</code>)과는 다른 것이다.</li>
 </ul>
 </section>
 </main>

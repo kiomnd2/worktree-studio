@@ -84,54 +84,66 @@ function attachmentBlock(a: StoredImage): Exclude<SDKUserMessage['message']['con
   return { type: 'image', source: { type: 'base64', media_type: a.mediaType as ImageType, data: buf.toString('base64') } };
 }
 
+/**
+ * 하네스 지시문은 영어로 쓰고(토큰이 적고 지시가 정확하다), 사람에게 보이는 모든 출력은 한국어로 하게 한다.
+ * 시스템 프롬프트 맨 앞에 둔다.
+ */
+const LANGUAGE_RULE = [
+  'LANGUAGE: These instructions are written in English, but you must ALWAYS answer the user in Korean.',
+  'Everything a person reads must be Korean: chat replies, AskUserQuestion questions and options, documents saved with save_doc, task titles and notes, request reasons, plan summaries for ExitPlanMode, and final summaries.',
+  'Keep code, identifiers, file paths, commands, SQL, and log excerpts as they are. Code comments follow the existing style of the file you edit.',
+].join('\n');
+
 /** DB 대화에서 따를 것. 코드는 고치지 않고 이 연결에만 질의한다. */
 function dbChatLines(c: DbConnection) {
   return [
-    `이 대화는 DB 대화다. DB 연결 #${c.id} ${c.name} (${describeConnection(c)})에만 mcp__studio__db_query로 질의한다. 다른 연결이 필요하면 사용자에게 다른 DB 대화를 열어 달라고 한다.`,
-    '코드와 파일은 고치지 않는다. 테이블·컬럼을 모르면 DB 메타데이터(information_schema, ALL_TAB_COLUMNS 같은 것)를 먼저 조회하고, 의미가 애매하면 워크트리의 엔티티·매퍼·마이그레이션 파일을 Read·Grep으로 읽어 확인한다.',
-    '조회는 필요한 컬럼만, 행 수를 제한(LIMIT, FETCH FIRST, TOP)해서 한다. 답할 때는 결과를 요약하고 실행한 SQL을 함께 보여 준다.',
-    '데이터를 바꾸는 질의는 한 문장씩 보낸다. 사용자가 SQL을 확인하고 승인해야 실행된다. 보내기 전에 영향받을 행을 SELECT로 먼저 세어 보여 준다.',
+    `This is a DB chat. Query only DB connection #${c.id} ${c.name} (${describeConnection(c)}) with mcp__studio__db_query. If another connection is needed, ask the user to open another DB chat.`,
+    'Do not modify code or files. If you do not know the tables or columns, query the DB metadata first (information_schema, ALL_TAB_COLUMNS, etc.). If the meaning is unclear, read the worktree entities, mappers, and migration files with Read/Grep.',
+    'Select only the columns you need and limit the row count (LIMIT, FETCH FIRST, TOP). When answering, summarize the result and show the SQL you ran.',
+    'Send data-changing statements one at a time. They run only after the user reviews and approves the SQL. Before sending one, count the affected rows with a SELECT and show the count.',
   ];
 }
 
 function buildSystemAppend(repos: RepoView[], side: boolean, db: DbConnection | null) {
   // 저장소 하나에 앱이 여럿이면(모노레포) 앱 폴더도 알려 준다.
-  const lines = repos.map((w) => `- ${w.project_name}: ${w.path} (브랜치 ${w.branch}, ${w.in_place ? '원본 클론 폴더라 다른 작업과 같이 쓰는 폴더다. 브랜치를 바꾸거나 되돌리는 git 명령은 사용자에게 묻고 한다' : `${w.base_branch}에서 분기`})${w.apps.length > 1
-    ? `. 이 저장소의 앱: ${w.apps.map((a) => `${a.project_kind.toUpperCase()} ${a.subdir ? `${a.subdir}/` : '루트'}`).join(', ')}`
+  const lines = repos.map((w) => `- ${w.project_name}: ${w.path} (branch ${w.branch}, ${w.in_place ? 'this is the original clone folder shared with other work; ask the user before any git command that switches or resets branches' : `branched from ${w.base_branch}`})${w.apps.length > 1
+    ? `. Apps in this repository: ${w.apps.map((a) => `${a.project_kind.toUpperCase()} ${a.subdir ? `${a.subdir}/` : 'root'}`).join(', ')}`
     : ''}`);
   if (db) {
     return [
+      LANGUAGE_RULE,
       ...dbChatLines(db),
-      '이 세션의 워크트리(읽기만 한다):',
+      'Worktrees of this session (read only):',
       ...lines,
-      '사용자가 정해야 할 것이 생기면 추측하지 말고 AskUserQuestion으로 묻는다.',
+      'When something needs the user to decide, do not guess; ask with AskUserQuestion.',
     ].join('\n');
   }
   const sideLines = side ? [
-    '이 대화는 세션의 추가 대화다. 같은 워크트리에서 메인 대화의 Claude가 다른 작업을 동시에 하고 있을 수 있다.',
-    '요청받은 일만 좁게 고치고, 관련 없는 파일은 건드리지 않는다. 파일을 고치기 직전에 다시 읽어 최신 내용 위에 고친다. git stash, checkout, reset처럼 워크트리 전체를 바꾸는 명령은 쓰지 않는다.',
-    '세션의 작업 목록은 메인 대화가 관리하므로 이 대화에서는 바꾸지 않는다.',
+    'This is a side chat of the session. Claude in the main chat may be working on something else in the same worktree at the same time.',
+    'Change only what was asked, narrowly, and do not touch unrelated files. Re-read a file right before editing it so you edit the latest content. Do not use commands that change the whole worktree, such as git stash, checkout, or reset.',
+    'The main chat manages the session task list, so do not change it from this chat.',
   ] : [];
   return [
+    LANGUAGE_RULE,
     ...sideLines,
-    '이 세션은 아래 git 워크트리에서만 작업한다. 원본 클론 폴더나 다른 워크트리는 수정하지 않는다.',
+    'This session works only in the git worktrees below. Do not modify the original clone folder or other worktrees.',
     ...lines,
-    '커밋, 푸시, PR 생성은 사용자가 도구에서 따로 실행하므로 요청받지 않으면 하지 않는다.',
-    '개발 서버는 도구가 띄우고 관리한다. 직접 띄우거나 끄지 말고, 메시지의 <tool_context>에 적힌 주소로 확인한다.',
-    '빌드·테스트·로그처럼 출력이 긴 명령은 `| tail -n 80`이나 조용한 옵션(-q 등)으로 실행한다. 명령 출력은 이후 모든 호출에서 다시 읽힌다. 실패하면 필요한 범위만 다시 본다.',
-    '화면 확인은 mcp__browser 도구로 한다.',
-    '환경값은 도구가 관리한다. 필요한 값이 없거나 틀렸으면 .env 파일을 만들거나 고치지 말고 mcp__studio__request_env_values로 요청한다.',
-    '다른 역할의 테스트 계정이 필요하면 mcp__studio__request_test_account로 요청한다. 두 요청 모두 사용자가 화면에서 확인해야 적용된다.',
-    '개발 DB의 데이터를 확인해야 하면 <tool_context>의 DB 연결에 mcp__studio__db_query로 질의한다. 읽기는 바로 실행되고, 데이터를 바꾸는 질의는 사용자가 SQL을 확인하고 승인해야 실행된다. DB 클라이언트를 Bash로 직접 쓰지 않는다.',
-    '느린 화면이나 쿼리를 볼 때는 mcp__studio__server_queries로 BE 서버 로그에서 센 쿼리 집계(호출 수, 행 수, N+1 같은 경고)를 보고, mcp__studio__db_explain으로 실행 계획과 인덱스를 본다. 고칠 때는 근거(집계, 계획, 매퍼 위치)를 함께 적고 매퍼 XML 등 코드 수정을 제안한다. 인덱스 DDL은 mcp__studio__db_query로 보내 사용자 승인을 받는다.',
+    'The user runs commit, push, and PR creation separately in the tool, so do not do them unless asked.',
+    'The tool starts and manages the dev servers. Do not start or stop them yourself; use the addresses in <tool_context> of each message.',
+    'Run commands with long output (build, test, logs) with `| tail -n 80` or quiet options (-q, etc.). Command output is re-read in every later call. On failure, look again only at the part you need.',
+    'Check screens with the mcp__browser tools.',
+    'The tool manages environment values. If a value is missing or wrong, do not create or edit .env files; request it with mcp__studio__request_env_values.',
+    'If you need a test account for another role, request it with mcp__studio__request_test_account. Both requests take effect only after the user confirms them on screen.',
+    'To check data in the dev DB, query a DB connection from <tool_context> with mcp__studio__db_query. Reads run immediately; data-changing statements run only after the user reviews and approves the SQL. Do not use DB clients directly through Bash.',
+    'For slow screens or queries, use mcp__studio__server_queries to see query stats counted from the BE server log (calls, rows, warnings such as N+1), and mcp__studio__db_explain to see execution plans and indexes. When fixing, cite the evidence (stats, plan, mapper location) and propose code changes such as mapper XML. Send index DDL through mcp__studio__db_query for user approval.',
     ...(erdConfigured() ? [DICT_RULE] : []),
-    '작업 중에 사용자가 정해야 할 것(요구사항이 애매함, 방법이 여럿임, 데이터를 바꿔도 되는지 등)이 생기면 추측하지 말고 AskUserQuestion으로 바로 묻는다. 답을 받으면 이어서 작업한다.',
-    '계획서, 화면설계서, DB 변경 설계서처럼 사람이 읽을 산출물은 mcp__studio__save_doc으로 HTML 문서로 저장한다. 저장소에 문서 파일을 만들지 않는다.',
-    '저장한 문서 목록은 메시지의 <tool_context>에 나온다. 사용자가 문서를 언급하면 그 경로의 파일을 Read로 읽어 따른다.',
-    '개발을 마치고 완료 보고서를 요청받으면 아래 순서를 따른다.',
+    'If something comes up that the user must decide (unclear requirements, several possible approaches, whether data may be changed, etc.), do not guess; ask right away with AskUserQuestion, then continue with the answer.',
+    'Save documents for people (plan, screen spec, DB change spec) with mcp__studio__save_doc (plan and DB change spec in Markdown, screen spec in HTML). Do not create document files in the repository.',
+    'Saved documents are listed in <tool_context> of each message. When the user mentions a document, Read the file at that path and follow it.',
+    'When development is done and the user asks for a completion report, follow these steps.',
     REPORT_INSTRUCTIONS,
-    '<tool_context>에 작업 목록이 있으면 그 목록대로 진행한다. 항목을 시작하기 전에 doing으로, 끝나면 바로 done으로 mcp__studio__set_tasks를 불러 바꾼다(목록 전체를 보낸다). doing은 지금 하는 한 항목만 둔다. 하지 않기로 한 항목은 skipped와 이유를 note에 적는다.',
-    '작업 목록은 사용자 화면에 항상 보인다. 계획에 없던 일을 하게 되면 목록에 항목을 더한다. 할 일이 여럿인 큰 작업은 계획 모드가 아니어도 목록을 만들어 진행한다.',
+    'If <tool_context> has a task list, work through it in order. Before starting an item, set it to doing; as soon as it is finished, set it to done, by calling mcp__studio__set_tasks (send the whole list). Keep only the one item you are working on as doing. For items you decide not to do, set skipped and put the reason in note.',
+    'The task list is always visible on the user screen. If you take on work that was not in the plan, add an item. For large work with several steps, create a list even outside plan mode.',
   ].join('\n');
 }
 
@@ -141,67 +153,67 @@ function runtimeContext(sessionId: number, chatId: number, dbs: (DbConnection & 
   const accounts = accountsOf(sessionId);
   const lines: string[] = [];
   if (ports.length) {
-    lines.push('실행 중인 개발 서버:', ...ports.map((p) => `- ${p.project_name}: ${p.url} (${p.status})`));
-    lines.push('핫 리로드가 안 되는 서버(예: Spring)는 코드를 바꾼 뒤 사용자에게 서버 재시작을 부탁한다.');
+    lines.push('Running dev servers:', ...ports.map((p) => `- ${p.project_name}: ${p.url} (${p.status})`));
+    lines.push('For servers without hot reload (e.g. Spring), ask the user to restart the server after changing code.');
   } else {
-    lines.push('지금 실행 중인 개발 서버가 없다. 화면 확인이 필요하면 사용자에게 서버 실행을 부탁한다.');
+    lines.push('No dev server is running now. If you need to check a screen, ask the user to start the servers.');
   }
   const tasks = chatId === 0 ? tasksForContext(sessionId) : null;
   if (tasks) lines.push(tasks);
   const docs = listDocs(sessionId);
   if (docs.length) {
-    lines.push('이 세션의 산출물 (계획서·화면설계서·테스트 결과서·완료 보고서, 필요하면 Read로 읽는다):');
-    lines.push(...docs.map((d) => `- ${d.name} "${d.title}" (${KIND_LABEL[d.kind]}, ${d.version}판): ${d.path}`));
+    lines.push('Documents of this session (plan, screen spec, DB change spec, test report, completion report; Read them when needed):');
+    lines.push(...docs.map((d) => `- ${d.name} "${d.title}" (${KIND_LABEL[d.kind]}, v${d.version}): ${d.path}`));
   }
   if (dbs.length) {
-    lines.push('질의할 수 있는 DB 연결 (mcp__studio__db_query의 connection_id, 켜짐은 서버 실행 때 쓰는 연결):');
-    lines.push(...dbs.map((c) => `- #${c.id} ${c.name}: ${describeConnection(c)} · ${c.project_name}${c.enabled ? ' · 켜짐' : ''}${engineSupported(c) ? '' : ' · 질의 지원 안 함'}`));
+    lines.push('DB connections you can query (connection_id for mcp__studio__db_query; "enabled" is the connection used when running servers):');
+    lines.push(...dbs.map((c) => `- #${c.id} ${c.name}: ${describeConnection(c)} · ${c.project_name}${c.enabled ? ' · enabled' : ''}${engineSupported(c) ? '' : ' · queries not supported'}`));
   }
   lines.push(...dictContextLines(sessionId));
   if (accounts.length) {
-    lines.push('화면 확인용 테스트 계정 (다른 세션과 같이 쓴다. 역할이 다르면 메모를 보고 골라 쓴다):');
+    lines.push('Test accounts for checking screens (shared with other sessions; pick by the note when roles differ):');
     lines.push(...accounts.map((a) => `- ${a.login} / ${a.password}${a.note ? ` (${a.note})` : ''}`));
   }
   return `<tool_context>\n${lines.join('\n')}\n</tool_context>`;
 }
 
-const KIND_LABEL = { plan: '계획서', screen: '화면설계서', db: 'DB 변경 설계서', test: '테스트 결과서', report: '완료 보고서', other: '문서' } as const;
+const KIND_LABEL = { plan: 'plan', screen: 'screen spec', db: 'DB change spec', test: 'test report', report: 'completion report', other: 'document' } as const;
 
 /** 개발을 마친 뒤 완료 보고서를 쓰는 순서. 계획·작업 목록·실제 변경·검증 결과를 맞대어 사실만 적는다. */
 const REPORT_INSTRUCTIONS = [
-  '1. <tool_context>의 산출물(계획서·화면설계서·DB 변경 설계서·테스트 결과서)과 작업 목록을 Read로 읽는다. 없는 문서는 없다고 적는다.',
-  '2. 저장소마다 분기한 브랜치와 비교해 실제로 바뀐 것을 확인한다: git diff --stat <분기 브랜치>...HEAD, git status --short. 내용은 필요한 파일만 읽는다.',
-  '3. 보고서에 담을 것:',
-  '   - 요약: 무엇을 왜 했고 결과가 어떤지 두세 문장.',
-  '   - 계획 대비 결과: 계획서 단계와 작업 목록 항목마다 완료·안 함·계획과 달라짐을 표로 적고, 달라졌으면 이유와 근거 파일을 붙인다. 맨 위에 반영한 항목 수/전체를 적는다.',
-  '   - 바뀐 내용: 저장소별로 바뀐 파일과 이유. 데이터·API·설정·환경값 변경은 따로 묶는다.',
-  '   - 화면: 화면이 바뀌었으면 화면설계서와 다른 점.',
-  '   - DB: DB를 바꿨으면 DB 변경 설계서와 다른 점, 용어사전과 맞춘 결과(dict_check로 다시 확인한 위반 수)와 아직 승인 안 된 단어·용어·ERD 요청.',
-  '   - 검증: 실제로 실행한 빌드·테스트·화면 확인과 그 결과, 테스트 결과서 요약. 실행하지 않았거나 확인하지 못한 것은 그렇다고 적는다.',
-  '   - 남은 일과 알려진 문제, 리뷰어가 꼭 볼 곳, 배포·실행할 때 주의할 점(마이그레이션, 새 환경값 등).',
-  '4. 확인한 사실만 쓴다. 실행하지 않은 테스트를 통과했다고 쓰지 않고, 추측은 추측이라고 적는다.',
-  '5. 보고서를 쓰는 동안 코드는 고치지 않는다. 고칠 것을 찾으면 남은 일에 적는다.',
-  '6. mcp__studio__save_doc(kind "report", name "report")으로 저장한다. 제목은 "<티켓> 완료 보고서". 다시 요청받으면 같은 name으로 새 판을 저장한다.',
-  '   문서는 한국어로, CSS를 <style>에 넣은 완결된 HTML로 만든다. 다른 산출물은 이름으로 언급한다.',
-  '7. 저장한 뒤 대화에는 결과 요약 세 줄과 남은 일만 짧게 남긴다.',
+  '1. Read the documents in <tool_context> (plan, screen spec, DB change spec, test report) and the task list. If a document does not exist, say so.',
+  '2. For each repository, check what actually changed against the branch it was branched from: git diff --stat <base branch>...HEAD, git status --short. Read only the files you need.',
+  '3. The report contains:',
+  '   - Summary: two or three sentences on what was done, why, and the result.',
+  '   - Plan vs. result: a table with each plan step and task item marked done / not done / changed from plan; when changed, add the reason and the evidence file. At the top, write items reflected / total.',
+  '   - Changes: changed files and reasons per repository. Group data, API, config, and environment value changes separately.',
+  '   - Screens: if screens changed, how they differ from the screen spec.',
+  '   - DB: if the DB changed, how it differs from the DB change spec, the dictionary check result (violation count re-checked with dict_check), and word/term/ERD requests not yet approved.',
+  '   - Verification: builds, tests, and screen checks actually run and their results, plus a summary of the test report. State clearly what you did not run or could not check.',
+  '   - Remaining work and known issues, places reviewers must look at, and cautions for deploying or running (migrations, new environment values, etc.).',
+  '4. Write only facts you checked. Never say a test passed if you did not run it, and label guesses as guesses.',
+  '5. Do not modify code while writing the report. If you find something to fix, list it under remaining work.',
+  '6. Save with mcp__studio__save_doc(kind "report", name "report"). Title: "<ticket> 완료 보고서". If asked again, save a new version with the same name.',
+  '   Write the document in Korean as complete HTML with CSS in <style>. Refer to other documents by name.',
+  '7. After saving, leave only a three-line summary of the result and the remaining work in the chat.',
 ].join('\n');
 
-/** 계획 모드에서 따를 순서. 산출물을 HTML 문서로 남기고, 사용자가 확인한 뒤에만 실행한다. */
+/** 계획 모드에서 따를 순서. 산출물을 문서로 남기고(계획서·DB 변경 설계서는 Markdown, 화면설계서는 HTML), 사용자가 확인한 뒤에만 실행한다. */
 const PLAN_INSTRUCTIONS = [
-  '1. 코드를 읽어 요청을 이해한다. 계획을 정하는 데 필요한데 코드로 알 수 없는 것은 AskUserQuestion으로 바로 묻고, 답을 계획에 반영한다. 사소한 것은 계획서의 "확인할 것"에 적는다.',
-  '2. 계획서를 mcp__studio__save_doc(kind "plan", name "plan")으로 저장한다. 목표, 바꿀 파일과 이유, 단계, 데이터·API 변경, 영향 범위, 테스트 방법, 확인할 것을 담는다.',
-  '   업무 흐름이 걸린 작업(여러 역할이 주고받는 절차, 신청·승인·정산 같은 단계, 상태가 바뀌는 데이터)이면 계획서에 비즈니스 플로우 그림을 넣는다. 단순한 버그 수정이나 화면 문구 변경처럼 흐름과 상관없으면 넣지 않는다.',
-  '   그림은 문서 안에 직접 쓴 인라인 <svg>로 그린다(스크립트·Mermaid·외부 이미지는 문서 화면에서 보이지 않는다). 역할별 가로 레인, 단계 상자, 화살표, 분기 조건 글자를 넣고, 이번 작업으로 새로 생기거나 바뀌는 단계는 색으로 구분하고 범례를 단다.',
-  '   데이터 상태가 바뀌면(예: 대기→승인→체결) 상태 전이 그림도 따로 그린다. 그림 아래에 단계별 설명(누가, 무엇을, 어떤 API·테이블)을 짧은 표로 붙인다. 글자는 한국어로, 겹치지 않게 viewBox를 넉넉히 잡는다.',
-  '3. 화면이 새로 생기거나 바뀌면 화면마다 화면설계서를 mcp__studio__save_doc(kind "screen", name "screen-<영문 화면 이름>")으로 저장한다.',
-  '   화면설계서는 실제 화면과 같은 배치의 와이어프레임(HTML/CSS로 그린 것)에 번호 표시를 달고, 옆이나 아래에 번호별 설명 표(항목, 동작, 검증 규칙, 데이터 출처)를 둔다.',
-  '   바뀌는 화면이면 지금 화면과 달라지는 부분을 표시한다. 상태(빈 목록, 오류, 로딩, 권한별 차이)가 있으면 함께 그린다.',
-  '4. 테이블·컬럼·인덱스·제약·공통코드를 추가·변경·삭제하거나 기존 데이터를 옮기거나 고쳐야 하면, 계획서와 별도로 DB 변경 설계서를 mcp__studio__save_doc(kind "db", name "db")으로 저장한다. 계획서에는 바뀌는 테이블과 요약만 적고 문서 이름으로 언급한다. 조회만 바뀌면 만들지 않는다.',
-  '   담을 것: 테이블별 변경 표(구분 추가·변경·삭제, 논리명, 컬럼 물리명, 타입·길이, NULL, 기본값, 설명), 인덱스·제약, DDL 또는 Liquibase changeset 초안(이미 적용된 changeset은 고치지 않고 새로 더함), 기존 데이터 이관·채우기 SQL, 되돌리는 방법, 영향받는 매퍼·엔티티·API·화면.',
-  '   용어 확인: 새로 쓰거나 바꾸는 테이블·컬럼 이름마다 erd-vibe 용어사전과 맞춘 결과를 표로 보여 준다(논리명, 쓸 이름, 판정: 표준 / 표준으로 고침(원래 이름) / 등록 요청함, 도메인). mcp__studio__dict_lookup으로 실제 확인한 결과만 적는다. 미등록 단어·용어는 규칙대로 등록을 요청하고, ERD 변경이 필요하면 mcp__studio__erd_request_change로 요청한 뒤 두 요청을 표 아래에 모아 "사용자 승인 필요"로 표시한다. 문서 맨 위 요약에 "용어사전 확인: 컬럼 N개 중 표준 N, 고침 N, 등록 요청 N"을 적는다. 용어사전이 연결되지 않았으면 "용어사전 미연결로 확인하지 못함"이라고 적는다.',
-  '5. 문서는 한국어로 쓰고, 외부 파일이나 스크립트 없이 CSS를 <style>에 넣은 완결된 HTML로 만든다. 계획서에서 화면설계서와 DB 변경 설계서를 이름으로 언급한다.',
-  '6. 계획의 실행 단계를 mcp__studio__set_tasks로 작업 목록에 올린다(모두 todo). 한 항목은 확인할 수 있는 한 가지 일로, 보통 3~10개. 사용자가 승인 뒤에도 이 목록으로 진행을 본다. 목록에 없는 준비 작업(확인, 조사)도 해야 하면 그것도 항목으로 넣는다.',
-  '7. 다 저장했으면 ExitPlanMode로 계획 요약을 보낸다. 사용자가 문서를 보고 승인해야 실행한다. 고쳐 달라는 의견이 오면 문서를 같은 name으로 다시 저장하고 다시 ExitPlanMode를 부른다.',
+  '1. Read the code to understand the request. If something needed to decide the plan cannot be learned from the code, ask right away with AskUserQuestion and reflect the answer in the plan. Put minor questions under "확인할 것" in the plan.',
+  '2. Save the plan with mcp__studio__save_doc(kind "plan", name "plan", markdown). Include the goal, files to change and why, steps, data/API changes, impact, how to test, and open questions.',
+  '   If the work involves a business flow (procedures passed between several roles, steps such as apply/approve/settle, data whose state changes), add a business flow diagram to the plan. Skip it for work unrelated to flow, such as simple bug fixes or wording changes.',
+  '   Draw diagrams as inline <svg> written directly in the Markdown body (with a blank line before and after; scripts, Mermaid, and external images do not render in the document view). Use horizontal lanes per role, step boxes, arrows, and branch-condition labels; color the steps added or changed by this work and add a legend.',
+  '   If data state changes (e.g. 대기→승인→체결), draw a separate state transition diagram. Under each diagram add a short table describing each step (who, what, which API/table). Use Korean labels and a generous viewBox so text does not overlap.',
+  '3. For each new or changed screen, save a screen spec with mcp__studio__save_doc(kind "screen", name "screen-<english screen name>", html).',
+  '   A screen spec is a wireframe (drawn with HTML/CSS) laid out like the real screen, with numbered markers, and next to or below it a table explaining each number (item, behavior, validation rule, data source).',
+  '   For a changed screen, mark what differs from the current screen. If there are states (empty list, error, loading, differences by permission), draw them too.',
+  '4. If tables, columns, indexes, constraints, or common codes are added, changed, or removed, or existing data must be moved or fixed, save a DB change spec separately from the plan with mcp__studio__save_doc(kind "db", name "db", markdown). In the plan, write only the changed tables and a summary, and refer to the document by name. Do not create it when only queries change.',
+  '   Contents: a change table per table (change type add/change/remove, logical name, column physical name, type/length, NULL, default, description), indexes and constraints, a DDL or Liquibase changeset draft (never edit an applied changeset; add a new one), data migration/backfill SQL, how to roll back, and affected mappers/entities/APIs/screens.',
+  '   Dictionary check: for every table/column name you add or change, show in a table how it was matched against the erd-vibe dictionary (logical name, name to use, verdict: 표준 / 표준으로 고침(원래 이름) / 등록 요청함, domain). Include only results you actually checked with mcp__studio__dict_lookup. Request registration of unregistered words/terms per the rules, request ERD changes with mcp__studio__erd_request_change, and list both kinds of requests under the table marked "사용자 승인 필요". In the summary at the top of the document write "용어사전 확인: 컬럼 N개 중 표준 N, 고침 N, 등록 요청 N". If the dictionary is not connected, write "용어사전 미연결로 확인하지 못함".',
+  '5. Write documents in Korean. The plan and DB change spec are Markdown (# for the title, ## for sections, GFM tables); the screen spec is complete HTML with CSS in <style> and no external files or scripts. Refer to the screen specs and the DB change spec by name in the plan.',
+  '6. Put the execution steps of the plan into the task list with mcp__studio__set_tasks (all todo). Each item is one checkable piece of work, usually 3 to 10 items. The user follows progress with this list after approval. If preparation work not in the list is needed (checks, investigation), add it as items too.',
+  '7. When everything is saved, send a plan summary with ExitPlanMode. Execution starts only after the user reviews the documents and approves. If feedback asks for changes, save the documents again with the same name and call ExitPlanMode again.',
 ].join('\n');
 
 /**
@@ -264,36 +276,36 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
     tools: [
       tool(
         'request_env_values',
-        '개발 서버 실행에 필요한 환경값을 추가하거나 바꾸자고 사용자에게 요청한다. 사용자가 값을 확인·수정해 승인하면 도구가 관리하는 환경값에 들어간다. 값을 모르면 value를 비워 두면 사용자가 채운다.',
+        'Ask the user to add or change environment values needed to run the dev servers. After the user reviews, edits, and approves them, they go into the environment values managed by the tool. If you do not know a value, leave value empty and the user fills it in.',
         {
-          project: z.string().describe('워크트리의 프로젝트 이름'),
+          project: z.string().describe('Project name of the worktree'),
           vars: z.array(z.object({
             key: z.string(),
-            value: z.string().optional().describe('제안 값. 모르면 생략'),
-            reason: z.string().describe('이 값이 필요한 이유 한 문장'),
+            value: z.string().optional().describe('Suggested value. Omit if unknown'),
+            reason: z.string().describe('One sentence on why this value is needed (in Korean)'),
           })).min(1),
-          reason: z.string().describe('요청 전체 이유 한 문장'),
+          reason: z.string().describe('One sentence on why the whole request is needed (in Korean)'),
         },
         async (args) => text(await requestEnv(sessionId, chatId, args.project, args.vars, args.reason)),
       ),
       tool(
         'request_test_account',
-        '특정 역할의 테스트 계정을 찾는다. 메모에 그 역할이 적힌 계정과 비밀번호를 돌려주고, 없으면 사용자에게 추가를 부탁하라고 알려 준다.',
+        'Find a test account for a specific role. Returns accounts whose note mentions that role, with passwords; if none, tells you to ask the user to add one.',
         {
-          role: z.string().describe('필요한 역할. 예: 사업자, 지자체(광역), 관리자'),
-          reason: z.string().describe('필요한 이유 한 문장'),
+          role: z.string().describe('Role needed, as written in account notes. e.g. 사업자, 지자체(광역), 관리자'),
+          reason: z.string().describe('One sentence on why it is needed (in Korean)'),
         },
         async (args) => text(requestAccount(sessionId, args.role)),
       ),
       tool(
         'set_tasks',
-        '작업 목록을 통째로 바꾼다. 계획을 세우면 단계를 올리고, 진행하면서 상태를 바꿔 다시 보낸다. 사용자 화면 위쪽에 항상 보인다.',
+        'Replace the whole task list. Post the steps when you make a plan, then send it again with updated statuses as you progress. Always visible at the top of the user screen.',
         {
-          title: z.string().describe('목록 제목. 보통 계획 제목'),
+          title: z.string().describe('List title in Korean, usually the plan title'),
           tasks: z.array(z.object({
-            title: z.string().describe('한 가지 일. 예: "RegoSellOrderFacade.buyRequest에 수량 검증 추가"'),
+            title: z.string().describe('One piece of work, in Korean. e.g. "RegoSellOrderFacade.buyRequest에 수량 검증 추가"'),
             status: z.enum(['todo', 'doing', 'done', 'skipped']),
-            note: z.string().optional().describe('진행 메모나 하지 않은 이유. 짧게'),
+            note: z.string().optional().describe('Short progress note or reason for skipping, in Korean'),
           })),
         },
         async (args) => {
@@ -306,13 +318,15 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'save_doc',
-        '계획서, 화면설계서, 완료 보고서 같은 산출물을 HTML 문서로 저장한다. 사용자는 화면에서 바로 보고, 다음 프롬프트에서 다시 참조한다. '
-          + '같은 name으로 저장하면 새 판이 되고 예전 판은 남는다. 저장소에는 아무것도 쓰지 않는다.',
+        'Save a document such as a plan, screen spec, DB change spec, or completion report. The user sees it on screen right away, and it is referenced again in later prompts. '
+          + 'Send the plan and DB change spec as markdown (the tool renders the HTML view) and the screen spec as complete html. Completion reports and other documents may use either. '
+          + 'Saving with the same name creates a new version and keeps the old ones. Nothing is written to the repository. Document content must be in Korean.',
         {
-          name: z.string().describe('영문 소문자·숫자·하이픈. 계획서는 "plan", 화면설계서는 "screen-<화면>" (예: screen-member-list), DB 변경 설계서는 "db", 완료 보고서는 "report"'),
-          title: z.string().describe('사람이 읽을 제목. 예: "회원 목록 화면설계서"'),
-          kind: z.enum(['plan', 'screen', 'db', 'report', 'other']).describe('plan: 계획서, screen: 화면설계서, db: DB 변경 설계서, report: 개발 완료 보고서, other: 그 밖의 문서'),
-          html: z.string().describe('<html>로 시작하는 완결된 HTML. CSS는 <style>에 넣고 외부 파일·스크립트·이미지 링크는 쓰지 않는다.'),
+          name: z.string().describe('Lowercase letters, digits, hyphens. Plan: "plan", screen spec: "screen-<screen>" (e.g. screen-member-list), DB change spec: "db", completion report: "report"'),
+          title: z.string().describe('Human-readable title in Korean. e.g. "회원 목록 화면설계서"'),
+          kind: z.enum(['plan', 'screen', 'db', 'report', 'other']).describe('plan: plan, screen: screen spec, db: DB change spec, report: completion report, other: any other document'),
+          markdown: z.string().optional().describe('Markdown body (GFM tables allowed). Put diagrams as inline <svg> with a blank line before and after. Use this for the plan and DB change spec.'),
+          html: z.string().optional().describe('Complete HTML starting with <html>. Put CSS in <style>; no external files, scripts, or image links. Use this for screen specs.'),
         },
         async (args) => {
           try {
@@ -328,12 +342,12 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'db_query',
-        `개발 DB에 SQL 한 문장을 실행한다. SELECT·SHOW·EXPLAIN 같은 읽기는 롤백하는 트랜잭션에서 바로 실행하고 최대 ${MAX_ROWS}행을 탭으로 나눈 표로 돌려준다. `
-          + '데이터나 스키마를 바꾸는 질의는 사용자가 SQL을 확인·승인해야 실행되고, 그때까지 기다린다. 한 번에 한 문장만 보낸다.',
+        `Run one SQL statement on the dev DB. Reads such as SELECT, SHOW, EXPLAIN run immediately in a rolled-back transaction and return up to ${MAX_ROWS} rows as a tab-separated table. `
+          + 'Statements that change data or schema run only after the user reviews and approves the SQL; the call waits until then. Send one statement at a time.',
         {
-          connection_id: z.number().int().describe('<tool_context>에 나온 DB 연결 번호(#뒤 숫자)'),
-          sql: z.string().min(1).describe('SQL 한 문장. 끝의 세미콜론은 없어도 된다'),
-          reason: z.string().describe('이 질의로 확인하거나 바꾸려는 것 한 문장'),
+          connection_id: z.number().int().describe('DB connection number from <tool_context> (the number after #)'),
+          sql: z.string().min(1).describe('One SQL statement. A trailing semicolon is optional'),
+          reason: z.string().describe('One sentence, in Korean, on what this statement checks or changes'),
         },
         async (args) => {
           if (opts.dbOnly !== null && args.connection_id !== opts.dbOnly) return fail(`이 대화는 DB 연결 #${opts.dbOnly} 전용입니다.`);
@@ -355,14 +369,14 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'server_queries',
-        '이 세션 BE 서버 로그에서 센 쿼리 모양별 집계를 본다. 모양(값을 ?로 바꾼 SQL), 매퍼 id, 호출 수, 평균·최대 행 수, 시간(로그에 있을 때), 경고(N+1 의심, 대량 결과, 느림 등). '
-          + 'key를 주면 그 쿼리의 예시 SQL(로그에서 잡은 값을 넣은 것)과 파라미터를 함께 돌려준다.',
+        'View per-shape query stats counted from the BE server logs of this session: shape (SQL with values replaced by ?), mapper id, calls, average/max rows, time (when logged), warnings (suspected N+1, large result, slow, etc.). '
+          + 'With key, also returns an example SQL for that query (filled with values captured from the log) and its parameters.',
         {
-          project: z.string().optional().describe('워크트리 프로젝트 이름. 생략하면 모든 BE'),
-          sort: z.enum(['calls', 'rows', 'time', 'recent']).optional().describe('정렬. 기본 calls(호출 수)'),
-          warnings_only: z.boolean().optional().describe('경고가 붙은 쿼리만'),
-          limit: z.number().int().min(1).max(100).optional().describe('최대 개수. 기본 30'),
-          key: z.string().optional().describe('한 쿼리의 상세를 볼 때 그 key'),
+          project: z.string().optional().describe('Worktree project name. Omit for all BE projects'),
+          sort: z.enum(['calls', 'rows', 'time', 'recent']).optional().describe('Sort order. Default calls'),
+          warnings_only: z.boolean().optional().describe('Only queries with warnings'),
+          limit: z.number().int().min(1).max(100).optional().describe('Max count. Default 30'),
+          key: z.string().optional().describe('The key of one query to see its details'),
         },
         async (args) => {
           const session = getSession(sessionId);
@@ -395,10 +409,10 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'db_explain',
-        'DB 연결에 SELECT 한 문장의 실행 계획과 관련 테이블의 인덱스·행 수를 본다. 한 트랜잭션에서 돌리고 롤백해 DB에 아무것도 남기지 않는다(Oracle은 PLAN_TABLE을 쓰고 롤백).',
+        'Show the execution plan of one SELECT statement on a DB connection, plus indexes and row counts of the related tables. Runs in one transaction and rolls back, leaving nothing in the DB (Oracle writes PLAN_TABLE, then rolls back).',
         {
-          connection_id: z.number().int().describe('<tool_context>에 나온 DB 연결 번호'),
-          sql: z.string().min(1).describe('SELECT 한 문장. 파라미터 자리는 값을 넣어 보낸다'),
+          connection_id: z.number().int().describe('DB connection number from <tool_context>'),
+          sql: z.string().min(1).describe('One SELECT statement. Fill parameter placeholders with values'),
         },
         async (args) => {
           if (opts.dbOnly !== null && args.connection_id !== opts.dbOnly) return fail(`이 대화는 DB 연결 #${opts.dbOnly} 전용입니다.`);
@@ -415,8 +429,8 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'dict_lookup',
-        'erd-vibe 용어사전(단어·용어·도메인)을 찾는다. 논리명(거래일자), 물리명(TR_DT, TRADE_DATE), camelCase(trDt), 단어(거래) 모두 된다. 식별자를 넣으면 표준인지, 아니면 표준 이름이 무엇인지도 판정한다.',
-        { query: z.string().describe('찾을 말. 비우면 전체 목록 앞부분'), refresh: z.boolean().optional().describe('erd-vibe에서 사전을 다시 받고 찾는다(방금 등록·수정한 것이 안 보일 때)') },
+        'Search the erd-vibe dictionary (words, terms, domains). Accepts a logical name (거래일자), physical name (TR_DT, TRADE_DATE), camelCase (trDt), or a word (거래). Given an identifier, it also judges whether it is standard and, if not, what the standard name is.',
+        { query: z.string().describe('Text to search. Empty returns the start of the full list'), refresh: z.boolean().optional().describe('Reload the dictionary from erd-vibe before searching (when something just registered or edited is not visible)') },
         async (args) => {
           try {
             if (args.refresh) await refreshSessionDictionary(getSession(sessionId)!);
@@ -429,17 +443,17 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'dict_check',
-        '워크트리 소스(MyBatis 매퍼, SQL·DDL, Liquibase, JPA @Column)의 컬럼 이름을 용어사전·ERD와 맞대어 위반(비표준 표기, 미등록 용어·단어, 도메인 불일치, ERD에 없음, 같은 용어 혼용)을 (테이블, 컬럼) 단위로 찾는다. '
-          + 'changed는 기준 브랜치에서 바뀐 파일만 본다. 기준선이 있으면 기준선에 없는 키만 막힘. 결과가 길면 section·offset·limit으로 나눠 보고, 전체는 export로 JSON 파일을 받는다.',
+        'Check column names in worktree sources (MyBatis mappers, SQL/DDL, Liquibase, JPA @Column) against the dictionary and ERD, and find violations (non-standard spelling, unregistered term/word, domain mismatch, missing from ERD, mixed spellings of one term) per (table, column). '
+          + 'changed looks only at files changed from the base branch. If a baseline exists, only keys not in the baseline block. For long results, page with section/offset/limit; use export to get everything as a JSON file.',
         {
           scope: z.enum(['changed', 'all']).default('changed'),
           ...checkFilterShape,
-          section: z.enum(['all', 'findings', 'held', 'groups', 'mixed', 'erd']).optional().describe('all: 요약+앞부분(기본), findings: 소스 위반, held: 보류·허용, groups: 원인별 묶음, mixed: 표기 혼용, erd: ERD 컬럼 위반'),
+          section: z.enum(['all', 'findings', 'held', 'groups', 'mixed', 'erd']).optional().describe('all: summary + first part (default), findings: source violations, held: on hold/allowed, groups: grouped by cause, mixed: mixed spellings, erd: ERD column violations'),
           offset: z.number().int().min(0).optional(),
-          limit: z.number().int().min(1).max(500).optional().describe('한 번에 볼 줄 수(최대 500)'),
-          detail: z.boolean().optional().describe('위반마다 위치 전부(도메인 불일치는 틀린 타입이 적힌 테이블.컬럼·타입·파일:줄)'),
-          export: z.boolean().optional().describe('결과 전체를 세션 보관함에 JSON으로 쓰고 경로를 알려 준다'),
-          refresh: z.boolean().optional().describe('erd-vibe 사전·ERD를 다시 받고 검사한다'),
+          limit: z.number().int().min(1).max(500).optional().describe('Lines per page (max 500)'),
+          detail: z.boolean().optional().describe('All locations per violation (for domain mismatch: table.column, type, file:line where the wrong type is written)'),
+          export: z.boolean().optional().describe('Write the full result as JSON to the session archive and return the path'),
+          refresh: z.boolean().optional().describe('Reload the erd-vibe dictionary and ERD before checking'),
         },
         async (args) => {
           try {
@@ -455,12 +469,12 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'schema_check',
-        'Liquibase changelog를 순서대로 적용한 최종 스키마와 매퍼 XML·JPA 엔티티가 쓰는 테이블·컬럼을 맞댄다. 없는 컬럼, rename·drop된 옛 이름 사용을 찾는다(이번 변경의 새 줄이면 PR이 막힌다). changed는 바뀐 파일만.',
+        'Compare the final schema (Liquibase changelogs applied in order) with the tables and columns used by mapper XML and JPA entities. Finds missing columns and uses of renamed/dropped old names (new lines in this change block the PR). changed checks only changed files.',
         {
           scope: z.enum(['changed', 'all']).default('changed'),
           tables: checkFilterShape.tables, exclude_paths: checkFilterShape.exclude_paths,
           offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(500).optional(),
-          detail: z.boolean().optional().describe('불일치마다 위치 전부'), export: z.boolean().optional().describe('전체를 JSON 파일로'),
+          detail: z.boolean().optional().describe('All locations per mismatch'), export: z.boolean().optional().describe('Write everything to a JSON file'),
         },
         async (args) => {
           try {
@@ -474,16 +488,16 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'dict_request_term',
-        'erd-vibe 용어사전에 없는 용어(또는 단어)를 등록하자고 요청한다. 사용자가 화면에서 승인해야 팀 공유 사전에 들어간다. 기다리지 않고 바로 돌아오므로 요청한 표준 이름으로 개발을 이어 간다. 단어가 사전에 없으면 kind "word"로 단어부터 요청한다. '
-          + '규칙: 용어 논리명은 단어를 이은 것, 물리명은 단어 영문명을 밑줄로 이은 것, 약어명은 단어 약어를 밑줄로 이은 것이고 도메인은 도메인사전에 있어야 한다. 단어 영문명은 대문자·밑줄, 약어는 대문자·숫자이며 다른 단어와 겹치면 안 된다. 어긋나면 이유를 돌려준다.',
+        'Request registration of a term (or word) missing from the erd-vibe dictionary. It enters the shared team dictionary only after the user approves it on screen. Returns immediately without waiting, so continue development with the requested standard name. If a word is missing from the dictionary, request the word first with kind "word". '
+          + 'Rules: a term logical name joins its words, the physical name joins the words\' English names with underscores, the abbreviated name joins the words\' abbreviations with underscores, and the domain must exist in the domain dictionary. A word\'s English name is uppercase with underscores; its abbreviation is uppercase letters/digits and must not collide with another word. Violations are returned with a reason.',
         {
           kind: z.enum(['term', 'word']),
-          logical_name: z.string().describe('term: 논리명(거래취소일자). word: 단어(취소)'),
-          physical_name: z.string().describe('term: 영문 전체 물리명(TRADE_CANCEL_DATE). word: 영문명(CANCEL)'),
-          abbr_name: z.string().optional().describe('term: 약어명(TR_CNCL_DT, 표준 이름). word: 약어(CNCL)'),
-          domain_name: z.string().optional().describe('term: 도메인사전의 도메인 이름'),
-          description: z.string().describe('정의 한두 문장'),
-          reason: z.string().describe('이 용어가 필요한 곳과 이유'),
+          logical_name: z.string().describe('term: logical name (거래취소일자). word: the word (취소)'),
+          physical_name: z.string().describe('term: full English physical name (TRADE_CANCEL_DATE). word: English name (CANCEL)'),
+          abbr_name: z.string().optional().describe('term: abbreviated name (TR_CNCL_DT, the standard name). word: abbreviation (CNCL)'),
+          domain_name: z.string().optional().describe('term: domain name from the domain dictionary'),
+          description: z.string().describe('Definition in one or two sentences, in Korean'),
+          reason: z.string().describe('Where this term is needed and why, in Korean'),
         },
         async (args) => {
           if (opts.dbOnly !== null) return fail('DB 대화에서는 등록 요청을 하지 않습니다.');
@@ -502,18 +516,18 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'erd_request_change',
-        '연결한 erd-vibe ERD에 테이블·컬럼을 추가하거나 바꾸자고 사용자에게 요청한다. 사용자가 ERD·용어 화면에서 고쳐 승인해야 반영된다. 기다리지 않고 바로 돌아온다. '
-          + '컬럼 물리명은 dict_lookup으로 확인한 표준 이름을 쓰고, term에 그 용어의 표준 이름을 넣으면 용어 연결도 채운다. 타입은 용어 도메인 타입을 쓴다.',
+        'Ask the user to add or change tables/columns in the linked erd-vibe ERD. Applied only after the user edits and approves it in the ERD/dictionary screen. Returns immediately without waiting. '
+          + 'Use the standard name checked with dict_lookup as the column physical name; putting the term standard name in term also fills the term link. Use the term domain type as the type.',
         {
           action: z.enum(['add_table', 'add_column', 'update_column', 'drop_column']),
-          table: z.string().min(1).describe('테이블 물리명'),
-          table_logical_name: z.string().optional().describe('add_table: 테이블 논리명'),
-          column: z.string().optional().describe('update_column·drop_column: 바꿀 컬럼 물리명'),
+          table: z.string().min(1).describe('Table physical name'),
+          table_logical_name: z.string().optional().describe('add_table: table logical name'),
+          column: z.string().optional().describe('update_column/drop_column: physical name of the column to change'),
           columns: z.array(z.object({
             physical_name: z.string(), logical_name: z.string(), data_type: z.string(),
-            is_primary_key: z.boolean().optional(), is_nullable: z.boolean().optional(), term: z.string().optional().describe('용어 표준 이름'),
-          })).optional().describe('add_table: 컬럼 전부. add_column: 컬럼 하나. update_column: 바꿀 값만 담은 하나'),
-          reason: z.string().describe('이 변경이 필요한 곳과 이유'),
+            is_primary_key: z.boolean().optional(), is_nullable: z.boolean().optional(), term: z.string().optional().describe('Term standard name'),
+          })).optional().describe('add_table: all columns. add_column: one column. update_column: one entry with only the values to change'),
+          reason: z.string().describe('Where this change is needed and why, in Korean'),
         },
         async (args) => {
           if (opts.dbOnly !== null) return fail('DB 대화에서는 ERD 변경 요청을 하지 않습니다.');
@@ -536,8 +550,8 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'erd_table',
-        '이 세션 워크스페이스에 연결한 erd-vibe ERD에서 테이블 정의(컬럼, 타입, PK, NULL, 연결된 용어)를 본다. 물리명이나 논리명, 일부만 넣어도 된다.',
-        { name: z.string().min(1), refresh: z.boolean().optional().describe('erd-vibe에서 ERD를 다시 받는다') },
+        'View a table definition (columns, types, PK, NULL, linked terms) from the erd-vibe ERD linked to this session workspace. Physical or logical name, or part of it, is fine.',
+        { name: z.string().min(1), refresh: z.boolean().optional().describe('Reload the ERD from erd-vibe') },
         async (args) => {
           try {
             if (args.refresh) await refreshSessionDictionary(getSession(sessionId)!);
@@ -550,7 +564,7 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'dict_reload',
-        'erd-vibe에서 용어·단어·도메인 사전과 연결한 ERD를 다시 받는다. erd-vibe 화면이나 다른 곳에서 바로 고친 것이 검사·찾기에 안 보일 때 쓴다(평소에는 1분마다 새로 받는다).',
+        'Reload the term/word/domain dictionaries and the linked ERD from erd-vibe. Use when edits just made in the erd-vibe screen or elsewhere are not visible in checks or searches (normally reloaded every minute).',
         {},
         async () => {
           try {
@@ -564,15 +578,15 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'dict_request_exception',
-        '용어 검사에서 이 위반을 예외로 두자고 사용자에게 요청한다. 사용자가 승인해야 반영된다. mode "ignore"는 검사에서 아예 뺀다. mode "hold"는 기준선 항목을 보류로 둬서 남은 일로는 세지만 위반·막힘 집계에서 뺀다(기준선이 있어야 한다). '
-          + 'table·issue를 비우면 그 컬럼 이름 전부에 걸린다. 고칠 수 있는 위반을 숨기는 데 쓰지 않는다.',
+        'Ask the user to make this dictionary-check violation an exception. Applied only after the user approves. mode "ignore" removes it from checks entirely. mode "hold" puts the baseline item on hold: still counted as remaining work but excluded from violation/blocking counts (requires a baseline). '
+          + 'Leaving table/issue empty applies to every use of that column name. Do not use this to hide violations that can be fixed.',
         {
           mode: z.enum(['ignore', 'hold']),
-          name: z.string().min(1).describe('컬럼 이름'),
-          table: z.string().optional().describe('테이블 물리명. 비우면 모든 테이블'),
-          issue: z.enum(ISSUES).optional().describe('위반 종류. 비우면 전부'),
-          note: z.string().min(1).describe('예외로 두는 사유(화면과 검사 결과에 남는다)'),
-          reason: z.string().optional().describe('요청 설명'),
+          name: z.string().min(1).describe('Column name'),
+          table: z.string().optional().describe('Table physical name. Empty for all tables'),
+          issue: z.enum(ISSUES).optional().describe('Violation kind. Empty for all'),
+          note: z.string().min(1).describe('Reason for the exception, in Korean (shown on screen and in check results)'),
+          reason: z.string().optional().describe('Request description, in Korean'),
         },
         async (args) => {
           if (opts.dbOnly !== null) return fail('DB 대화에서는 예외 요청을 하지 않습니다.');
@@ -587,8 +601,8 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'dict_request_baseline',
-        '지금 워크트리 전체 검사 결과를 기준선으로 저장하자고 사용자에게 요청한다. 승인하면 그때 전체 검사를 돌려 기준선에 더하고, 이후에는 기준선에 없는 (테이블, 컬럼, 위반 종류)만 PR을 막는다. 이미 있는 항목의 상태·메모는 그대로.',
-        { reason: z.string().describe('기준선을 저장하려는 이유') },
+        'Ask the user to save the current full worktree check result as the baseline. On approval, a full check runs and is added to the baseline; after that only (table, column, violation kind) not in the baseline block the PR. Status and notes of existing items stay as they are.',
+        { reason: z.string().describe('Why to save the baseline, in Korean') },
         async (args) => {
           if (opts.dbOnly !== null) return fail('DB 대화에서는 기준선 요청을 하지 않습니다.');
           try {
@@ -602,14 +616,14 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
       ),
       tool(
         'dict_request_edit',
-        'erd-vibe 사전의 용어·단어·도메인을 추가하거나 고치자고 사용자에게 요청한다(REST를 직접 부르지 않는다). 사용자가 바꾸기 전·후를 보고 승인해야 팀 공유 사전에 들어간다. '
-          + 'update는 target에 대상(용어는 표준 이름·물리명·논리명, 단어는 단어·약어, 도메인은 이름, 또는 id)을 넣고 values에는 바꿀 칸만 넣는다. 새 용어·단어 등록은 dict_request_term을 써도 된다.',
+        'Ask the user to add or edit a term/word/domain in the erd-vibe dictionary (never call the REST API directly). It enters the shared team dictionary only after the user reviews before/after and approves. '
+          + 'For update, put the target in target (term: standard/physical/logical name; word: word or abbreviation; domain: name; or an id) and only the fields to change in values. New terms/words may also be requested with dict_request_term.',
         {
           entity: z.enum(['term', 'word', 'domain']),
           action: z.enum(['create', 'update']),
-          target: z.string().optional().describe('update: 고칠 항목'),
+          target: z.string().optional().describe('update: the item to edit'),
           values: z.record(z.string(), z.string().nullable()).describe('term: logical_name, physical_name, physical_abbr_name, domain_name, description · word: name, english_name, abbreviation, definition · domain: name, data_type_default, data_type_oracle, data_type_mysql, data_type_postgresql, description'),
-          reason: z.string().describe('바꾸려는 이유와 영향(예: 이 용어를 쓰는 컬럼)'),
+          reason: z.string().describe('Reason and impact of the change (e.g. columns using this term), in Korean'),
         },
         async (args) => {
           if (opts.dbOnly !== null) return fail('DB 대화에서는 사전 수정 요청을 하지 않습니다.');
@@ -681,12 +695,12 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
     if (toolName === 'AskUserQuestion') {
       // 화면에 질문 카드를 띄우고 답을 받아 이어서 작업한다.
       const questions = Array.isArray(input.questions) ? (input.questions as Question[]) : [];
-      if (questions.length === 0) return { behavior: 'deny', message: '질문이 비어 있습니다.' };
+      if (questions.length === 0) return { behavior: 'deny', message: 'The question list is empty.' };
       const answers = await requestAnswers(sessionId, chatId, questions);
-      if (!answers) return { behavior: 'deny', message: '사용자가 질문에 답하지 않았습니다. 추측해서 진행하지 말고, 지금까지 한 것과 정해야 할 것을 정리해 이번 작업을 마치세요.' };
+      if (!answers) return { behavior: 'deny', message: 'The user did not answer the question. Do not proceed on guesses; summarize (in Korean) what you have done and what still needs deciding, and end this run.' };
       return { behavior: 'allow', updatedInput: { ...input, answers } };
     }
-    if (toolName !== 'ExitPlanMode') return { behavior: 'deny', message: '이 도구는 승인 화면이 없어 쓸 수 없습니다. 필요하면 사용자에게 직접 실행을 부탁하세요.' };
+    if (toolName !== 'ExitPlanMode') return { behavior: 'deny', message: 'This tool cannot be used because there is no approval screen for it. If needed, ask the user (in Korean) to run it themselves.' };
     let plan = typeof input.plan === 'string' ? input.plan : '';
     if (!plan && typeof input.planFilePath === 'string') { try { plan = fs.readFileSync(input.planFilePath, 'utf8'); } catch { /* 요약 없이 문서만 보여 준다 */ } }
     // ExitPlanMode가 본문을 넘기지 않으면 Claude가 마지막으로 쓴 글을 요약으로 보여 준다.
@@ -702,8 +716,8 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
     return {
       behavior: 'deny',
       message: d.feedback
-        ? `사용자가 계획을 고쳐 달라고 했습니다. 의견을 반영해 문서를 같은 name으로 다시 저장하고 다시 ExitPlanMode를 부르세요.\n\n사용자 의견:\n${d.feedback}`
-        : '사용자가 계획을 승인하지 않았습니다. 실행하지 말고 무엇을 바꾸면 좋을지 사용자에게 물어보세요.',
+        ? `The user asked for changes to the plan. Apply the feedback, save the documents again with the same name, and call ExitPlanMode again.\n\nUser feedback:\n${d.feedback}`
+        : 'The user did not approve the plan. Do not execute it; ask the user (in Korean) what should change.',
     };
   };
 
