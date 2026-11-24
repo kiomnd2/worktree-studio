@@ -163,7 +163,8 @@ export type Approval = {
     | { kind: 'plan'; plan: string; docs: { name: string; title: string; kind: DocKind }[] }
     | { kind: 'question'; questions: { question: string; header: string; options: { label: string; description: string }[]; multiSelect: boolean }[] }
     | { kind: 'testdata'; case_id: number; case_title: string; need: string; plan: string; role: string }
-    | { kind: 'dbwrite'; connection_id: number; connection_name: string; target: string; sql: string };
+    | { kind: 'dbwrite'; connection_id: number; connection_name: string; target: string; sql: string }
+    | { kind: 'session'; workspace_id: number; workspace_name: string; jira_key: string | null; summary: string; description: string; first_prompt: string };
 };
 
 /** 개발 산출물. plan: 계획서, screen: 화면설계서, db: DB 변경 설계서, test: 테스트 결과서, report: 완료 보고서 */
@@ -278,6 +279,7 @@ export type ServerView = {
   start_cmd: string | null;
   cwd: string;
   health_path: string;
+  fixed_port: number | null;
   setup_pending: string | null;
   failure: { kind: 'exit' | 'unhealthy'; at: number; exit_code: number | null; command: string; summary: string; excerpt: string } | null;
 };

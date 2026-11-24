@@ -431,6 +431,8 @@ const startBody = z.object({
   docker: z.boolean().optional(),
   /** false면 BE의 SQL 로그(쿼리 감시)를 켜지 않는다 */
   sqlLog: z.boolean().optional(),
+  /** 사용자가 실행 창에서 포트를 직접 넣은 워크트리. 그 포트를 못 쓰면 다른 포트로 바꾸지 않고 실패한다 */
+  pinned: z.array(z.number().int()).optional(),
 });
 const commandMap = (c?: Record<string, string>) => Object.fromEntries(Object.entries(c ?? {}).map(([k, v]) => [Number(k), v]));
 const portMap = (c?: Record<string, number>) => Object.fromEntries(Object.entries(c ?? {}).map(([k, v]) => [Number(k), v]));
@@ -472,8 +474,8 @@ app.post('/api/sessions/:id/env/apply', async (req) => {
 });
 app.post('/api/sessions/:id/servers/start', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { worktreeIds, commands, ports, docker, sqlLog } = startBody.parse(req.body ?? {});
-  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker, sqlLog });
+  const { worktreeIds, commands, ports, docker, sqlLog, pinned } = startBody.parse(req.body ?? {});
+  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker, sqlLog, pinned });
   return listServers(getSession(id)!);
 });
 app.post('/api/sessions/:id/servers/stop', async (req) => {
@@ -484,9 +486,9 @@ app.post('/api/sessions/:id/servers/stop', async (req) => {
 });
 app.post('/api/sessions/:id/servers/restart', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { worktreeIds, commands, ports, docker, sqlLog } = startBody.parse(req.body ?? {});
+  const { worktreeIds, commands, ports, docker, sqlLog, pinned } = startBody.parse(req.body ?? {});
   await stopServers(id, worktreeIds);
-  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker, sqlLog });
+  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker, sqlLog, pinned });
   return listServers(getSession(id)!);
 });
 // 계획 산출물(계획서·화면설계서). HTML은 스크립트를 막은 별도 출처로 보여 준다.
@@ -527,6 +529,7 @@ app.post('/api/approvals/:id', async (req) => {
       target: z.enum(['session', 'profile']).optional(),
       account_id: z.number().int().optional(),
       sql: z.string().max(100_000).optional(),
+      session: z.object({ id: z.number().int(), ticket: z.string() }).optional(),
     }),
   ]).parse(req.body);
   await decide(idParam.parse(req.params).id, d);
