@@ -201,9 +201,9 @@ export default function EnvPage({ session, message, onBack, onStarted }: Props) 
           targets={startTargets.targets}
           all={startTargets.all}
           onCancel={() => setStartTargets(null)}
-          onConfirm={async (commands, ports, docker) => {
+          onConfirm={async (commands, ports, docker, sqlLog, pinned) => {
             try {
-              await api.startServers(session.id, undefined, commands, ports, docker);
+              await api.startServers(session.id, undefined, commands, ports, docker, sqlLog, pinned);
             } catch (e) {
               const missing = missingFrom(e);
               if (missing) throw new Error(`아직 비어 있는 필수 값: ${missing.map((m) => `${m.project} ${m.keys.join(', ')}`).join(' / ')}`);

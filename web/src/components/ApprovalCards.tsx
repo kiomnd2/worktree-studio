@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { api } from '../api';
 import { openDoc, useServerEvents } from '../events';
 import { DOC_KIND } from './DocsPage';
+import NewSessionDialog from './NewSessionDialog';
 import type { Approval, Session } from '../types';
 
 /** Claude가 프롬프트 중에 요청한 환경값, 계획 승인, 질문, 테스트 데이터. 사용자가 확인해야 적용되고, 그동안 Claude는 기다린다. */
@@ -21,6 +22,7 @@ export default function ApprovalCards({ session, only, chatId }: { session: Sess
         : a.request.kind === 'testdata' ? <TestDataCard key={a.id} approval={a} />
         : a.request.kind === 'plan' ? <PlanCard key={a.id} approval={a} />
         : a.request.kind === 'dbwrite' ? <DbWriteCard key={a.id} approval={a} />
+        : a.request.kind === 'session' ? <SessionCard key={a.id} approval={a} />
         : <QuestionCard key={a.id} approval={a} />))}
     </section>
   );
@@ -227,6 +229,39 @@ function DbWriteCard({ approval }: { approval: Approval }) {
         <button className="small-btn" disabled={busy} onClick={() => decide({ approve: false, feedback: feedback.trim() || undefined })}>실행 안 함</button>
         <button className="small-btn primary" disabled={busy || !sql.trim()} onClick={() => decide({ approve: true, sql })}>{busy ? '실행 중…' : '승인하고 실행'}</button>
       </div>
+    </div>
+  );
+}
+
+/** 곁가지 작업을 새 세션으로 떼어 내자는 제안. 새 세션 창을 초안으로 열고, 사용자가 Jira 이슈를 정해 만들면 승인으로 본다. */
+function SessionCard({ approval }: { approval: Approval }) {
+  const req = approval.request as Extract<Approval['request'], { kind: 'session' }>;
+  const [open, setOpen] = useState(false);
+  const [feedback, setFeedback] = useState('');
+  const { busy, error, decide } = useDecide(approval.id);
+  return (
+    <div className="approval-card" role="alertdialog" aria-label="새 세션 제안">
+      <div className="approval-head">
+        <strong>Claude가 새 세션을 제안했습니다</strong>
+        <span className="muted small">{req.workspace_name} · {req.jira_key ? `Jira ${req.jira_key}` : '새 Jira 이슈'} · 만들기 전까지 Claude가 기다립니다</span>
+      </div>
+      {approval.reason && <p className="small approval-reason">{approval.reason}</p>}
+      <p className="strong">{req.jira_key && <span className="mono">{req.jira_key} </span>}{req.summary}</p>
+      {req.description && <div className="small approval-md"><ReactMarkdown remarkPlugins={[remarkGfm]}>{req.description}</ReactMarkdown></div>}
+      {req.first_prompt && <p className="muted small">첫 프롬프트: {req.first_prompt}</p>}
+      <input className="plan-feedback" placeholder="만들지 않을 때 Claude에게 남길 말 (선택)" aria-label="만들지 않는 이유" value={feedback} disabled={busy} onChange={(e) => setFeedback(e.target.value)} />
+      {error && <p className="error-text" role="alert">{error}</p>}
+      <div className="approval-actions">
+        <button className="small-btn" disabled={busy} onClick={() => decide({ approve: false, feedback: feedback.trim() || undefined })}>만들지 않음</button>
+        <button className="small-btn primary" disabled={busy} onClick={() => setOpen(true)}>세션 만들기…</button>
+      </div>
+      {open && (
+        <NewSessionDialog
+          draft={{ workspaceId: req.workspace_id, jiraKey: req.jira_key, summary: req.summary, description: req.description, firstPrompt: req.first_prompt }}
+          onClose={() => setOpen(false)}
+          onCreated={(s) => { setOpen(false); decide({ approve: true, session: { id: s.id, ticket: s.ticket } }); }}
+        />
+      )}
     </div>
   );
 }

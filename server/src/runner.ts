@@ -14,6 +14,7 @@ import { sendNotification } from './notify.js';
 import { copyFilesOf, copyIntoWorktree, dockerBin, stacksOf, upCommand } from './localenv.js';
 import { renderPorts, sessionAddrs } from './portvars.js';
 import { isJvm } from './dbconn.js';
+import { fixedPort } from './fixedport.js';
 import { feedQueryLog, findMapperPackages, levelKey, setSqlLogInfo } from './querylog.js';
 
 export type ServerStatus = 'starting' | 'running' | 'unhealthy' | 'failed' | 'stopped';
@@ -107,6 +108,8 @@ export type ServerView = {
   start_cmd: string | null;
   cwd: string;
   health_path: string;
+  /** 실행 명령(또는 그 명령이 부르는 package.json 스크립트)에 박혀 있는 포트. 있으면 이 포트로 띄운다 */
+  fixed_port: number | null;
   /** 이 워크트리에서 아직 설치를 안 했으면 실행 전에 돌릴 설치 명령 */
   setup_pending: string | null;
   failure: ServerFailure | null;
@@ -133,6 +136,7 @@ export function listServers(session: SessionView): ServerView[] {
       start_cmd: project?.start_cmd ?? null,
       cwd: w.path,
       health_path: project?.health_path || '/',
+      fixed_port: fixedPort(w.app_path, project?.start_cmd),
       setup_pending: project?.setup_cmd && !w.setup_done ? project.setup_cmd : null,
       failure: failures.get(w.id) ?? null,
     };
@@ -253,8 +257,14 @@ function reservePort(worktreeId: number, port: number) {
   db.prepare(`UPDATE worktrees SET port = ? WHERE id = ?`).run(port, worktreeId);
 }
 
-async function allocate(worktreeId: number, kind: string, want?: number): Promise<number> {
+/** strict면 원하는 포트를 못 쓸 때 다른 포트로 바꾸지 않고 멈춘다(사용자가 고른 포트, 명령에 박힌 포트). */
+async function allocate(worktreeId: number, kind: string, want?: number, strict = false): Promise<number> {
   const taken = new Set<number>([...servers.values()].map((r) => r.port));
+  // 재시작이면 방금 끈 프로세스가 포트를 놓을 때까지 잠깐(최대 3초) 기다린다.
+  const freeSoon = async (port: number) => { for (let i = 0; i < 6; i++) { if (await isPortFree(port)) return true; await new Promise((r) => setTimeout(r, 500)); } return false; };
+  if (strict && want && (taken.has(want) || !(await freeSoon(want)))) {
+    throw new Error(`포트 ${want}를 다른 프로그램이 쓰고 있어 띄울 수 없습니다. 그 프로그램을 끄거나 서버 실행 창에서 다른 포트를 넣으세요.`);
+  }
   // 잡아 둔 포트(같은 세션 다른 앱의 설정이 이 포트를 기준으로 했다)가 아직 비어 있으면 그대로 쓴다.
   const port = want && !taken.has(want) && (await isPortFree(want))
     ? want
@@ -288,6 +298,9 @@ export async function planPorts(sessionId: number): Promise<Record<number, numbe
   }
   for (const w of session.worktrees) {
     if (out[w.id]) continue;
+    // 명령에 포트가 박혀 있으면 그 포트로만 뜨므로, 다른 앱도 그 주소를 기준으로 맞춘다.
+    const fixed = fixedPort(w.app_path, getProject(w.project_id)?.start_cmd);
+    if (fixed) { out[w.id] = fixed; taken.add(fixed); continue; }
     out[w.id] = w.port && !taken.has(w.port) && (await isPortFree(w.port))
       ? w.port
       : await findFreePort(w.project_kind === 'fe' ? 3401 : 8081, taken);
@@ -309,7 +322,7 @@ export function sessionBeUrl(session: SessionView, ports: Record<number, number>
  * 세션 워크트리의 서버를 띄운다. worktreeIds가 없으면 전부. BE를 먼저 띄워 FE가 BE 주소를 받게 한다.
  * commands에 워크트리 ID별 명령이 있으면 이번 실행에만 프로젝트 실행 명령 대신 쓴다.
  */
-export async function startServers(sessionId: number, worktreeIds?: number[], commands: Record<number, string> = {}, ports: Record<number, number> = {}, opts: { docker?: boolean; sqlLog?: boolean } = {}) {
+export async function startServers(sessionId: number, worktreeIds?: number[], commands: Record<number, string> = {}, ports: Record<number, number> = {}, opts: { docker?: boolean; sqlLog?: boolean; pinned?: number[] } = {}) {
   const session = getSession(sessionId);
   if (!session) throw new Error('세션이 없습니다.');
   const targets = session.worktrees
@@ -342,7 +355,10 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
   const plan = { ...(await planPorts(sessionId)), ...ports };
   for (const w of targets) {
     const p = getProject(w.project_id)!;
-    const port = await allocate(w.id, w.project_kind, plan[w.id]);
+    // 사용자가 실행 창에서 고른 포트 > 명령에 박힌 포트 > 잡아 둔 포트. 앞의 둘은 못 쓰면 다른 포트로 바꾸지 않는다.
+    const fixed = fixedPort(w.app_path, commands[w.id]?.trim() || p.start_cmd);
+    const pinned = opts.pinned?.includes(w.id) && ports[w.id] ? ports[w.id] : null;
+    const port = await allocate(w.id, w.project_kind, pinned ?? fixed ?? plan[w.id], Boolean(pinned ?? fixed));
     // 잡아 둔 포트가 막혀 다른 포트로 떴으면, 뒤에 띄우는 앱(FE)은 실제 포트를 받아야 한다.
     plan[w.id] = port;
     const resolved = resolveEnv(sessionId, p.id);
@@ -393,6 +409,8 @@ export async function startServers(sessionId: number, worktreeIds?: number[], co
     failures.delete(w.id);
     db.prepare(`INSERT OR REPLACE INTO servers (worktree_id, port, pid, status) VALUES (?, ?, ?, 'starting')`).run(w.id, port, child.pid ?? null);
     if (plan[w.id] && plan[w.id] !== port) pushLine(r, 'sys', `잡아 둔 포트 ${plan[w.id]}를 다른 프로그램이 쓰고 있어 ${port}로 띄웁니다. 이 주소를 쓰는 다른 서버는 다시 띄워야 맞물립니다.`);
+    if (fixed && fixed !== port) pushLine(r, 'sys', `실행 명령이 포트 ${fixed}에 고정돼 있어 PORT=${port}를 무시할 수 있습니다. 명령에 {port}를 쓰거나 PORT를 따르게 바꾸세요.`);
+    else if (fixed) pushLine(r, 'sys', `실행 명령에 박힌 포트 ${fixed}로 띄우고 헬스체크합니다.`);
     if (unresolved.length) pushLine(r, 'sys', `이 세션에 상대 앱이 없어 포트 자리를 채우지 못한 값: ${unresolved.join(', ')}`);
     if (copied.length) pushLine(r, 'sys', `클론에서 로컬 설정 파일을 복사했습니다: ${copied.join(', ')}`);
     if (docker) pushLine(r, 'sys', `도커를 띄웁니다: ${stacks.flatMap((s) => s.services).join(', ')} (처음이면 이미지를 받느라 몇 분 걸릴 수 있습니다)`);

@@ -26,13 +26,13 @@ export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTe
   useEffect(reload, [reload]);
   useServerEvents((e) => { if (e.type === 'server.updated' && e.sessionId === session.id) reload(); });
 
-  async function act(kind: 'start' | 'stop' | 'restart', worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean) {
+  async function act(kind: 'start' | 'stop' | 'restart', worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean, pinned?: number[]) {
     setBusy(true);
     setError(null);
     try {
-      setServers(await (kind === 'start' ? api.startServers(session.id, worktreeIds, commands, ports, docker, sqlLog)
+      setServers(await (kind === 'start' ? api.startServers(session.id, worktreeIds, commands, ports, docker, sqlLog, pinned)
         : kind === 'stop' ? api.stopServers(session.id, worktreeIds)
-        : api.restartServers(session.id, worktreeIds, commands, ports, docker, sqlLog)));
+        : api.restartServers(session.id, worktreeIds, commands, ports, docker, sqlLog, pinned)));
     } catch (e) {
       const missing = missingFrom(e);
       if (missing) onOpenEnv(`필수 값이 비어 있습니다: ${missing.map((m) => `${m.project} ${m.keys.join(', ')}`).join(' / ')}`);
@@ -126,9 +126,9 @@ export default function RightPanel({ session, onOpenEnv, onOpenChanges, onOpenTe
           all={servers}
           restart={confirm.kind === 'restart'}
           onCancel={() => setConfirm(null)}
-          onConfirm={async (commands, ports, docker, sqlLog) => {
+          onConfirm={async (commands, ports, docker, sqlLog, pinned) => {
             setConfirm(null);
-            await act(confirm.kind, confirm.worktreeIds, commands, ports, docker, sqlLog);
+            await act(confirm.kind, confirm.worktreeIds, commands, ports, docker, sqlLog, pinned);
           }}
         />
       )}

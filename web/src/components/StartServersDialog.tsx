@@ -9,8 +9,8 @@ type Props = {
   all: ServerView[];
   restart?: boolean;
   onCancel: () => void;
-  /** 이번 실행에 쓸 워크트리 ID별 명령, 미리 정한 포트, 도커를 띄울지, BE SQL 로그를 켤지를 넘긴다. 실패하면 throw해서 창이 오류를 보여 주게 한다. */
-  onConfirm: (commands: Record<number, string>, ports: Record<number, number>, docker: boolean, sqlLog: boolean) => Promise<void>;
+  /** 이번 실행에 쓸 워크트리 ID별 명령, 미리 정한 포트, 도커를 띄울지, BE SQL 로그를 켤지, 사용자가 포트를 직접 넣은 워크트리를 넘긴다. 실패하면 throw해서 창이 오류를 보여 주게 한다. */
+  onConfirm: (commands: Record<number, string>, ports: Record<number, number>, docker: boolean, sqlLog: boolean, pinned: number[]) => Promise<void>;
 };
 
 type Row = EnvSuggestion & { on: boolean; orig: string };
@@ -28,6 +28,9 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ports, setPorts] = useState<Record<number, number> | null>(null);
+  // 포트 입력칸. 처음에는 정해 둔 포트(명령에 박힌 포트가 있으면 그 포트)를 채운다.
+  const [portText, setPortText] = useState<Record<number, string>>({});
+  const [planned, setPlanned] = useState<Record<number, number>>({});
   const [rows, setRows] = useState<Row[] | null>(null);
   const [note, setNote] = useState('');
   const [suggestError, setSuggestError] = useState<string | null>(null);
@@ -77,6 +80,8 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
       .then(({ ports: p }) => {
         if (!alive.current) return;
         setPorts(p);
+        setPlanned(p);
+        setPortText(Object.fromEntries(Object.entries(p).map(([k, v]) => [k, String(v)])));
         return suggest(p, false);
       })
       .catch((e) => { if (alive.current) { setSuggestError((e as Error).message); setRows([]); } });
@@ -87,6 +92,18 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [busy, onCancel]);
+
+  const portOf = (id: number) => { const n = Number(portText[id]); return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null; };
+  const badPort = ordered.some((s) => portText[s.worktree_id] !== undefined && !portOf(s.worktree_id));
+  const pinned = ordered.filter((s) => portOf(s.worktree_id) && portOf(s.worktree_id) !== planned[s.worktree_id]).map((s) => s.worktree_id);
+  /** 포트를 고치고 칸을 벗어나면, 그 포트를 기준으로 설정 제안을 다시 받는다. */
+  function commitPort() {
+    if (!ports || badPort) return;
+    const next: Record<number, number> = { ...ports, ...Object.fromEntries(ordered.flatMap((s) => (portOf(s.worktree_id) ? [[s.worktree_id, portOf(s.worktree_id)!]] : []))) };
+    if (Object.keys(next).every((k) => next[Number(k)] === ports[Number(k)])) return;
+    setPorts(next);
+    suggest(next, false).catch((e) => { setSuggestError((e as Error).message); setRows([]); });
+  }
 
   const changed = ordered.filter((s) => cmds[s.worktree_id].trim() !== (s.start_cmd ?? ''));
   const empty = ordered.some((s) => !cmds[s.worktree_id].trim());
@@ -103,7 +120,8 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
         for (const s of changed) await api.updateProject(s.project_id, { start_cmd: cmds[s.worktree_id].trim() });
       }
       if (chosen.length) await api.applySessionEnv(sessionId, chosen.map((r) => ({ project_id: r.project_id, key: r.key, value: r.value.trim(), found_in: r.found_in })));
-      await onConfirm(Object.fromEntries(changed.map((s) => [s.worktree_id, cmds[s.worktree_id].trim()])), ports ?? {}, docker, sqlLog);
+      const final: Record<number, number> = { ...ports, ...Object.fromEntries(pinned.map((id) => [id, portOf(id)!])) };
+      await onConfirm(Object.fromEntries(changed.map((s) => [s.worktree_id, cmds[s.worktree_id].trim()])), final, docker, sqlLog, pinned);
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);
@@ -114,15 +132,35 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
     <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onCancel(); }}>
       <form className="dialog" role="dialog" aria-modal="true" aria-labelledby="start-servers-title" onSubmit={submit}>
         <h1 id="start-servers-title">{restart ? '서버 재시작' : '서버 실행'}</h1>
-        <p className="muted small">아래 명령을 각 워크트리 폴더에서 실행합니다. <code>{'{port}'}</code>는 실행할 때 빈 포트 번호로 바뀌고, <code>PORT</code> 환경값도 함께 넘어갑니다.</p>
+        <p className="muted small">아래 명령을 각 워크트리 폴더에서 실행합니다. <code>{'{port}'}</code>는 아래 포트 번호로 바뀌고, <code>PORT</code> 환경값도 함께 넘어갑니다. 포트를 직접 넣으면 그 포트가 비어 있을 때만 띄웁니다.</p>
         <ul className="start-list">
           {ordered.map((s) => (
             <li key={s.worktree_id}>
               <div className="wt-head">
                 <strong>{s.project_name}</strong>
                 <span className={`kind ${s.project_kind}`}>{s.project_kind.toUpperCase()}</span>
-                {ports?.[s.worktree_id] && <span className="muted small">포트 {ports[s.worktree_id]}</span>}
+                {portText[s.worktree_id] !== undefined && (
+                  <label className="muted small start-port">
+                    포트
+                    <input
+                      className="mono"
+                      inputMode="numeric"
+                      aria-label={`${s.project_name} 포트`}
+                      aria-invalid={!portOf(s.worktree_id)}
+                      value={portText[s.worktree_id]}
+                      onChange={(e) => setPortText((t) => ({ ...t, [s.worktree_id]: e.target.value.replace(/\D/g, '') }))}
+                      onBlur={commitPort}
+                    />
+                  </label>
+                )}
               </div>
+              {s.fixed_port && (
+                <div className={`small ${portOf(s.worktree_id) && portOf(s.worktree_id) !== s.fixed_port ? 'banner warn' : 'muted'}`}>
+                  {portOf(s.worktree_id) && portOf(s.worktree_id) !== s.fixed_port
+                    ? <>실행 명령이 포트 {s.fixed_port}에 고정돼 있어 {portOf(s.worktree_id)}로는 뜨지 않을 수 있습니다. 명령이나 스크립트에서 포트를 빼거나 <code>{'{port}'}</code>를 쓰세요.</>
+                    : <>실행 명령(또는 package.json 스크립트)에 포트 {s.fixed_port}가 고정돼 있어 이 포트로 띄웁니다.</>}
+                </div>
+              )}
               <code className="path" title="실행 폴더">{s.cwd}</code>
               {s.setup_pending && (
                 <div className="muted small">이 워크트리에서 처음 실행해 먼저 <code>{s.setup_pending}</code>로 의존성을 설치합니다. 몇 분 걸릴 수 있습니다.</div>
@@ -206,7 +244,7 @@ export default function StartServersDialog({ sessionId, targets, all, restart, o
         {error && <p className="error-text" role="alert">{error}</p>}
         <div className="dialog-actions">
           <button type="button" disabled={busy} onClick={onCancel}>취소</button>
-          <button type="submit" className="primary" disabled={busy || empty}>{busy ? '띄우는 중' : `${chosen.length ? `설정 ${chosen.length}개 적용하고 ` : ''}${restart ? '재시작' : '실행'}`}</button>
+          <button type="submit" className="primary" disabled={busy || empty || badPort}>{busy ? '띄우는 중' : `${chosen.length ? `설정 ${chosen.length}개 적용하고 ` : ''}${restart ? '재시작' : '실행'}`}</button>
         </div>
       </form>
     </div>

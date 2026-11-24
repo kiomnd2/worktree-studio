@@ -66,6 +66,7 @@ export const api = {
     request<JiraRequiredField[]>('GET', `/api/jira/fields?${new URLSearchParams({ workspace: String(workspaceId), issuetype: issuetypeId })}`),
   createJiraIssue: (workspaceId: number, body: { summary: string; description: string; issuetype_id: string; fields: Record<string, string> }) =>
     request<JiraIssue>('POST', '/api/jira/issues', { workspace: workspaceId, ...body }),
+  jiraIssue: (key: string) => request<JiraIssue>('GET', `/api/jira/issues/${encodeURIComponent(key)}`),
   deleteWorkspace: (id: number) => request('DELETE', `/api/workspaces/${id}`),
 
   sessions: () => request<Session[]>('GET', '/api/sessions'),
@@ -98,7 +99,7 @@ export const api = {
   tasks: (id: number) => request<TaskList | null>('GET', `/api/sessions/${id}/tasks`),
   clearTasks: (id: number) => request('DELETE', `/api/sessions/${id}/tasks`),
   approvals: (id: number) => request<Approval[]>('GET', `/api/sessions/${id}/approvals`),
-  decideApproval: (approvalId: number, body: { approve: false; feedback?: string } | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number; sql?: string }) =>
+  decideApproval: (approvalId: number, body: { approve: false; feedback?: string } | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number; sql?: string; session?: { id: number; ticket: string } }) =>
     request('POST', `/api/approvals/${approvalId}`, body),
   conflicts: (id: number) => request<WorktreeConflict[]>('GET', `/api/sessions/${id}/conflicts`),
   proposeConflict: (id: number, worktreeId: number) => request<ConflictProposal>('POST', `/api/sessions/${id}/conflicts/${worktreeId}/propose`),
@@ -118,13 +119,13 @@ export const api = {
   deleteProfile: (profileId: number) => request('DELETE', `/api/env-profiles/${profileId}`),
 
   servers: (id: number) => request<ServerView[]>('GET', `/api/sessions/${id}/servers`),
-  startServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/start`, { worktreeIds, commands, ports, docker, sqlLog }),
+  startServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean, pinned?: number[]) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/start`, { worktreeIds, commands, ports, docker, sqlLog, pinned }),
   startPrep: (id: number, worktreeIds: number[]) => request<StartPrep>('GET', `/api/sessions/${id}/servers/prep?worktrees=${worktreeIds.join(',')}`),
   planPorts: (id: number) => request<{ ports: Record<number, number> }>('POST', `/api/sessions/${id}/servers/plan`, {}),
   suggestServerEnv: (id: number, ports: Record<number, number>, force = false) => request<{ suggestions: EnvSuggestion[]; note: string; skipped?: boolean }>('POST', `/api/sessions/${id}/servers/suggest-env`, { ports, force }),
   applySessionEnv: (id: number, items: { project_id: number; key: string; value: string; found_in?: string }[]) => request<{ profile: string[]; session: string[] }>('POST', `/api/sessions/${id}/env/apply`, { items }),
   stopServers: (id: number, worktreeIds?: number[]) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/stop`, { worktreeIds }),
-  restartServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/restart`, { worktreeIds, commands, ports, docker, sqlLog }),
+  restartServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean, pinned?: number[]) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/restart`, { worktreeIds, commands, ports, docker, sqlLog, pinned }),
   dismissFailure: (id: number, worktreeId: number) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/${worktreeId}/dismiss`),
   logs: (worktreeId: number) => request<LogLine[]>('GET', `/api/worktrees/${worktreeId}/logs`),
   erdConfig: () => request<ErdConfig>('GET', '/api/erd-vibe/config'),

@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { createSdkMcpServer, query, tool, type CanUseTool, type PermissionMode, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { cancelApprovals, requestAccount, requestAnswers, requestDbWrite, requestEnv, requestPlanApproval, type Question } from './approvals.js';
+import { cancelApprovals, requestAccount, requestAnswers, requestDbWrite, requestEnv, requestPlanApproval, requestSession, type Question } from './approvals.js';
 import { type DbConnection, sessionDbs } from './dbconn.js';
 import { MAX_ROWS, describeConnection, engineSupported, explainQuery, formatExplain, formatResult, isReadOnly, runQuery } from './dbquery.js';
 import { WARNING_LABEL, getQuery, listQueries } from './querylog.js';
@@ -134,6 +134,7 @@ function buildSystemAppend(repos: RepoView[], side: boolean, db: DbConnection | 
     'Check screens with the mcp__browser tools.',
     'The tool manages environment values. If a value is missing or wrong, do not create or edit .env files; request it with mcp__studio__request_env_values.',
     'If you need a test account for another role, request it with mcp__studio__request_test_account. Both requests take effect only after the user confirms them on screen.',
+    'If work unrelated to this ticket comes up (another feature, a fix in another repository\'s tool, etc.), do not do it in this session; propose a new session and Jira issue with mcp__studio__request_session. The user edits and creates it on screen.',
     'To check data in the dev DB, query a DB connection from <tool_context> with mcp__studio__db_query. Reads run immediately; data-changing statements run only after the user reviews and approves the SQL. Do not use DB clients directly through Bash.',
     'For slow screens or queries, use mcp__studio__server_queries to see query stats counted from the BE server log (calls, rows, warnings such as N+1), and mcp__studio__db_explain to see execution plans and indexes. When fixing, cite the evidence (stats, plan, mapper location) and propose code changes such as mapper XML. Send index DDL through mcp__studio__db_query for user approval.',
     ...(erdConfigured() ? [DICT_RULE] : []),
@@ -287,6 +288,19 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
           reason: z.string().describe('One sentence on why the whole request is needed (in Korean)'),
         },
         async (args) => text(await requestEnv(sessionId, chatId, args.project, args.vars, args.reason)),
+      ),
+      tool(
+        'request_session',
+        'Propose to the user that side work unrelated to this session be split into a new session. A new-session dialog opens in the same workspace, prefilled with the draft; '
+          + 'the user creates a new Jira issue or picks an existing one and creates the session. Waits until then and returns the new session number.',
+        {
+          jira_key: z.string().optional().describe('Key of an existing Jira issue to start from (e.g. ABC-123). Omit to create a new issue'),
+          summary: z.string().describe('New Jira issue title and session summary, one line (in Korean)'),
+          description: z.string().describe('New Jira issue description: background, what to do, done criteria (in Korean)'),
+          first_prompt: z.string().optional().describe('Draft of the first prompt to send to Claude in the new session (in Korean)'),
+          reason: z.string().describe('One sentence on why this is split off instead of done here (in Korean)'),
+        },
+        async (args) => text(await requestSession(sessionId, chatId, args, args.reason)),
       ),
       tool(
         'request_test_account',
@@ -753,7 +767,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
           }),
         },
         settings: { autoCompactWindow: AUTO_COMPACT_TOKENS, enabledPlugins: Object.fromEntries(DISABLED_PLUGINS.map((p) => [p, false])) },
-        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks', 'mcp__studio__db_query', 'mcp__studio__server_queries', 'mcp__studio__db_explain', 'mcp__studio__dict_lookup', 'mcp__studio__dict_check', 'mcp__studio__schema_check', 'mcp__studio__dict_request_term', 'mcp__studio__erd_table', 'mcp__studio__erd_request_change', 'mcp__studio__dict_reload', 'mcp__studio__dict_request_exception', 'mcp__studio__dict_request_baseline', 'mcp__studio__dict_request_edit', 'mcp__browser'],
+        allowedTools: ['mcp__studio__request_env_values', 'mcp__studio__request_session', 'mcp__studio__request_test_account', 'mcp__studio__save_doc', 'mcp__studio__set_tasks', 'mcp__studio__db_query', 'mcp__studio__server_queries', 'mcp__studio__db_explain', 'mcp__studio__dict_lookup', 'mcp__studio__dict_check', 'mcp__studio__schema_check', 'mcp__studio__dict_request_term', 'mcp__studio__erd_table', 'mcp__studio__erd_request_change', 'mcp__studio__dict_reload', 'mcp__studio__dict_request_exception', 'mcp__studio__dict_request_baseline', 'mcp__studio__dict_request_edit', 'mcp__browser'],
         // 추가 대화는 세션 작업 목록을 바꾸지 않는다. DB 대화는 코드와 파일도 고치지 않는다.
         ...(dbOnly ? { disallowedTools: ['mcp__studio__set_tasks', 'mcp__studio__dict_request_term', 'mcp__studio__erd_request_change', 'mcp__studio__dict_request_exception', 'mcp__studio__dict_request_baseline', 'mcp__studio__dict_request_edit', 'Edit', 'Write', 'NotebookEdit', 'Bash'] }
           : chatId !== 0 ? { disallowedTools: ['mcp__studio__set_tasks'] } : {}),
