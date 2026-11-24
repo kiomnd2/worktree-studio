@@ -1,5 +1,6 @@
 import { broadcast } from './hub.js';
 import { getSession } from './sessions.js';
+import { db } from './db.js';
 import { profileVars, resolveEnv, saveSessionEnv, selectedProfile, type EnvVar } from './envstore.js';
 import { accountsOf } from './accounts.js';
 import { looksSecret } from './secret.js';
@@ -28,6 +29,11 @@ export type QuestionRequest = { kind: 'question'; questions: Question[] };
  * plan은 만드는 방법이고 사용자가 고쳐서 승인할 수 있다.
  */
 export type TestDataRequest = { kind: 'testdata'; case_id: number; case_title: string; need: string; plan: string; role: string };
+/**
+ * 작업 중 곁가지 일이 생겨 Claude가 새 세션을 제안한 것. jira_key가 있으면 그 이슈로, 없으면 summary·description으로 새 이슈를 만든다.
+ * 사용자가 새 세션 창에서 고쳐서 만들면 그 세션을 돌려준다. first_prompt는 새 세션의 첫 프롬프트 초안이다.
+ */
+export type SessionRequest = { kind: 'session'; workspace_id: number; workspace_name: string; jira_key: string | null; summary: string; description: string; first_prompt: string };
 /** 데이터를 바꾸는 DB 질의. 사용자가 SQL을 보고(고쳐서) 승인해야 실행한다. */
 export type DbWriteRequest = { kind: 'dbwrite'; connection_id: number; connection_name: string; target: string; sql: string };
 
@@ -37,13 +43,13 @@ export type Approval = {
   /** 요청한 대화. 0은 메인 대화(화면 테스트의 요청도 0) */
   chat_id: number;
   reason: string;
-  request: EnvRequest | PlanRequest | QuestionRequest | TestDataRequest | DbWriteRequest;
+  request: EnvRequest | PlanRequest | QuestionRequest | TestDataRequest | DbWriteRequest | SessionRequest;
   created_at: number;
 };
 
 export type Decision =
   | { approve: false; feedback?: string }
-  | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; sql?: string };
+  | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; sql?: string; session?: { id: number; ticket: string } };
 
 const pending = new Map<number, { approval: Approval; resolve: (text: string) => void }>();
 /** 승인했을 때 실제로 적용하고 Claude에게 돌려줄 문장을 만드는 함수 */
@@ -76,6 +82,8 @@ function ask(sessionId: number, chatId: number, reason: string, request: Approva
       ? `테스트 "${request.case_title}"를 진행할 데이터가 없습니다. 만들지 정해 주세요.`
       : request.kind === 'dbwrite'
       ? `Claude가 ${request.connection_name} DB의 데이터를 바꾸려고 합니다. SQL을 확인해 주세요.`
+      : request.kind === 'session'
+      ? `Claude가 새 세션을 제안했습니다: ${request.jira_key ? `${request.jira_key} ` : ''}${request.summary}`
       : `Claude가 ${request.project_name} 환경값 ${request.vars.map((v) => v.key).join(', ')}을(를) 요청했습니다.`;
     sendNotification(`${s?.ticket ?? ''} 확인이 필요합니다`, body, sessionId);
   });
@@ -202,5 +210,28 @@ export function requestDbWrite(sessionId: number, chatId: number, conn: DbConnec
     } catch (err) {
       return `${edited}사용자가 승인했지만 실행 중 오류가 났습니다: ${(err as Error).message}`;
     }
+  });
+}
+
+/** 곁가지 작업을 새 세션(과 Jira 이슈)으로 떼어 내자는 제안. 사용자가 새 세션 창에서 만들면 그 세션 번호를 Claude에게 돌려준다. */
+export function requestSession(sessionId: number, chatId: number, input: { jira_key?: string; summary: string; description: string; first_prompt?: string }, reason: string): Promise<string> {
+  const session = getSession(sessionId);
+  if (!session) return Promise.resolve('세션이 없습니다.');
+  const key = input.jira_key?.trim().toUpperCase() || null;
+  if (key && !/^[A-Z][A-Z0-9_]*-\d+$/.test(key)) return Promise.resolve(`Jira 이슈 키 ${input.jira_key}가 올바르지 않습니다. 예: ABC-123. 새 이슈를 만들 거면 jira_key를 비우세요.`);
+  if (!key && !input.summary.trim()) return Promise.resolve('새 이슈를 만들려면 summary가 필요합니다.');
+  const request: SessionRequest = {
+    kind: 'session', workspace_id: session.workspace_id, workspace_name: session.workspace_name,
+    jira_key: key, summary: input.summary.trim(), description: input.description.trim(), first_prompt: input.first_prompt?.trim() ?? '',
+  };
+  return ask(sessionId, chatId, reason, request, (d) => {
+    if (!d.approve) return d.feedback?.trim()
+      ? `사용자가 새 세션을 만들지 않았습니다. 의견: ${d.feedback.trim()}`
+      : '사용자가 새 세션을 만들지 않았습니다. 이 세션에서 계속할지 사용자에게 물어보세요.';
+    if (!d.session) return '사용자가 승인했지만 만든 세션 정보가 없습니다.';
+    const made = db.prepare(`SELECT id FROM sessions WHERE id = ?`).get(d.session.id);
+    if (!made) return '사용자가 승인했지만 새 세션을 찾지 못했습니다.';
+    broadcast({ type: 'sessions.changed' });
+    return `사용자가 새 세션 ${d.session.ticket}(#${d.session.id})을 만들었습니다. 그 일은 새 세션에서 진행하므로 이 세션에서는 하지 말고, 원래 하던 작업을 이어 가세요.`;
   });
 }

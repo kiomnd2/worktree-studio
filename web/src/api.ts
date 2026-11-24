@@ -6,7 +6,7 @@ import type {
   TaskList,
   Account, Approval, ChangeScope, ArchiveEntry, DocMeta, JiraConfig, JiraIssue, JiraRequiredField, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
   ExplainResult, QueryDetail, QueryList, QuerySort,
-  BaselineStatus, BulkApprove, ColumnEdit, DdlPreview, DictCheckFilter, DictKind, DictUsage, DictReport, DictRequest, DictSearch, ErdConfig, ErdPayload, ErdProject, ErdProjectSummary, ErdStatus, ErdView, ParsedDdl, RelationshipType, SchemaDiff, TermPayload, WordPayload,
+  BaselineStatus, BulkApprove, ColumnEdit, DdlPreview, DictCheckFilter, DictKind, DictUsage, DictReport, DictRequest, DictSearch, ErdConfig, ErdPayload, ErdProject, ErdProjectSummary, ErdStatus, ErdView, ParsedDdl, RelationshipType, SchemaDiff, StudioApplyResult, StudioDiff, TermPayload, WordPayload,
   ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, UsageReport, Workspace,
 } from './types';
 
@@ -66,6 +66,7 @@ export const api = {
     request<JiraRequiredField[]>('GET', `/api/jira/fields?${new URLSearchParams({ workspace: String(workspaceId), issuetype: issuetypeId })}`),
   createJiraIssue: (workspaceId: number, body: { summary: string; description: string; issuetype_id: string; fields: Record<string, string> }) =>
     request<JiraIssue>('POST', '/api/jira/issues', { workspace: workspaceId, ...body }),
+  jiraIssue: (key: string) => request<JiraIssue>('GET', `/api/jira/issues/${encodeURIComponent(key)}`),
   deleteWorkspace: (id: number) => request('DELETE', `/api/workspaces/${id}`),
 
   sessions: () => request<Session[]>('GET', '/api/sessions'),
@@ -98,7 +99,7 @@ export const api = {
   tasks: (id: number) => request<TaskList | null>('GET', `/api/sessions/${id}/tasks`),
   clearTasks: (id: number) => request('DELETE', `/api/sessions/${id}/tasks`),
   approvals: (id: number) => request<Approval[]>('GET', `/api/sessions/${id}/approvals`),
-  decideApproval: (approvalId: number, body: { approve: false; feedback?: string } | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number; sql?: string }) =>
+  decideApproval: (approvalId: number, body: { approve: false; feedback?: string } | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number; sql?: string; session?: { id: number; ticket: string } }) =>
     request('POST', `/api/approvals/${approvalId}`, body),
   conflicts: (id: number) => request<WorktreeConflict[]>('GET', `/api/sessions/${id}/conflicts`),
   proposeConflict: (id: number, worktreeId: number) => request<ConflictProposal>('POST', `/api/sessions/${id}/conflicts/${worktreeId}/propose`),
@@ -118,13 +119,13 @@ export const api = {
   deleteProfile: (profileId: number) => request('DELETE', `/api/env-profiles/${profileId}`),
 
   servers: (id: number) => request<ServerView[]>('GET', `/api/sessions/${id}/servers`),
-  startServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/start`, { worktreeIds, commands, ports, docker, sqlLog }),
+  startServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean, pinned?: number[]) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/start`, { worktreeIds, commands, ports, docker, sqlLog, pinned }),
   startPrep: (id: number, worktreeIds: number[]) => request<StartPrep>('GET', `/api/sessions/${id}/servers/prep?worktrees=${worktreeIds.join(',')}`),
   planPorts: (id: number) => request<{ ports: Record<number, number> }>('POST', `/api/sessions/${id}/servers/plan`, {}),
   suggestServerEnv: (id: number, ports: Record<number, number>, force = false) => request<{ suggestions: EnvSuggestion[]; note: string; skipped?: boolean }>('POST', `/api/sessions/${id}/servers/suggest-env`, { ports, force }),
   applySessionEnv: (id: number, items: { project_id: number; key: string; value: string; found_in?: string }[]) => request<{ profile: string[]; session: string[] }>('POST', `/api/sessions/${id}/env/apply`, { items }),
   stopServers: (id: number, worktreeIds?: number[]) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/stop`, { worktreeIds }),
-  restartServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/restart`, { worktreeIds, commands, ports, docker, sqlLog }),
+  restartServers: (id: number, worktreeIds?: number[], commands?: Record<number, string>, ports?: Record<number, number>, docker?: boolean, sqlLog?: boolean, pinned?: number[]) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/restart`, { worktreeIds, commands, ports, docker, sqlLog, pinned }),
   dismissFailure: (id: number, worktreeId: number) => request<ServerView[]>('POST', `/api/sessions/${id}/servers/${worktreeId}/dismiss`),
   logs: (worktreeId: number) => request<LogLine[]>('GET', `/api/worktrees/${worktreeId}/logs`),
   erdConfig: () => request<ErdConfig>('GET', '/api/erd-vibe/config'),
@@ -136,7 +137,11 @@ export const api = {
   erdView: (sessionId: number, opts: { project?: string; refresh?: boolean } = {}) =>
     request<ErdView>('GET', `/api/sessions/${sessionId}/erd?refresh=${opts.refresh ? 1 : 0}${opts.project ? `&project=${encodeURIComponent(opts.project)}` : ''}`),
   setWorkspaceErd: (id: number, erd_project_id: string | null) => request('PUT', `/api/workspaces/${id}/erd`, { erd_project_id }),
-  createErdProject: (name: string, description?: string) => request<ErdProjectSummary>('POST', '/api/erd-vibe/projects', { name, description }),
+  createErdProject: (name: string, description?: string, dbms_type?: string) => request<ErdProjectSummary>('POST', '/api/erd-vibe/projects', { name, description, dbms_type }),
+  studioErd: () => request<{ project_id: string | null }>('GET', '/api/erd-vibe/studio-erd'),
+  setStudioErd: (project_id: string | null) => request<{ project_id: string | null }>('PUT', '/api/erd-vibe/studio-erd', { project_id }),
+  studioErdDiff: () => request<StudioDiff>('GET', '/api/erd-vibe/studio-erd/diff'),
+  studioErdApply: () => request<StudioApplyResult>('POST', '/api/erd-vibe/studio-erd/apply', {}),
   erdCreateTable: (pid: string, t: { physical_name: string; logical_name: string; position_x?: number; position_y?: number }) =>
     request<{ created_id: string; project: ErdProject }>('POST', `/api/erd/${pid}/tables`, t),
   erdSaveTable: (pid: string, tid: string, body: { table?: { physical_name?: string; logical_name?: string; description?: string; header_color?: string }; columns?: ColumnEdit[]; deleted_columns?: string[]; seen_updated_at?: string | null; force?: boolean }) =>

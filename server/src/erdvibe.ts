@@ -16,8 +16,8 @@ export * from './dict/types.js';
 export type ErdProjectSummary = { id: string; name: string; description: string | null; dbms_type: string; updated_at: string | null };
 export type DictKind = 'word' | 'term' | 'domain';
 
-/** base_url은 erd-vibe 화면 링크용. 데이터는 supabase_url·supabase_key로 읽고 쓴다. api_key는 예전 설정(쓰지 않음). */
-type State = { base_url?: string; supabase_url?: string; supabase_key?: string; api_key?: string };
+/** base_url은 erd-vibe 화면 링크용. 데이터는 supabase_url·supabase_key로 읽고 쓴다. api_key는 예전 설정(쓰지 않음). studio_project_id는 studio 자체 DB를 동기화할 ERD. */
+type State = { base_url?: string; supabase_url?: string; supabase_key?: string; api_key?: string; studio_project_id?: string };
 export const DEFAULT_URL = 'https://erd-vibe.dev.60hz.co';
 const DICT_CACHE_MS = 60_000;
 const ERD_CACHE_MS = 60_000;
@@ -256,10 +256,12 @@ export async function listErdProjects(): Promise<ErdProjectSummary[]> {
   return (await restAll<Row>('erd_projects', '*', 'name.asc')).map(summary);
 }
 
-export async function createErdProject(p: { name: string; description?: string; author?: string }): Promise<ErdProjectSummary> {
+export async function createErdProject(p: { name: string; description?: string; author?: string; dbms_type?: string }): Promise<ErdProjectSummary> {
   if (!p.name?.trim()) throw new Error('프로젝트 이름이 필요합니다.');
   const t = now();
-  return summary(await insertOne<Row>('erd_projects', { name: p.name, description: p.description ?? null, author: p.author ?? null, canvas_data: {}, created_at: t, updated_at: t }));
+  return summary(await insertOne<Row>('erd_projects', {
+    name: p.name, description: p.description ?? null, author: p.author ?? null, canvas_data: {}, created_at: t, updated_at: t, ...(p.dbms_type ? { dbms_type: p.dbms_type } : {}),
+  }));
 }
 
 const erdCache = new Map<string, { at: number; project: ErdProject }>();
@@ -584,5 +586,34 @@ export const erdApi = {
     () => syncTables(projectId, tables as SyncTable[]),
     () => ['table', projectId, 'update', null, { tables: tables.length }, `DDL 가져오기 (${tables.length}개 테이블)`]),
 };
+
+export type RelationshipByName = { from_table_name: string; from_column_name: string; to_table_name: string; to_column_name: string; relationship_type: RelationshipType };
+
+/** 테이블·컬럼 물리명(대소문자 무시)으로 관계를 만든다. 이미 있으면 건너뛴다. DDL 가져오기와 studio DB 동기화에 쓴다. */
+export async function createRelationships(pid: string, list: RelationshipByName[]): Promise<{ created: number; errors: string[] }> {
+  const project = await erdProject(pid, true);
+  let created = 0;
+  const errors: string[] = [];
+  const U = (s: string) => s.toUpperCase();
+  for (const r of list) {
+    const from = project.tables.find((t) => U(t.physical_name) === U(r.from_table_name));
+    const to = project.tables.find((t) => U(t.physical_name) === U(r.to_table_name));
+    const fc = from?.columns.find((c) => U(c.physical_name) === U(r.from_column_name));
+    const tc = to?.columns.find((c) => U(c.physical_name) === U(r.to_column_name));
+    if (!from || !to || !fc || !tc) { errors.push(`${r.to_table_name}.${r.to_column_name} → ${r.from_table_name}.${r.from_column_name}: ERD에 테이블이나 컬럼이 없습니다.`); continue; }
+    if (project.relationships.some((x) => x.from_column_id === fc.id && x.to_column_id === tc.id)) continue;
+    try { await erdApi.createRelationship(pid, { from_table_id: from.id, from_column_id: fc.id, to_table_id: to.id, to_column_id: tc.id, relationship_type: r.relationship_type }); created++; }
+    catch (err) { errors.push((err as Error).message); }
+  }
+  return { created, errors };
+}
+
+/** studio 자체 DB를 동기화할 ERD 프로젝트(설정 › erd-vibe). */
+export const studioErdId = (): string | null => load().studio_project_id ?? null;
+export function setStudioErdId(id: string | null) {
+  const s = load();
+  if (id) s.studio_project_id = id; else delete s.studio_project_id;
+  save(s);
+}
 
 export const erdWebUrl = () => baseUrl();

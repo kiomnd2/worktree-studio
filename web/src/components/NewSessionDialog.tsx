@@ -8,16 +8,20 @@ type Row = { projectId: number; name: string; branches: string[]; base: string; 
 
 const defaultBranch = (ticket: string) => (ticket.trim() ? `feature/${ticket.trim()}` : '');
 
-export default function NewSessionDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (s: Session) => void }) {
+/** 작업 중 Claude가 제안한 새 세션 초안. jiraKey가 있으면 그 이슈를 고르고, 없으면 summary·description으로 새 이슈를 채운다. */
+export type SessionDraft = { workspaceId: number; jiraKey: string | null; summary: string; description: string; firstPrompt: string };
+
+export default function NewSessionDialog({ onClose, onCreated, draft }: { onClose: () => void; onCreated: (s: Session) => void; draft?: SessionDraft }) {
   const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
   const [workspaceId, setWorkspaceId] = useState<number | null>(null);
   const [choice, setChoice] = useState<TicketChoice>({ mode: 'existing', issue: null });
   const [jira, setJira] = useState<JiraStatus | null>(null);
+  const [jiraLoaded, setJiraLoaded] = useState(false);
   const [summaryEdit, setSummaryEdit] = useState<string | null>(null);
   const [stage, setStage] = useState<string | null>(null);
   // 1: 워크스페이스·Jira 티켓 정하기, 2: 정해진 티켓 번호로 브랜치·첫 프롬프트 정하기
   const [step, setStep] = useState<1 | 2>(1);
-  const [firstPrompt, setFirstPrompt] = useState('');
+  const [firstPrompt, setFirstPrompt] = useState(draft?.firstPrompt ?? '');
   // 첫 프롬프트는 기본으로 계획 먼저: 코드를 고치기 전에 계획서·화면설계서를 만들고 승인을 기다린다.
   const [firstPlan, setFirstPlan] = useState(true);
   const [rows, setRows] = useState<Row[]>([]);
@@ -40,8 +44,12 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
   closeRef.current = requestClose;
 
   useEffect(() => {
-    api.workspaces().then((ws) => { setWorkspaces(ws); if (ws[0]) setWorkspaceId(ws[0].id); }).catch((e) => setError(e.message));
-    api.jiraStatus().then(setJira).catch(() => setJira(null));
+    api.workspaces().then((ws) => {
+      setWorkspaces(ws);
+      const first = ws.find((w) => w.id === draft?.workspaceId) ?? ws[0];
+      if (first) setWorkspaceId(first.id);
+    }).catch((e) => setError(e.message));
+    api.jiraStatus().then(setJira).catch(() => setJira(null)).finally(() => setJiraLoaded(true));
 
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeRef.current(); };
     window.addEventListener('keydown', onKey);
@@ -52,11 +60,33 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
   const jiraReady = Boolean(jira?.connected && workspace?.jira_project);
   // Jira를 쓸 수 없으면 직접 입력, 쓸 수 있으면 고르기로 시작한다.
   // 2단계에서 Jira 상태가 잠깐 흔들려도 고른 티켓이 지워지지 않게 1단계에서만 다시 맞춘다.
+  // 초안이 있으면 그 워크스페이스에서 한 번만 초안으로 채운다(Jira 상태를 받은 뒤).
+  const seeded = useRef(false);
   useEffect(() => {
     if (step !== 1) return;
+    if (draft && !seeded.current && workspaceId === draft.workspaceId && jiraLoaded) {
+      seeded.current = true;
+      if (draft.jiraKey && jiraReady) {
+        setChoice({ mode: 'existing', issue: null });
+        api.jiraIssue(draft.jiraKey).then((issue) => setChoice({ mode: 'existing', issue }))
+          .catch((e) => { setChoice({ mode: 'manual', key: draft.jiraKey! }); setError(`${draft.jiraKey}를 Jira에서 불러오지 못해 번호만 넣었습니다: ${(e as Error).message}`); });
+      } else if (draft.jiraKey) {
+        setChoice({ mode: 'manual', key: draft.jiraKey });
+        setSummaryEdit(draft.summary || null);
+        return;
+      } else if (jiraReady) {
+        // 유형은 비워 두면 피커가 기본 유형(작업)으로 채운다.
+        setChoice({ mode: 'new', prompt: draft.description || draft.summary, drafted: true, summary: draft.summary, description: draft.description, issuetype_id: '', fields: {} });
+      } else {
+        setChoice({ mode: 'manual', key: '' });
+      }
+      // Jira를 쓸 수 없으면 티켓 번호는 사용자가 넣고, 요약만 초안으로 채운다.
+      setSummaryEdit(!draft.jiraKey && !jiraReady ? draft.summary || null : null);
+      return;
+    }
     setChoice(jiraReady ? { mode: 'existing', issue: null } : { mode: 'manual', key: '' });
     setSummaryEdit(null);
-  }, [jiraReady, workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [jiraReady, workspaceId, jiraLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
   // 브랜치 이름과 세션 이름에 쓸 티켓 번호와 요약. 새 티켓은 만들기 전이라 아직 번호가 없다.
   // 티켓 없이 하는 작업은 작업 이름을 그 자리에 쓴다.
   const ticket = choice.mode === 'manual' ? choice.key.trim() : choice.mode === 'existing' ? choice.issue?.key ?? '' : choice.mode === 'none' ? choice.name.trim() : '';
@@ -153,7 +183,7 @@ export default function NewSessionDialog({ onClose, onCreated }: { onClose: () =
     <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) requestClose(); }}>
       <form className="dialog" role="dialog" aria-modal="true" aria-labelledby="new-session-title" onSubmit={submit}>
         <div className="wizard-head">
-          <h1 id="new-session-title">새 세션 만들기</h1>
+          <h1 id="new-session-title">{draft ? 'Claude가 제안한 새 세션' : '새 세션 만들기'}</h1>
           <ol className="wizard-steps" aria-label="단계">
             <li className={step === 1 ? 'on' : 'done'} aria-current={step === 1 ? 'step' : undefined}><span>1</span> 티켓</li>
             <li className={step === 2 ? 'on' : ''} aria-current={step === 2 ? 'step' : undefined}><span>2</span> 세션 설정</li>

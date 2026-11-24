@@ -46,7 +46,8 @@ import { getProject as projectById } from './projects.js';
 import { assertNewWork, closePr, continueIgnoringChecks, getPrJob, listPrs, preparePr, startPr } from './pr.js';
 import { addScreen, capturePreview, detectScreens, removeScreen, screenState, setScreenChecked } from './screens.js';
 import { getQuery, getSqlLogInfo, listQueries, muteQuery, resetQueries } from './querylog.js';
-import { createDictEntry, createErdProject, deleteDictEntries, erdApi, erdConfigView, erdProject, erdStatus, erdWebUrl, dictionary, listErdProjects, saveErdConfig, updateDictEntry, type DictKind } from './erdvibe.js';
+import { createDictEntry, createErdProject, createRelationships, deleteDictEntries, erdApi, erdConfigView, erdProject, erdStatus, erdWebUrl, dictionary, listErdProjects, saveErdConfig, setStudioErdId, studioErdId, updateDictEntry, type DictKind } from './erdvibe.js';
+import { applyStudioErd, diffStudioErd } from './studioschema.js';
 import { checkSession, erdDiffSession, erdFindingsOf, excludesOf, ignoreMatcher, ignoresOf, refreshSessionDictionary, sessionIndex, setExcludes, setIgnore, sessionErdId } from './dictscan.js';
 import { clearBaseline, compareBaseline, setBaselineStatus, snapshotBaseline } from './dictbaseline.js';
 import { dictUsage, forgetUsage } from './dictusage.js';
@@ -430,6 +431,8 @@ const startBody = z.object({
   docker: z.boolean().optional(),
   /** false면 BE의 SQL 로그(쿼리 감시)를 켜지 않는다 */
   sqlLog: z.boolean().optional(),
+  /** 사용자가 실행 창에서 포트를 직접 넣은 워크트리. 그 포트를 못 쓰면 다른 포트로 바꾸지 않고 실패한다 */
+  pinned: z.array(z.number().int()).optional(),
 });
 const commandMap = (c?: Record<string, string>) => Object.fromEntries(Object.entries(c ?? {}).map(([k, v]) => [Number(k), v]));
 const portMap = (c?: Record<string, number>) => Object.fromEntries(Object.entries(c ?? {}).map(([k, v]) => [Number(k), v]));
@@ -471,8 +474,8 @@ app.post('/api/sessions/:id/env/apply', async (req) => {
 });
 app.post('/api/sessions/:id/servers/start', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { worktreeIds, commands, ports, docker, sqlLog } = startBody.parse(req.body ?? {});
-  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker, sqlLog });
+  const { worktreeIds, commands, ports, docker, sqlLog, pinned } = startBody.parse(req.body ?? {});
+  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker, sqlLog, pinned });
   return listServers(getSession(id)!);
 });
 app.post('/api/sessions/:id/servers/stop', async (req) => {
@@ -483,9 +486,9 @@ app.post('/api/sessions/:id/servers/stop', async (req) => {
 });
 app.post('/api/sessions/:id/servers/restart', async (req) => {
   const { id } = idParam.parse(req.params);
-  const { worktreeIds, commands, ports, docker, sqlLog } = startBody.parse(req.body ?? {});
+  const { worktreeIds, commands, ports, docker, sqlLog, pinned } = startBody.parse(req.body ?? {});
   await stopServers(id, worktreeIds);
-  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker, sqlLog });
+  await startServers(id, worktreeIds, commandMap(commands), portMap(ports), { docker, sqlLog, pinned });
   return listServers(getSession(id)!);
 });
 // 계획 산출물(계획서·화면설계서). HTML은 스크립트를 막은 별도 출처로 보여 준다.
@@ -526,6 +529,7 @@ app.post('/api/approvals/:id', async (req) => {
       target: z.enum(['session', 'profile']).optional(),
       account_id: z.number().int().optional(),
       sql: z.string().max(100_000).optional(),
+      session: z.object({ id: z.number().int(), ticket: z.string() }).optional(),
     }),
   ]).parse(req.body);
   await decide(idParam.parse(req.params).id, d);
@@ -744,8 +748,30 @@ app.delete('/api/erd-vibe/dict/:kind', async (req) => {
   return { ok: true };
 });
 app.post('/api/erd-vibe/projects', async (req) => {
-  const b = z.object({ name: z.string().trim().min(1, 'ERD 이름이 필요합니다.'), description: z.string().optional() }).parse(req.body);
+  const b = z.object({ name: z.string().trim().min(1, 'ERD 이름이 필요합니다.'), description: z.string().optional(), dbms_type: z.string().optional() }).parse(req.body);
   return createErdProject({ ...b, author: 'worktree-studio' });
+});
+
+// studio 자체 DB(studio.db) 테이블과 테이블 문서(studioschema.ts)를 erd-vibe ERD에 맞춰 넣는다. 지우지는 않는다.
+const studioPid = () => {
+  const pid = studioErdId();
+  if (!pid) throw new Error('동기화할 ERD를 먼저 고르세요.');
+  return pid;
+};
+app.get('/api/erd-vibe/studio-erd', async () => ({ project_id: studioErdId() }));
+app.put('/api/erd-vibe/studio-erd', async (req) => {
+  const { project_id } = z.object({ project_id: z.string().nullable() }).parse(req.body);
+  const want = project_id?.trim() || null;
+  if (want && !(await listErdProjects()).some((p) => p.id === want)) throw new Error('erd-vibe에 없는 ERD 프로젝트입니다.');
+  setStudioErdId(want);
+  return { project_id: want };
+});
+app.get('/api/erd-vibe/studio-erd/diff', async () => diffStudioErd(studioPid()));
+app.post('/api/erd-vibe/studio-erd/apply', async () => {
+  const pid = studioPid();
+  const result = await applyStudioErd(pid);
+  broadcast({ type: 'erd.updated', projectId: pid });
+  return { ...result, diff: await diffStudioErd(pid) };
 });
 
 // ERD 화면: 보기(판정 포함)는 세션 기준, 편집은 ERD 프로젝트 기준. 편집 뒤에는 최신 ERD를 돌려준다.
@@ -931,22 +957,8 @@ app.post('/api/erd/:pid/ddl/apply', async (req) => {
     return term ? { ...c, term_dictionary_id: term.id } : c;
   }) }));
   await erdApi.syncTables(pid, tables);
-  let project = await erdProject(pid, true);
-  let relCreated = 0;
-  const relErrors: string[] = [];
-  const U = (s: string) => s.toUpperCase();
-  for (const r of b.relationships) {
-    const from = project.tables.find((t) => U(t.physical_name) === U(r.from_table_name));
-    const to = project.tables.find((t) => U(t.physical_name) === U(r.to_table_name));
-    const fc = from?.columns.find((c) => U(c.physical_name) === U(r.from_column_name));
-    const tc = to?.columns.find((c) => U(c.physical_name) === U(r.to_column_name));
-    if (!from || !to || !fc || !tc) { relErrors.push(`${r.to_table_name}.${r.to_column_name} → ${r.from_table_name}.${r.from_column_name}: ERD에 테이블이나 컬럼이 없습니다.`); continue; }
-    if (project.relationships.some((x) => x.from_column_id === fc.id && x.to_column_id === tc.id)) continue;
-    try { await erdApi.createRelationship(pid, { from_table_id: from.id, from_column_id: fc.id, to_table_id: to.id, to_column_id: tc.id, relationship_type: r.relationship_type }); relCreated++; }
-    catch (err) { relErrors.push((err as Error).message); }
-  }
-  project = await afterEdit(pid);
-  return { project, relationships_created: relCreated, relationship_errors: relErrors };
+  const rel = await createRelationships(pid, b.relationships);
+  return { project: await afterEdit(pid), relationships_created: rel.created, relationship_errors: rel.errors };
 });
 app.post('/api/erd/:pid/ddl/export', async (req) => {
   const { pid } = pidParam.parse(req.params);
