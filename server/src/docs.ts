@@ -19,8 +19,16 @@ import { getSession, listSessions } from './sessions.js';
 export type DocKind = 'plan' | 'screen' | 'db' | 'test' | 'report' | 'other';
 export type DocFormat = 'md' | 'html';
 /** path는 원본 파일(Claude가 Read로 읽을 것). Markdown 문서도 화면용 HTML은 같은 이름의 .html에 있다. */
-export type DocMeta = { name: string; title: string; kind: DocKind; format: DocFormat; version: number; updated_at: string; path: string };
-type Index = Record<string, { title: string; kind: DocKind; format?: DocFormat; version: number; updated_at: string }>;
+/**
+ * Project-Wiki에 게시한 기록(wikipublish.ts). 원본은 계속 보관함이고, 위키 쪽은 사용자가 승인한 사본이다.
+ * version은 게시한 로컬 판(지금 판보다 작으면 "갱신 필요"), deleted_at이 있으면 게시 취소됨.
+ */
+export type Published = {
+  note: string; path: string; url: string; source_id: string; content_hash: string;
+  version: number; status: string; published_at: string; project: { id: string; name: string } | null; deleted_at?: string | null;
+};
+export type DocMeta = { name: string; title: string; kind: DocKind; format: DocFormat; version: number; updated_at: string; path: string; published?: Published };
+type Index = Record<string, { title: string; kind: DocKind; format?: DocFormat; version: number; updated_at: string; published?: Published }>;
 
 export const ARCHIVE_DIR = path.join(DATA_DIR, 'artifacts');
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -107,7 +115,8 @@ export function saveDoc(sessionId: number, input: { name: string; title: string;
   const version = (prev?.version ?? 0) + 1;
   if (hasMd) fs.writeFileSync(fileOf(sessionId, name, undefined, 'md'), source);
   fs.writeFileSync(fileOf(sessionId, name), hasMd ? renderMarkdown(title, source) : source);
-  index[name] = { title, kind: input.kind, format, version, updated_at: new Date().toISOString() };
+  // 위키 게시 기록은 판이 바뀌어도 남긴다(게시한 판 < 지금 판이면 "갱신 필요").
+  index[name] = { title, kind: input.kind, format, version, updated_at: new Date().toISOString(), ...(prev?.published ? { published: prev.published } : {}) };
   fs.writeFileSync(indexFile(sessionId), JSON.stringify(index, null, 2));
   writeFolderIndex(sessionId);
   broadcast({ type: 'docs.updated', sessionId });
@@ -121,6 +130,23 @@ export function docHtml(sessionId: number, name: string, version?: number): stri
   const file = !version || version === meta.version ? fileOf(sessionId, name) : fileOf(sessionId, name, version);
   if (!fs.existsSync(file)) throw Object.assign(new Error('그 판의 문서가 없습니다.'), { statusCode: 404 });
   return fs.readFileSync(file, 'utf8');
+}
+
+/** 최신 판의 원본 텍스트(Markdown 문서는 .md, 그 밖은 .html). */
+export function docSource(sessionId: number, name: string): { meta: DocMeta; source: string } {
+  const meta = listDocs(sessionId).find((d) => d.name === name);
+  if (!meta) throw Object.assign(new Error('문서가 없습니다.'), { statusCode: 404 });
+  return { meta, source: fs.readFileSync(meta.path, 'utf8') };
+}
+
+/** 위키 게시 결과를 남긴다. null이면 기록을 지운다. */
+export function setPublished(sessionId: number, name: string, info: Published | null) {
+  const index = readIndex(sessionId);
+  if (!index[name]) return;
+  if (info) index[name].published = info; else delete index[name].published;
+  fs.writeFileSync(indexFile(sessionId), JSON.stringify(index, null, 2));
+  writeFolderIndex(sessionId);
+  broadcast({ type: 'docs.updated', sessionId });
 }
 
 export function deleteDoc(sessionId: number, name: string) {
@@ -137,7 +163,7 @@ export function deleteDoc(sessionId: number, name: string) {
 }
 
 type Pr = { number: number; url: string; title: string; state: string };
-const prsOf = (sessionId: number) => db.prepare(`SELECT number, url, title, state FROM pull_requests WHERE session_id = ? ORDER BY id`).all(sessionId) as Pr[];
+export const prsOf = (sessionId: number) => db.prepare(`SELECT number, url, title, state FROM pull_requests WHERE session_id = ? ORDER BY id`).all(sessionId) as Pr[];
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
@@ -158,14 +184,22 @@ export function writeFolderIndex(sessionId: number) {
   fs.writeFileSync(path.join(docsDir(sessionId), 'meta.json'), JSON.stringify(meta, null, 2));
   const rows = docs.map((d) => {
     const older = Array.from({ length: d.version - 1 }, (_, i) => d.version - 1 - i).map((v) => `<a href="${d.name}.v${v}.html">${v}판</a>`).join(' ');
-    return `<tr><td>${KIND_LABEL[d.kind]}</td><td><a href="${d.name}.html">${esc(d.title)}</a></td><td>${d.version}판${older ? ` <span class="m">(예전 판: ${older})</span>` : ''}</td><td>${d.updated_at.slice(0, 16).replace('T', ' ')}</td></tr>`;
+    return `<tr><td>${KIND_LABEL[d.kind]}</td><td><a href="${d.name}.html">${esc(d.title)}</a></td><td>${d.version}판${older ? ` <span class="m">(예전 판: ${older})</span>` : ''}</td><td>${d.updated_at.slice(0, 16).replace('T', ' ')}</td><td>${wikiCell(d)}</td></tr>`;
   }).join('');
   const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(s.ticket)} 산출물</title>
 <style>body{font-family:-apple-system,system-ui,sans-serif;margin:32px;color:#1b2230;max-width:960px}h1{font-size:22px;margin:0 0 4px}.m{color:#6b7280;font-size:13px}table{border-collapse:collapse;width:100%;margin-top:16px}th,td{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left;font-size:14px}th{background:#f6f7f9}a{color:#3346d3}</style></head>
 <body><h1>${esc(s.ticket)} ${esc(s.summary)}</h1>
 <p class="m">${esc(s.workspace_name)} · ${s.repos.map((w) => `${esc(w.project_name)} <code>${esc(w.branch)}</code>`).join(', ')}${prs.length ? ` · PR ${prs.map((p) => `<a href="${esc(p.url)}">#${p.number}</a>`).join(', ')}` : ''}</p>
-<table><thead><tr><th>종류</th><th>문서</th><th>판</th><th>저장</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+<table><thead><tr><th>종류</th><th>문서</th><th>판</th><th>저장</th><th>위키</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
   fs.writeFileSync(path.join(docsDir(sessionId), 'index.html'), html);
+}
+
+function wikiCell(d: DocMeta): string {
+  const p = d.published;
+  if (!p) return '';
+  if (p.deleted_at) return '<span class="m">게시 취소됨</span>';
+  const link = /^https?:\/\//.test(p.url) ? `<a href="${esc(p.url)}">${p.version}판 ↗</a>` : `${p.version}판`;
+  return p.version < d.version ? `${link} <span class="m">(지금 ${d.version}판, 갱신 필요)</span>` : `게시됨 ${link}`;
 }
 
 export type ArchiveEntry = {
