@@ -16,9 +16,11 @@ import { listBranches } from './git.js';
 import { closeChat, closeSession, createSession, getSession, listMessages, listSessions, removeQueued, setChat } from './sessions.js';
 import { resumeQueue, runPrompt, startChat, stopPrompt, submitPrompt } from './claude.js';
 import { abortMerge, checkConflicts, proposeResolution, resolveConflicts } from './conflicts.js';
-import { decide, listApprovals } from './approvals.js';
+import { decide, listApprovals, pendingWikiPublish } from './approvals.js';
 import { clearTasks, getTasks } from './tasks.js';
 import { deleteDoc, docHtml, listArchive, listDocs, revealArchive } from './docs.js';
+import { checkWiki, removeWikiConfig, saveWikiConfig, wikiConfigView, wikiConn } from './wikiconn.js';
+import { openPublishCard, unpublishDoc } from './wikipublish.js';
 import { fileDiff, sessionChanges } from './changes.js';
 import { draftTicket } from './ticketdraft.js';
 import { chooseSite, createIssue, getIssue, issueTypes, jiraConfigView, requiredFields, jiraLogout, jiraStatus, oauthCallback, oauthStart, searchIssues } from './jira.js';
@@ -229,6 +231,19 @@ app.put('/api/workspaces/:id/erd', async (req) => {
   setWorkspaceErd(id, want);
   return { ok: true };
 });
+// Project-Wiki(Guide Manager) 게시 연결. 토큰은 Guide Manager › 프로젝트 › 설정 › 게시 토큰에서 발급받아 여기서만 넣는다.
+app.get('/api/workspaces/:id/wiki', async (req) => wikiConfigView(idParam.parse(req.params).id));
+app.post('/api/workspaces/:id/wiki/check', async (req) => {
+  const b = z.object({ base_url: z.string().optional(), token: z.string().optional() }).parse(req.body ?? {});
+  return checkWiki(idParam.parse(req.params).id, b);
+});
+app.put('/api/workspaces/:id/wiki', async (req) => {
+  const b = z.object({
+    base_url: z.string(), token: z.string().optional(), author_email: z.string(), ask_on_plan: z.boolean().default(true), ask_on_report: z.boolean().default(true),
+  }).parse(req.body);
+  return saveWikiConfig(idParam.parse(req.params).id, b);
+});
+app.delete('/api/workspaces/:id/wiki', async (req) => removeWikiConfig(idParam.parse(req.params).id));
 app.put('/api/workspaces/:id/projects', async (req) => {
   const { projectIds } = z.object({ projectIds: z.array(z.number().int()) }).parse(req.body);
   setWorkspaceProjects(idParam.parse(req.params).id, projectIds);
@@ -507,6 +522,22 @@ app.post('/api/artifacts/reveal', async (req) => {
   revealArchive(session);
   return { ok: true };
 });
+// 산출물 위키 게시: 연결 상태와 승인 카드에 올라 있는 문서, 게시 카드 띄우기(바로 보내지 않음), 게시 취소
+app.get('/api/sessions/:id/wiki', async (req) => {
+  const { id } = idParam.parse(req.params);
+  const s = getSession(id);
+  const conn = s ? wikiConn(s.workspace_id) : null;
+  return { connected: Boolean(conn), project: conn?.project ?? null, pending: pendingWikiPublish(id).flatMap((a) => a.request.docs.map((d) => d.name)) };
+});
+app.post('/api/sessions/:id/docs/:name/wiki', async (req) => {
+  const { id, name } = z.object({ id: z.coerce.number().int(), name: z.string() }).parse(req.params);
+  openPublishCard(id, 0, 'manual', [name]);
+  return { ok: true };
+});
+app.delete('/api/sessions/:id/docs/:name/wiki', async (req) => {
+  const { id, name } = z.object({ id: z.coerce.number().int(), name: z.string() }).parse(req.params);
+  return unpublishDoc(id, name);
+});
 app.delete('/api/sessions/:id/docs/:name', async (req) => {
   const { id, name } = z.object({ id: z.coerce.number().int(), name: z.string() }).parse(req.params);
   deleteDoc(id, name);
@@ -530,10 +561,10 @@ app.post('/api/approvals/:id', async (req) => {
       account_id: z.number().int().optional(),
       sql: z.string().max(100_000).optional(),
       session: z.object({ id: z.number().int(), ticket: z.string() }).optional(),
+      docs: z.array(z.object({ name: z.string(), markdown: z.string().max(2 * 1024 * 1024) })).max(20).optional(),
     }),
   ]).parse(req.body);
-  await decide(idParam.parse(req.params).id, d);
-  return { ok: true };
+  return { ok: true, message: await decide(idParam.parse(req.params).id, d) };
 });
 
 // 화면 테스트: 케이스 만들기 → 역할별 계정 확인 → 브라우저로 실행·촬영

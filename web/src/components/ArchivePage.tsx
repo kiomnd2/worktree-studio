@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { useServerEvents } from '../events';
 import type { ArchiveEntry } from '../types';
-import { DOC_KIND } from './DocsPage';
+import { DOC_KIND, WikiBadge } from './DocsPage';
 
 /**
  * 모든 세션의 산출물(계획서·화면설계서·테스트 결과서). 세션을 닫거나 리소스를 정리해도 남아서,
@@ -80,7 +80,7 @@ export default function ArchivePage({ onOpen }: { onOpen: (e: ArchiveEntry, name
                     {e.docs.map((d) => (
                       <li key={d.name}>
                         <button className="small-btn" onClick={() => onOpen(e, d.name)}>
-                          <span className="muted">{DOC_KIND[d.kind]}</span> {d.title}{d.version > 1 ? ` · ${d.version}판` : ''}
+                          <span className="muted">{DOC_KIND[d.kind]}</span> {d.title}{d.version > 1 ? ` · ${d.version}판` : ''}<WikiBadge doc={d} />
                         </button>
                       </li>
                     ))}

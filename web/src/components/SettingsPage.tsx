@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import LocalSetupPanel from './LocalSetupPanel';
-import type { Account, AnalyzeField, ErdConfig, ErdProjectSummary, ErdStatus, JiraConfig, JiraStatus, PermissionMode, Project, ProjectAnalysis, ProjectKind, Settings, StudioDiff, Workspace } from '../types';
+import type { Account, AnalyzeField, WikiConfig, WikiWhoAmI, ErdConfig, ErdProjectSummary, ErdStatus, JiraConfig, JiraStatus, PermissionMode, Project, ProjectAnalysis, ProjectKind, Settings, StudioDiff, Workspace } from '../types';
 
 const KINDS: { value: ProjectKind; label: string }[] = [
   { value: 'be', label: 'BE' }, { value: 'fe', label: 'FE' }, { value: 'full', label: '통합' }, { value: 'unknown', label: '미정' },
@@ -14,11 +14,12 @@ const MODES: { value: PermissionMode; label: string }[] = [
   { value: 'plan', label: 'plan (계획만)' },
 ];
 
-type Tab = 'projects' | 'jira' | 'erd' | 'accounts' | 'prefs';
+type Tab = 'projects' | 'jira' | 'erd' | 'wiki' | 'accounts' | 'prefs';
 const TABS: { key: Tab; label: string }[] = [
   { key: 'projects', label: '워크스페이스·프로젝트' },
   { key: 'jira', label: 'Jira' },
   { key: 'erd', label: 'erd-vibe 용어사전' },
+  { key: 'wiki', label: 'Project-Wiki' },
   { key: 'accounts', label: '테스트 계정' },
   { key: 'prefs', label: 'Claude와 알림' },
 ];
@@ -75,6 +76,7 @@ export default function SettingsPage() {
       {notice && <p className="banner ok" role="status">{notice}</p>}
       {tab === 'projects' && <WorkspaceArea projects={projects} workspaces={workspaces} run={run} />}
       {tab === 'jira' && <JiraSection run={run} />}
+      {tab === 'wiki' && <WikiSection workspaces={workspaces} run={run} />}
       {tab === 'erd' && <><ErdVibeSection run={run} /><ErdWorkspaceLinks workspaces={workspaces} run={run} /><StudioErdSync run={run} /></>}
       {tab === 'accounts' && <AccountsSection accounts={accounts} workspaces={workspaces} run={run} />}
       {tab === 'prefs' && settings && <PreferencesSection settings={settings} setSettings={setSettings} run={run} />}
@@ -599,6 +601,109 @@ function StudioErdSync({ run }: { run: Run }) {
  * 데이터는 erd-vibe가 쓰는 Supabase에 직접 읽고 쓴다(erd-vibe 서버·SSO를 거치지 않는다). 키는 암호화해 저장한다.
  * erd-vibe 주소는 화면 링크(ERD 열기)에만 쓴다.
  */
+/**
+ * Project-Wiki(Guide Manager) 게시 연결. 워크스페이스마다 주소와 게시 토큰을 둔다.
+ * 토큰은 Guide Manager › 프로젝트 › 설정 › 게시 토큰에서 발급하고, 저장하면 다시 보여 주지 않는다. 저장 전에 연결 확인이 성공해야 한다.
+ */
+function WikiSection({ workspaces, run }: { workspaces: Workspace[]; run: Run }) {
+  const [wsId, setWsId] = useState<number | null>(workspaces[0]?.id ?? null);
+  const [cfg, setCfg] = useState<WikiConfig | null>(null);
+  const [url, setUrl] = useState('');
+  const [token, setToken] = useState('');
+  const [email, setEmail] = useState('');
+  const [askPlan, setAskPlan] = useState(true);
+  const [askReport, setAskReport] = useState(true);
+  const [who, setWho] = useState<WikiWhoAmI | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  useEffect(() => { if (wsId === null && workspaces[0]) setWsId(workspaces[0].id); }, [workspaces, wsId]);
+  const apply = (c: WikiConfig) => {
+    setCfg(c); setUrl(c.base_url); setToken(''); setEmail(c.author_email); setAskPlan(c.ask_on_plan); setAskReport(c.ask_on_report);
+  };
+  useEffect(() => {
+    if (wsId === null) return;
+    setCfg(null); setWho(null); setCheckError(null);
+    api.wikiConfig(wsId).then(apply).catch((e) => setCheckError((e as Error).message));
+  }, [wsId]);
+  // 주소나 토큰을 바꾸면 다시 확인해야 저장할 수 있다.
+  const dirtyConn = cfg !== null && (url.trim().replace(/\/+$/, '') !== cfg.base_url || token.trim() !== '');
+  const verified = who !== null && !checkError;
+  const canSave = Boolean(url.trim() && (token.trim() || cfg?.has_token) && email.trim()) && (verified || (cfg?.connected && !dirtyConn));
+
+  async function check() {
+    if (wsId === null) return;
+    setChecking(true); setCheckError(null); setWho(null);
+    try { setWho(await api.wikiCheck(wsId, { base_url: url, ...(token.trim() ? { token } : {}) })); } catch (e) { setCheckError((e as Error).message); }
+    setChecking(false);
+  }
+
+  if (workspaces.length === 0) return <section className="card"><p className="muted">워크스페이스를 먼저 만드세요.</p></section>;
+  const shownProject = who?.project ?? (cfg?.connected && !dirtyConn ? cfg.project : null);
+  return (
+    <section className="card">
+      <div className="card-head split">
+        <div>
+          <h2>Project-Wiki 게시</h2>
+          <p className="muted small">
+            계획서·DB 변경 설계서·완료 보고서를 Project-Wiki(Guide Manager)의 원본 노트로 게시합니다. 원본은 계속 이 도구의 보관함이고,
+            민감 정보를 가린 사본을 승인 카드에서 확인하고 승인했을 때만 보냅니다. 연결은 워크스페이스마다 따로 둡니다.
+          </p>
+        </div>
+        {cfg?.connected && (
+          <span className="chip-status"><span className="srv-dot running" aria-hidden="true" />연결됨 · {cfg.project?.name ?? '프로젝트'}</span>
+        )}
+      </div>
+      <div className="grid2">
+        <label className="field">
+          <span>워크스페이스</span>
+          <select value={wsId ?? ''} onChange={(e) => setWsId(Number(e.target.value))}>
+            {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span>Guide Manager 주소</span>
+          <input className="mono" value={url} placeholder="https://guide-manager.example.com" onChange={(e) => { setUrl(e.target.value); setWho(null); }} />
+        </label>
+        <label className="field">
+          <span>게시 토큰 {cfg?.has_token ? '(저장됨, 바꿀 때만 입력)' : ''}</span>
+          <input className="mono" type="password" autoComplete="off" value={token} placeholder={cfg?.has_token ? '••••••••' : 'gmp_…'} onChange={(e) => { setToken(e.target.value); setWho(null); }} />
+          <span className="muted small">Guide Manager › 프로젝트 › 설정 › 게시 토큰에서 발급합니다. 발급 화면에서 한 번만 보이니 바로 붙여 넣으세요.</span>
+        </label>
+        <label className="field">
+          <span>게시자 이메일</span>
+          <input className="mono" value={email} placeholder="name@example.com" onChange={(e) => setEmail(e.target.value)} />
+          <span className="muted small">위키 노트 이름을 정하는 데 쓰입니다. 바꾸면 이후 게시는 새 노트가 됩니다.</span>
+        </label>
+      </div>
+      <fieldset className="checks">
+        <legend className="sr-only">게시 여부를 물을 때</legend>
+        <label><input type="checkbox" checked={askPlan} onChange={(e) => setAskPlan(e.target.checked)} /> 계획 승인 때 게시 여부 묻기</label>
+        <label><input type="checkbox" checked={askReport} onChange={(e) => setAskReport(e.target.checked)} /> 완료 보고서 저장 때 게시 여부 묻기</label>
+      </fieldset>
+      <p className="muted small">끄더라도 산출물 화면의 "위키 게시" 버튼으로는 언제든 게시할 수 있습니다.</p>
+      {shownProject && !checkError && (
+        <p className="ok-text small">✓ {shownProject.name} 프로젝트{who?.token?.name ? ` · 토큰 "${who.token.name}"` : cfg?.token_name ? ` · 토큰 "${cfg.token_name}"` : ''}</p>
+      )}
+      {checkError && <p className="error-text small" role="alert">✗ {checkError}</p>}
+      <div className="row">
+        {cfg?.connected && (
+          <button type="button" onClick={run(async () => {
+            if (wsId === null || !confirm('연결을 해제할까요? 저장한 토큰만 지우고, 이미 게시한 위키 노트는 그대로 남습니다.')) return;
+            apply(await api.removeWikiConfig(wsId)); setWho(null);
+          }, 'Project-Wiki 연결을 해제했습니다.')}>연결 해제</button>
+        )}
+        <span className="spacer" />
+        <button type="button" disabled={checking || !url.trim() || !(token.trim() || cfg?.has_token)} onClick={check}>{checking ? '확인 중…' : '연결 확인'}</button>
+        <button type="button" className="primary" disabled={!canSave} title={canSave ? undefined : '연결 확인이 성공해야 저장할 수 있습니다'} onClick={run(async () => {
+          if (wsId === null) return;
+          apply(await api.saveWikiConfig(wsId, { base_url: url, ...(token.trim() ? { token } : {}), author_email: email, ask_on_plan: askPlan, ask_on_report: askReport }));
+          setWho(null);
+        }, 'Project-Wiki 연결을 저장했습니다.')}>저장</button>
+      </div>
+    </section>
+  );
+}
+
 function ErdVibeSection({ run }: { run: Run }) {
   const [cfg, setCfg] = useState<ErdConfig | null>(null);
   const [status, setStatus] = useState<ErdStatus | null>(null);

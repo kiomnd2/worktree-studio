@@ -7,7 +7,7 @@ import type {
   Account, Approval, ChangeScope, ArchiveEntry, DocMeta, JiraConfig, JiraIssue, JiraRequiredField, JiraStatus, TestState, WorktreeChanges, CleanResult, CleanupRow, EnvVar, LogLine, MissingEnv, PrDraft, PrJob, Project, ProjectEnvState, PullRequest,
   ExplainResult, QueryDetail, QueryList, QuerySort,
   BaselineStatus, BulkApprove, ColumnEdit, DdlPreview, DictCheckFilter, DictKind, DictUsage, DictReport, DictRequest, DictSearch, ErdConfig, ErdPayload, ErdProject, ErdProjectSummary, ErdStatus, ErdView, ParsedDdl, RelationshipType, SchemaDiff, StudioApplyResult, StudioDiff, TermPayload, WordPayload,
-  ScreenState, ServerView, Session, Settings, StartupReport, StoredMessage, UsageReport, Workspace,
+  ScreenState, ServerView, Session, SessionWiki, Settings, StartupReport, StoredMessage, UsageReport, WikiConfig, WikiWhoAmI, Workspace,
 } from './types';
 
 export class ApiError extends Error {
@@ -86,6 +86,15 @@ export const api = {
   archive: () => request<ArchiveEntry[]>('GET', '/api/artifacts'),
   revealArchive: (sessionId?: number) => request('POST', '/api/artifacts/reveal', { session: sessionId }),
   deleteDoc: (id: number, name: string) => request('DELETE', `/api/sessions/${id}/docs/${encodeURIComponent(name)}`),
+  sessionWiki: (id: number) => request<SessionWiki>('GET', `/api/sessions/${id}/wiki`),
+  /** 게시 승인 카드를 띄운다(바로 보내지 않음) */
+  wikiPublish: (id: number, name: string) => request('POST', `/api/sessions/${id}/docs/${encodeURIComponent(name)}/wiki`),
+  wikiUnpublish: (id: number, name: string) => request<{ status: string; note: string; path: string }>('DELETE', `/api/sessions/${id}/docs/${encodeURIComponent(name)}/wiki`),
+  wikiConfig: (workspaceId: number) => request<WikiConfig>('GET', `/api/workspaces/${workspaceId}/wiki`),
+  wikiCheck: (workspaceId: number, body: { base_url?: string; token?: string }) => request<WikiWhoAmI>('POST', `/api/workspaces/${workspaceId}/wiki/check`, body),
+  saveWikiConfig: (workspaceId: number, body: { base_url: string; token?: string; author_email: string; ask_on_plan: boolean; ask_on_report: boolean }) =>
+    request<WikiConfig>('PUT', `/api/workspaces/${workspaceId}/wiki`, body),
+  removeWikiConfig: (workspaceId: number) => request<WikiConfig>('DELETE', `/api/workspaces/${workspaceId}/wiki`),
   changes: (id: number, scope: ChangeScope) => request<WorktreeChanges[]>('GET', `/api/sessions/${id}/changes?scope=${scope}`),
   diff: (id: number, worktreeId: number, path: string, scope: ChangeScope, full: boolean, ignoreWhitespace: boolean) =>
     request<{ patch: string; binary: boolean }>('GET', `/api/sessions/${id}/diff?${new URLSearchParams({ worktree: String(worktreeId), path, scope, full: full ? '1' : '0', ws: ignoreWhitespace ? '1' : '0' })}`),
@@ -99,8 +108,8 @@ export const api = {
   tasks: (id: number) => request<TaskList | null>('GET', `/api/sessions/${id}/tasks`),
   clearTasks: (id: number) => request('DELETE', `/api/sessions/${id}/tasks`),
   approvals: (id: number) => request<Approval[]>('GET', `/api/sessions/${id}/approvals`),
-  decideApproval: (approvalId: number, body: { approve: false; feedback?: string } | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number; sql?: string; session?: { id: number; ticket: string } }) =>
-    request('POST', `/api/approvals/${approvalId}`, body),
+  decideApproval: (approvalId: number, body: { approve: false; feedback?: string } | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; account_id?: number; sql?: string; session?: { id: number; ticket: string }; docs?: { name: string; markdown: string }[] }) =>
+    request<{ ok: true; message: string }>('POST', `/api/approvals/${approvalId}`, body),
   conflicts: (id: number) => request<WorktreeConflict[]>('GET', `/api/sessions/${id}/conflicts`),
   proposeConflict: (id: number, worktreeId: number) => request<ConflictProposal>('POST', `/api/sessions/${id}/conflicts/${worktreeId}/propose`),
   resolveConflict: (id: number, worktreeId: number, proposal: ConflictProposal) => request<{ chat_id: number }>('POST', `/api/sessions/${id}/conflicts/${worktreeId}/resolve`, proposal),

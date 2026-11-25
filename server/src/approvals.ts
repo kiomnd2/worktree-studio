@@ -37,19 +37,41 @@ export type SessionRequest = { kind: 'session'; workspace_id: number; workspace_
 /** 데이터를 바꾸는 DB 질의. 사용자가 SQL을 보고(고쳐서) 승인해야 실행한다. */
 export type DbWriteRequest = { kind: 'dbwrite'; connection_id: number; connection_name: string; target: string; sql: string };
 
+/**
+ * Project-Wiki 게시 승인. Claude가 기다리지 않는 요청이라 대화가 끝나도 남는다(서버를 재시작하면 사라짐).
+ * docs마다 원문과 가린 게시본을 보여 주고, 사용자가 고르고 고친 게시본만 보낸다(wikipublish.ts).
+ */
+export type WikiPublishDoc = {
+  name: string; title: string; kind: 'plan' | 'db' | 'report'; version: number;
+  /** 위키 노트 이름 DOC-{hash8}-{name}. update면 이미 게시한 노트를 갱신한다. */
+  note: string; update: boolean; published_version: number | null;
+  original: string; markdown: string;
+  masked: { kind: string; line: number; before: string; after: string }[];
+  /** 게시본에 남은 민감 정보(Guide Manager 2차 검사와 같은 규칙). 있으면 게시하지 못한다. */
+  precheck: { line: number; kind: string }[];
+  /** 게시할 수 없는 이유(이름 길이·크기) 또는 지난 시도의 실패 문구 */
+  blocked?: string; error?: string;
+};
+export type WikiPublishRequest = {
+  kind: 'wikipublish'; workspace_id: number; workspace_name: string;
+  target: { project_name: string; base_url: string; author_email: string };
+  trigger: 'plan' | 'report' | 'manual';
+  docs: WikiPublishDoc[];
+};
+
 export type Approval = {
   id: number;
   session_id: number;
   /** 요청한 대화. 0은 메인 대화(화면 테스트의 요청도 0) */
   chat_id: number;
   reason: string;
-  request: EnvRequest | PlanRequest | QuestionRequest | TestDataRequest | DbWriteRequest | SessionRequest;
+  request: EnvRequest | PlanRequest | QuestionRequest | TestDataRequest | DbWriteRequest | SessionRequest | WikiPublishRequest;
   created_at: number;
 };
 
 export type Decision =
   | { approve: false; feedback?: string }
-  | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; sql?: string; session?: { id: number; ticket: string } };
+  | { approve: true; answers?: Record<string, string>; plan?: string; vars?: { key: string; value: string }[]; target?: 'session' | 'profile'; sql?: string; session?: { id: number; ticket: string }; docs?: { name: string; markdown: string }[] };
 
 const pending = new Map<number, { approval: Approval; resolve: (text: string) => void }>();
 /** 승인했을 때 실제로 적용하고 Claude에게 돌려줄 문장을 만드는 함수 */
@@ -84,25 +106,34 @@ function ask(sessionId: number, chatId: number, reason: string, request: Approva
       ? `Claude가 ${request.connection_name} DB의 데이터를 바꾸려고 합니다. SQL을 확인해 주세요.`
       : request.kind === 'session'
       ? `Claude가 새 세션을 제안했습니다: ${request.jira_key ? `${request.jira_key} ` : ''}${request.summary}`
+      : request.kind === 'wikipublish'
+      ? `${request.docs.map((d) => d.title).join(', ')}을(를) Project-Wiki(${request.target.project_name})에 게시할지 정해 주세요.`
       : `Claude가 ${request.project_name} 환경값 ${request.vars.map((v) => v.key).join(', ')}을(를) 요청했습니다.`;
     sendNotification(`${s?.ticket ?? ''} 확인이 필요합니다`, body, sessionId);
   });
 }
 
-/** 사용자의 승인·거절. 적용 결과를 Claude에게 도구 결과로 돌려준다. DB 질의처럼 적용이 오래 걸리면 끝날 때까지 기다린다. */
-export async function decide(approvalId: number, d: Decision) {
+/**
+ * 사용자의 승인·거절. 적용 결과를 Claude에게 도구 결과로 돌려준다. DB 질의처럼 적용이 오래 걸리면 끝날 때까지 기다린다.
+ * 같은 문장을 돌려줘 위키 게시처럼 Claude가 기다리지 않는 요청은 화면에 보여 준다.
+ */
+export async function decide(approvalId: number, d: Decision): Promise<string> {
   const p = pending.get(approvalId);
   const apply = decisionHandlers.get(approvalId);
   if (!p || !apply) throw new Error('이미 처리했거나 사라진 요청입니다.');
   // 적용하는 동안 두 번 누르지 못하게 먼저 뺀다.
   decisionHandlers.delete(approvalId);
-  p.resolve(await apply(d));
+  const text = await apply(d);
+  p.resolve(text);
+  return text;
 }
 
 /** 프롬프트가 끝나거나 중단되면 그 대화의 남은 요청은 거절로 끝낸다. 화면 테스트의 요청은 테스트가 따로 끝낸다. */
 export function cancelApprovals(sessionId: number, target: 'testdata' | { chatId: number }) {
   for (const p of [...pending.values()]) {
     if (p.approval.session_id !== sessionId) continue;
+    // 위키 게시 카드는 Claude와 상관없는 요청이라 대화가 끝나도 남긴다.
+    if (p.approval.request.kind === 'wikipublish') continue;
     const testdata = p.approval.request.kind === 'testdata';
     if (target === 'testdata' ? !testdata : testdata || p.approval.chat_id !== target.chatId) continue;
     decisionHandlers.delete(p.approval.id);
@@ -235,3 +266,13 @@ export function requestSession(sessionId: number, chatId: number, input: { jira_
     return `사용자가 새 세션 ${d.session.ticket}(#${d.session.id})을 만들었습니다. 그 일은 새 세션에서 진행하므로 이 세션에서는 하지 말고, 원래 하던 작업을 이어 가세요.`;
   });
 }
+
+/** 지금 떠 있는 위키 게시 카드들 */
+export const pendingWikiPublish = (sessionId: number) =>
+  listApprovals(sessionId).filter((a): a is Approval & { request: WikiPublishRequest } => a.request.kind === 'wikipublish');
+
+/** 위키 게시 카드를 띄운다. Claude가 기다리지 않으므로 돌려받는 값은 없다. apply가 실제 게시를 하고 결과 문장을 돌려준다. */
+export function requestWikiPublish(sessionId: number, chatId: number, request: WikiPublishRequest, apply: (d: Decision) => Promise<string>) {
+  void ask(sessionId, chatId, '', request, apply);
+}
+

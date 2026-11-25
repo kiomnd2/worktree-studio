@@ -8,6 +8,7 @@ import { type DbConnection, sessionDbs } from './dbconn.js';
 import { MAX_ROWS, describeConnection, engineSupported, explainQuery, formatExplain, formatResult, isReadOnly, runQuery } from './dbquery.js';
 import { WARNING_LABEL, getQuery, listQueries } from './querylog.js';
 import { docsDir, listDocs, saveDoc } from './docs.js';
+import { openPublishCard } from './wikipublish.js';
 import { setTasks, startFirstTask, tasksForContext } from './tasks.js';
 import { CLAUDE_EXECUTABLE, UPLOAD_DIR } from './config.js';
 import { type RepoView, appendMessage, createChat, enqueuePrompt, getChat, getSession, isQueuePaused, queueLength, setChat, setQueuePaused, shiftQueue } from './sessions.js';
@@ -47,6 +48,11 @@ const running = new Map<string, AbortController>();
 /** 실행 중인 프롬프트에서 저장한 문서 이름. 계획 승인 카드에 이번 계획의 문서만 보여 준다. */
 const savedThisRun = new Map<string, Set<string>>();
 const rkey = (sessionId: number, chatId: number) => `${sessionId}:${chatId}`;
+
+/** Project-Wiki 게시 카드를 띄운다(연결·묻기 설정이 켜져 있을 때만). Claude는 기다리지 않고, 실패해도 작업을 막지 않는다. */
+function askWikiPublish(sessionId: number, chatId: number, trigger: 'plan' | 'report', names: string[]) {
+  try { openPublishCard(sessionId, chatId, trigger, names); } catch (err) { console.error('[wiki publish]', (err as Error).message); }
+}
 
 function storeImages(images: IncomingImage[]): StoredImage[] {
   return images.map((img) => {
@@ -346,6 +352,7 @@ function studioTools(sessionId: number, chatId: number, opts: { plan: boolean; d
           try {
             const d = saveDoc(sessionId, args);
             savedThisRun.get(rkey(sessionId, chatId))?.add(d.name);
+            if (d.kind === 'report') askWikiPublish(sessionId, chatId, 'report', [d.name]);
             return text(`${d.title}을(를) ${d.version}판으로 저장했습니다: ${d.path}`);
           } catch (err) {
             return { ...text((err as Error).message), isError: true };
@@ -724,6 +731,7 @@ export async function runPrompt(sessionId: number, text: string, images: Incomin
     const d = await requestPlanApproval(sessionId, chatId, plan, docs);
     if (d.approve) {
       if (chatId === 0) startFirstTask(sessionId);
+      askWikiPublish(sessionId, chatId, 'plan', docs.map((x) => x.name));
       const next: PermissionMode = mode === 'plan' ? 'default' : mode;
       return { behavior: 'allow', updatedInput: input, updatedPermissions: [{ type: 'setMode', mode: next, destination: 'session' }] };
     }

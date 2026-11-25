@@ -3,9 +3,22 @@ import { api, docUrl } from '../api';
 import { reportPrompt } from './TaskBar';
 import { insertIntoPrompt, useServerEvents } from '../events';
 import SendButton from './SendButton';
-import type { DocKind, DocMeta } from '../types';
+import ApprovalCards from './ApprovalCards';
+import type { DocKind, DocMeta, SessionWiki } from '../types';
 
 export const DOC_KIND: Record<DocKind, string> = { plan: '계획서', screen: '화면설계서', db: 'DB 변경 설계서', test: '테스트 결과서', report: '완료 보고서', other: '기타 문서' };
+
+/** Project-Wiki에 게시할 수 있는 문서(계획서·DB 변경 설계서·완료 보고서) */
+export const wikiPublishable = (d: DocMeta) => d.kind === 'plan' || d.kind === 'db' || d.kind === 'report';
+
+/** 위키 게시 상태 배지. 게시한 적 없으면 아무것도 그리지 않는다. */
+export function WikiBadge({ doc }: { doc: DocMeta }) {
+  const p = doc.published;
+  if (!p || !wikiPublishable(doc)) return null;
+  if (p.deleted_at) return <span className="pill wiki-badge">게시 취소됨</span>;
+  if (p.version < doc.version) return <span className="pill warn wiki-badge" title="로컬에 더 새로운 판이 있습니다">위키 {p.version}판 · 로컬 {doc.version}판</span>;
+  return <span className="pill accent wiki-badge">위키 게시됨 {p.version}판</span>;
+}
 
 function when(iso: string) {
   const d = new Date(iso);
@@ -24,9 +37,17 @@ export default function DocsPage({ sessionId, ticket, live = false, initial, bac
   const [version, setVersion] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const [wiki, setWiki] = useState<SessionWiki | null>(null);
+  const [wikiBusy, setWikiBusy] = useState(false);
+
   const reload = useCallback(() => { api.docs(sessionId).then(setDocs).catch((e) => setError(e.message)); }, [sessionId]);
+  const reloadWiki = useCallback(() => { api.sessionWiki(sessionId).then(setWiki).catch(() => setWiki(null)); }, [sessionId]);
   useEffect(reload, [reload]);
-  useServerEvents((e) => { if (e.type === 'docs.updated' && e.sessionId === sessionId) reload(); });
+  useEffect(reloadWiki, [reloadWiki]);
+  useServerEvents((e) => {
+    if (e.type === 'docs.updated' && e.sessionId === sessionId) reload();
+    if (e.type === 'approvals.updated' && e.sessionId === sessionId) reloadWiki();
+  });
   useEffect(() => { if (initial) { setPick(initial); setVersion(null); } }, [initial]);
 
   const current = docs?.find((d) => d.name === pick) ?? docs?.[0] ?? null;
@@ -42,6 +63,20 @@ export default function DocsPage({ sessionId, ticket, live = false, initial, bac
   // 작업 목록 없이 진행한 세션도 여기서 보고서를 부탁할 수 있다. 보내고 대화로 돌아가 진행을 보게 한다.
   async function requestReport() {
     try { await api.prompt(sessionId, reportPrompt(ticket), []); onBack(); } catch (e) { setError((e as Error).message); }
+  }
+
+  // 위키 게시는 승인 카드를 띄우기만 한다. 실제로 보내는 것은 카드에서 승인했을 때다.
+  async function publish(d: DocMeta) {
+    setWikiBusy(true); setError(null);
+    try { await api.wikiPublish(sessionId, d.name); reloadWiki(); } catch (e) { setError((e as Error).message); }
+    setWikiBusy(false);
+  }
+
+  async function unpublish(d: DocMeta) {
+    if (!confirm(`"${d.title}"의 위키 게시를 취소할까요? 위키 노트는 지워지지 않고 "게시 취소됨"으로 남으며, 이 노트를 인용한 위키는 다음 실행 때 다시 만들어집니다.`)) return;
+    setWikiBusy(true); setError(null);
+    try { await api.wikiUnpublish(sessionId, d.name); } catch (e) { setError((e as Error).message); }
+    setWikiBusy(false);
   }
 
   async function remove(d: DocMeta) {
@@ -64,6 +99,7 @@ export default function DocsPage({ sessionId, ticket, live = false, initial, bac
           </div>
         </div>
         {error && <p className="banner error" role="alert">{error}</p>}
+        <ApprovalCards session={{ id: sessionId }} only="wikipublish" />
 
         {docs && docs.length === 0 ? (
           <div className="card">
@@ -87,7 +123,7 @@ export default function DocsPage({ sessionId, ticket, live = false, initial, bac
                               <span className="change-name">{d.title}</span>
                               <span className="change-dir mono">{d.name}</span>
                             </span>
-                            <span className="change-stat small muted">{d.version}판 · {when(d.updated_at)}</span>
+                            <span className="change-stat small muted">{d.version}판 · {when(d.updated_at)}{wiki?.connected && <WikiBadge doc={d} />}</span>
                           </button>
                         </li>
                       );
@@ -117,6 +153,26 @@ export default function DocsPage({ sessionId, ticket, live = false, initial, bac
                     <button className="small-btn" onClick={() => remove(current)}>삭제</button>
                   </div>
                 </div>
+                {wiki?.connected && wikiPublishable(current) && (() => {
+                  const p = current.published;
+                  const waiting = wiki.pending.includes(current.name);
+                  return (
+                    <div className="wiki-bar small" aria-label="Project-Wiki 게시">
+                      <strong>Project-Wiki</strong>
+                      <WikiBadge doc={current} />
+                      <button className="small-btn" disabled={wikiBusy || waiting} onClick={() => publish(current)}>
+                        {waiting ? '승인 카드 확인 중' : p ? '다시 게시' : '위키 게시'}
+                      </button>
+                      {p && !p.deleted_at && <a className="small-btn" href={p.url} target="_blank" rel="noreferrer">위키에서 보기 ↗</a>}
+                      {p && !p.deleted_at && <button className="small-btn" disabled={wikiBusy} onClick={() => unpublish(current)}>게시 취소</button>}
+                      {p && (
+                        <span className="muted">
+                          {p.deleted_at ? `취소 ${when(p.deleted_at)}` : `게시 ${when(p.published_at)}`} · {p.project?.name ?? wiki.project?.name ?? ''} · <code>{p.path}</code>
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
                 <iframe
                   key={`${current.name}:${shown}:${current.updated_at}`}
                   className="doc-frame"

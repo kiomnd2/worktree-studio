@@ -21,6 +21,7 @@
     "micromark-extension-gfm": "^3.0.0",
     "mssql": "^12.7.11",
     "mysql2": "^3.24.6",
+    "node-html-markdown": "^2.0.0",
     "node-notifier": "^11.0.0",
     "oracledb": "^26.0.0",
     "pg": "^8.23.1",

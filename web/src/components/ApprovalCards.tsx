@@ -1,24 +1,33 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../api';
 import { openDoc, useServerEvents } from '../events';
 import { DOC_KIND } from './DocsPage';
 import NewSessionDialog from './NewSessionDialog';
-import type { Approval, Session } from '../types';
+import type { Approval, Session, WikiPublishDoc } from '../types';
 
 /** Claude가 프롬프트 중에 요청한 환경값, 계획 승인, 질문, 테스트 데이터. 사용자가 확인해야 적용되고, 그동안 Claude는 기다린다. */
 /** chatId를 주면 그 대화가 낸 요청만 보여 준다(only를 주면 대화와 상관없이 그 종류만). */
-export default function ApprovalCards({ session, only, chatId }: { session: Session; only?: Approval['request']['kind']; chatId?: number }) {
+export default function ApprovalCards({ session, only, chatId }: { session: Pick<Session, 'id'>; only?: Approval['request']['kind']; chatId?: number }) {
   const [list, setList] = useState<Approval[]>([]);
+  // 위키 게시처럼 Claude가 기다리지 않는 요청은 처리 결과를 여기 남긴다(카드는 처리하면 사라진다).
+  const [result, setResult] = useState<string | null>(null);
   const reload = useCallback(() => { api.approvals(session.id).then(setList).catch(() => setList([])); }, [session.id]);
   useEffect(reload, [reload]);
   useServerEvents((e) => { if (e.type === 'approvals.updated' && e.sessionId === session.id) reload(); });
   const shown = only ? list.filter((a) => a.request.kind === only) : chatId !== undefined ? list.filter((a) => a.chat_id === chatId) : list;
-  if (shown.length === 0) return null;
+  if (shown.length === 0 && !result) return null;
   return (
     <section className="approvals" aria-label="확인이 필요한 요청">
+      {result && (
+        <p className="banner ok row" role="status">
+          <span>{result}</span><span className="spacer" />
+          <button className="small-btn" onClick={() => setResult(null)}>닫기</button>
+        </p>
+      )}
       {shown.map((a) => (a.request.kind === 'env' ? <EnvCard key={a.id} approval={a} />
+        : a.request.kind === 'wikipublish' ? <WikiPublishCard key={a.id} approval={a} onResult={setResult} />
         : a.request.kind === 'testdata' ? <TestDataCard key={a.id} approval={a} />
         : a.request.kind === 'plan' ? <PlanCard key={a.id} approval={a} />
         : a.request.kind === 'dbwrite' ? <DbWriteCard key={a.id} approval={a} />
@@ -28,12 +37,12 @@ export default function ApprovalCards({ session, only, chatId }: { session: Sess
   );
 }
 
-function useDecide(id: number) {
+function useDecide(id: number, onResult?: (message: string) => void) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const decide = async (body: Parameters<typeof api.decideApproval>[1]) => {
     setBusy(true); setError(null);
-    try { await api.decideApproval(id, body); } catch (e) { setError((e as Error).message); setBusy(false); }
+    try { const r = await api.decideApproval(id, body); if (r.message) onResult?.(r.message); } catch (e) { setError((e as Error).message); setBusy(false); }
   };
   return { busy, error, decide };
 }
@@ -262,6 +271,153 @@ function SessionCard({ approval }: { approval: Approval }) {
           onCreated={(s) => { setOpen(false); decide({ approve: true, session: { id: s.id, ticket: s.ticket } }); }}
         />
       )}
+    </div>
+  );
+}
+
+// Guide Manager 2차 검사와 같은 규칙(server/src/wikipublish.ts SENSITIVE). 게시본을 고치는 동안 바로 보여 주고, 남아 있으면 승인하지 못하게 한다.
+const SENSITIVE: [string, RegExp][] = [
+  ['개인 키', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+  ['AWS 키', /\b(AKIA|ASIA)[0-9A-Z]{16}\b/],
+  ['GitHub 토큰', /\bgh[pousr]_[A-Za-z0-9]{30,}\b|\bgithub_pat_[A-Za-z0-9_]{30,}/],
+  ['API 토큰', /\bsk-(ant-)?[A-Za-z0-9_-]{20,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bgmp_[A-Za-z0-9_-]{20,}/],
+  ['JWT', /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
+  ['접속 정보', /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@/i],
+  ['접속 정보', /\bjdbc:[^\s]*[/:@][^\s/:@]+\/[^\s@]+@/i],
+  ['비밀값', /\b(password|passwd|pwd|secret|api[_-]?key|access[_-]?key|token|비밀번호)\b["']?\s*[:=]\s*["']?(?!«|\*{3}|<|\$\{|…|-|xxx)[^\s"'`|]{6,}/i],
+  ['이메일', /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/],
+  ['사설 IP', /\b(10\.\d{1,3}|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b/],
+  ['로컬 경로', /(^|[\s`(])\/(Users|home)\/[^\s/`]+\//],
+];
+function precheck(md: string) {
+  const out: { line: number; kind: string }[] = [];
+  md.split('\n').forEach((l, i) => {
+    for (const [kind, re] of SENSITIVE) if (re.test(l)) { out.push({ line: i + 1, kind }); break; }
+  });
+  return out;
+}
+
+const TRIGGER: Record<'plan' | 'report' | 'manual', string> = { plan: '계획 승인 직후', report: '완료 보고서 저장 직후', manual: '산출물 화면에서' };
+
+/**
+ * Project-Wiki 게시 승인. 원문(보관함)과 가린 게시본을 나란히 보여 주고, 사용자가 고르고 고친 게시본만 보낸다.
+ * Claude는 기다리지 않는다. 실패한 문서는 서버가 새 카드로 다시 올린다.
+ */
+function WikiPublishCard({ approval, onResult }: { approval: Approval; onResult: (message: string) => void }) {
+  const req = approval.request as Extract<Approval['request'], { kind: 'wikipublish' }>;
+  const [texts, setTexts] = useState<Record<string, string>>(() => Object.fromEntries(req.docs.map((d) => [d.name, d.markdown])));
+  const [on, setOn] = useState<Record<string, boolean>>(() => Object.fromEntries(req.docs.map((d) => [d.name, !d.blocked])));
+  const [active, setActive] = useState(req.docs.find((d) => !d.blocked)?.name ?? req.docs[0]?.name);
+  const [reverted, setReverted] = useState<Record<string, Set<number>>>({});
+  const [showMasked, setShowMasked] = useState(false);
+  const area = useRef<HTMLTextAreaElement>(null);
+  const { busy, error, decide } = useDecide(approval.id, onResult);
+  const doc = req.docs.find((d) => d.name === active);
+  const hits = useMemo(() => Object.fromEntries(req.docs.map((d) => [d.name, precheck(texts[d.name] ?? '')])), [req.docs, texts]);
+  const chosen = req.docs.filter((d) => on[d.name] && !d.blocked);
+  const stuck = chosen.filter((d) => hits[d.name].length > 0 || !(texts[d.name] ?? '').trim());
+
+  /** 게시본 textarea에서 그 줄을 고른다 */
+  function goLine(line: number) {
+    const el = area.current;
+    if (!el) return;
+    const lines = el.value.split('\n');
+    const start = lines.slice(0, line - 1).reduce((n, l) => n + l.length + 1, 0);
+    el.focus();
+    el.setSelectionRange(start, start + (lines[line - 1]?.length ?? 0));
+    el.scrollTop = Math.max(0, (line - 3) * 18);
+  }
+
+  /** 가린 것 하나를 원래 값으로 되돌린다. 그 줄에서 먼저 찾고, 줄이 바뀌었으면 본문 전체에서 찾는다. */
+  function revert(d: WikiPublishDoc, i: number) {
+    const m = d.masked[i];
+    const text = texts[d.name] ?? '';
+    const lines = text.split('\n');
+    let next = text;
+    if (lines[m.line - 1]?.includes(m.after)) { lines[m.line - 1] = lines[m.line - 1].replace(m.after, m.before); next = lines.join('\n'); }
+    else if (text.includes(m.after)) next = text.replace(m.after, m.before);
+    else return;
+    setTexts({ ...texts, [d.name]: next });
+    setReverted({ ...reverted, [d.name]: new Set([...(reverted[d.name] ?? []), i]) });
+  }
+
+  const counts = doc ? Object.entries(doc.masked.reduce<Record<string, number>>((a, m) => ({ ...a, [m.kind]: (a[m.kind] ?? 0) + 1 }), {})) : [];
+  return (
+    <div className="approval-card wiki-card" role="alertdialog" aria-label="Project-Wiki 게시">
+      <div className="approval-head">
+        <strong>Project-Wiki에 게시할까요?</strong>
+        <span className="muted small">{TRIGGER[req.trigger]} · 승인하기 전에는 아무것도 보내지 않습니다</span>
+      </div>
+      <p className="small">
+        대상 <b>{req.target.project_name}</b> · 보낸 곳 <span className="pill">worktree-studio</span> · 게시자 <span className="mono">{req.target.author_email}</span>
+      </p>
+      <ul className="wiki-docs" aria-label="게시할 문서">
+        {req.docs.map((d) => (
+          <li key={d.name} className={d.name === active ? 'active' : undefined}>
+            <label>
+              <input type="checkbox" disabled={busy || Boolean(d.blocked)} checked={Boolean(on[d.name]) && !d.blocked} onChange={(e) => setOn({ ...on, [d.name]: e.target.checked })} />
+              {DOC_KIND[d.kind]} · {d.title} <span className="muted small">{d.version}판</span>
+            </label>
+            <span className="mono small muted">{d.note}</span>
+            <span className={`pill${d.update ? ' warn' : ''}`}>{d.update ? (d.published_version ? `갱신 (위키 ${d.published_version}판)` : '다시 게시') : '새로 만듦'}</span>
+            {!d.blocked && d.name !== active && <button className="small-btn" onClick={() => setActive(d.name)}>내용 보기</button>}
+            {hits[d.name]?.length > 0 && <span className="pill err">남은 민감 정보 {hits[d.name].length}</span>}
+            {d.blocked && <span className="error-text small">{d.blocked}</span>}
+            {d.error && <p className="error-text small">지난 시도 실패: {d.error}</p>}
+          </li>
+        ))}
+      </ul>
+      <p className="muted small">화면설계서·테스트 결과서는 게시하지 않습니다.</p>
+
+      {doc && !doc.blocked && (
+        <>
+          <div className="row small wiki-masked-head">
+            <span>가린 항목 {doc.masked.length}건</span>
+            {counts.map(([k, n]) => <span key={k} className="pill">{k} {n}</span>)}
+            {doc.masked.length > 0 && <button className="small-btn" onClick={() => setShowMasked(!showMasked)}>{showMasked ? '접기' : '모두 보기'}</button>}
+          </div>
+          {showMasked && (
+            <ul className="wiki-masked small">
+              {doc.masked.map((m, i) => (
+                <li key={i}>
+                  <button className="link" onClick={() => goLine(m.line)}>{m.line}행</button> {m.kind}
+                  <span className="mono wiki-del"> {m.before}</span> → <span className="mono wiki-mask">{m.after}</span>
+                  {m.kind !== '그림' && m.kind !== '개인 키' && (
+                    reverted[doc.name]?.has(i) ? <span className="muted"> (되돌림)</span>
+                      : <button className="small-btn" disabled={busy} onClick={() => revert(doc, i)}>되돌리기</button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="wiki-compare">
+            <div>
+              <span className="small strong">원문 (로컬 보관함)</span>
+              <pre className="mono">{doc.original}</pre>
+            </div>
+            <div>
+              <label className="small strong" htmlFor={`wiki-md-${approval.id}`}>게시본 (직접 고칠 수 있음)</label>
+              <textarea id={`wiki-md-${approval.id}`} ref={area} className="mono" spellCheck={false} disabled={busy}
+                value={texts[doc.name] ?? ''} onChange={(e) => setTexts({ ...texts, [doc.name]: e.target.value })} />
+            </div>
+          </div>
+          {hits[doc.name].length > 0 && (
+            <p className="error-text small" role="alert">
+              민감 정보로 보이는 내용이 남아 있어 게시할 수 없습니다:{' '}
+              {hits[doc.name].map((h) => <button key={h.line} className="link" onClick={() => goLine(h.line)}>{h.line}행 {h.kind}</button>)}
+            </p>
+          )}
+        </>
+      )}
+      {error && <p className="error-text" role="alert">{error}</p>}
+      <div className="approval-actions">
+        <button className="small-btn" disabled={busy} onClick={() => decide({ approve: false })}>건너뛰기</button>
+        <button className="small-btn primary" disabled={busy || chosen.length === 0 || stuck.length > 0}
+          title={stuck.length ? `${stuck.map((d) => d.title).join(', ')}의 게시본을 먼저 고치세요` : undefined}
+          onClick={() => decide({ approve: true, docs: chosen.map((d) => ({ name: d.name, markdown: texts[d.name] ?? '' })) })}>
+          {busy ? `게시 중… (${chosen.length}건)` : '승인하고 게시'}
+        </button>
+      </div>
     </div>
   );
 }

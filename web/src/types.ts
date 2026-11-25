@@ -164,13 +164,45 @@ export type Approval = {
     | { kind: 'question'; questions: { question: string; header: string; options: { label: string; description: string }[]; multiSelect: boolean }[] }
     | { kind: 'testdata'; case_id: number; case_title: string; need: string; plan: string; role: string }
     | { kind: 'dbwrite'; connection_id: number; connection_name: string; target: string; sql: string }
-    | { kind: 'session'; workspace_id: number; workspace_name: string; jira_key: string | null; summary: string; description: string; first_prompt: string };
+    | { kind: 'session'; workspace_id: number; workspace_name: string; jira_key: string | null; summary: string; description: string; first_prompt: string }
+    | WikiPublishRequest;
 };
+
+/** Project-Wiki 게시 승인 카드. docs마다 원문과 가린 게시본을 보여 주고, 사용자가 고르고 고친 게시본만 보낸다. */
+export type WikiPublishDoc = {
+  name: string; title: string; kind: 'plan' | 'db' | 'report'; version: number;
+  note: string; update: boolean; published_version: number | null;
+  original: string; markdown: string;
+  masked: { kind: string; line: number; before: string; after: string }[];
+  precheck: { line: number; kind: string }[];
+  blocked?: string; error?: string;
+};
+export type WikiPublishRequest = {
+  kind: 'wikipublish'; workspace_id: number; workspace_name: string;
+  target: { project_name: string; base_url: string; author_email: string };
+  trigger: 'plan' | 'report' | 'manual';
+  docs: WikiPublishDoc[];
+};
+
+/** 워크스페이스의 Project-Wiki 연결 설정. 토큰 원문은 돌려주지 않는다. */
+export type WikiConfig = {
+  connected: boolean; base_url: string; has_token: boolean; author_email: string;
+  project: { id: string; name: string } | null; token_name: string | null;
+  ask_on_plan: boolean; ask_on_report: boolean; checked_at: string | null;
+};
+export type WikiWhoAmI = { project: { id: string; name: string }; token: { name: string; created_by: string | null } };
+/** 세션의 위키 게시 상태: 연결 여부와 승인 카드에 올라 있는 문서 */
+export type SessionWiki = { connected: boolean; project: { id: string; name: string } | null; pending: string[] };
 
 /** 개발 산출물. plan: 계획서, screen: 화면설계서, db: DB 변경 설계서, test: 테스트 결과서, report: 완료 보고서 */
 export type DocKind = 'plan' | 'screen' | 'db' | 'test' | 'report' | 'other';
 /** format: 원본 형식. md 문서도 화면에서는 도구가 만든 HTML로 본다. path는 원본 파일. */
-export type DocMeta = { name: string; title: string; kind: DocKind; format: 'md' | 'html'; version: number; updated_at: string; path: string };
+export type DocMeta = { name: string; title: string; kind: DocKind; format: 'md' | 'html'; version: number; updated_at: string; path: string; published?: Published };
+/** Project-Wiki 게시 기록. version은 게시한 로컬 판, deleted_at이 있으면 게시 취소됨. */
+export type Published = {
+  note: string; path: string; url: string; source_id: string; content_hash: string;
+  version: number; status: string; published_at: string; project: { id: string; name: string } | null; deleted_at?: string | null;
+};
 export type ArchiveEntry = {
   session_id: number; ticket: string; summary: string; workspace_name: string; closed: boolean; updated_at: string;
   branches: string[]; projects: string[]; prs: { number: number; url: string; title: string; state: string }[]; docs: DocMeta[]; dir: string;
